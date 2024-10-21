@@ -1,31 +1,6 @@
 # 底层协议
 
-## 类型转换
-
-- `i32` -> `&[u8]`
-  - `n < 192`
-
-    ```rust
-    &[n as u8]
-    ```
-
-  - `n > 191`
-
-    ```rust
-    let mut x = n.to_be_bytes();
-    x[2] |= 0b11000000;
-    let x = &x[2..4];
-    ```
-  - `n > 16383`
-
-    ```rust
-    let mut x = n.to_be_bytes();
-    x[1] |= 0b11000000;
-    let x = &x[1..4];
-    ```
-
-  - `n > 4194303`
-    - 未知
+## [类型转换](src/command/variable_bytes.rs)
 
 ## 传输协议 `双向`
 
@@ -62,20 +37,11 @@
     ```
   - 校验和
     - 如果未启用校验, 则为 `0x88`
-    - 否则使用以下函数计算 `命令[1..命令长度]` 的校验和
-    ```rust
-    fn calculate_checksum(arr: &[u8], mut start: usize, end: usize) -> u8 {
-      let mut x: u32 = 0;
-      while start < end {
-        x += arr[start] as u32;
-        start += 1;
-      }
-      // The `^ (-1)` in Java is equivalent to `^ 0xFF` in Rust for an 8-bit value.
-      (x & 0xFF) as u8 ^ 0xFF
-    }
-      ```
+    - 否则使用[这个](src/command/checksum.rs)函数计算 `命令[1..命令长度]` 的校验和
 
 ## 命令列表 - 命令组 `0x1f`
+
+### TODO
 
 - 连接方式(# FIXME 任何参数都返回 `0x02 0x43`) `主机->设备` `0x78`
   - 参数 `BLE`

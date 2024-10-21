@@ -14,6 +14,10 @@ Motherboard produced by DothanTech(dothantech.com)
 
 > 官方 SDK 简直太烂了... 错别字先不提, 代码里不知道写了多少封装类, 然后 PC 版重要的功能也 todo 了, Android 版倒是 2024 年还有更新...
 
+## Protocol / 协议
+
+[点击查看](protocol.md)当前分析出的打印机协议和命令
+
 ## 运行
 
 ```bash
