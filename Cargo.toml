@@ -1,0 +1,20 @@
+[package]
+name = "dz-print"
+version = "0.1.0"
+edition = "2021"
+description = "Third-party USB/Bluetooth Driver for Detonger(detonger.com) Printing Machiness"
+authors = ["sbchild <sbchild0@gmail.com> <zinu5k7d1k2uzsxa@proton.me>"]
+homepage = "https://github.com/sb-child/dz-print"
+license = "MPL-2.0"
+
+# [workspace]
+# members = ["libdz-sys"]
+
+[dependencies]
+btleplug = "0.11.6"
+bytebuffer = "2.3.0"
+image = "0.25.2"
+rusb = "0.9.4"
+num-traits = "0.2"
+num-derive = "0.4"
+strum = { version = "0.26", features = ["derive"] }
