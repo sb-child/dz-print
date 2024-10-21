@@ -181,10 +181,7 @@ fn main() {
                 // let cmd = Command::new_host(HostCommand::Init);
                 // let cmd = cmd.package(vec![], false);
                 // cmd_buf.extend(&cmd);
-                let cmd = Command::new_host(HostCommand::ReadDeviceName);
-                let cmd = cmd.package(vec![], false);
-                cmd_buf.extend(&cmd);
-                let cmd = Command::new_host(HostCommand::ReadSoftwareVersion);
+                let cmd = Command::new_host(HostCommand::Test);
                 let cmd = cmd.package(vec![], false);
                 cmd_buf.extend(&cmd);
                 let mut packed = packager::package_usb(cmd_buf);
