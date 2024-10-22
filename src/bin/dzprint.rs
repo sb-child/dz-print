@@ -162,7 +162,7 @@ fn main() {
                 cmd_buf.extend(cmds);
                 cmd_buf.extend(PrintCommand::NextPaper.parse().iter().flatten());
                 println!("len={}", cmd_buf.len());
-                println!("{:02x?}", cmd_buf);
+                // println!("{:02x?}", cmd_buf);
                 // cmd_buf.extend(&[0x1b, 0x40]);
                 // // cmd_buf.extend(&[0x1b, 0x4a, 0xbf]);
                 // cmd_buf.extend(&[0x1f, 0x2a, 0x08, 0x00, 0b00001111]);
@@ -183,6 +183,7 @@ fn main() {
                     handle
                         .write_interrupt(out_ep.address, &packed, timeout)
                         .unwrap();
+                    thread::sleep(Duration::from_millis(1));
                 }
 
                 // packed.resize(64, 0);
