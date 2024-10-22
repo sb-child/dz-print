@@ -397,6 +397,7 @@ dependencies = [
  "image",
  "num-derive",
  "num-traits",
+ "rayon",
  "rusb",
  "strum",
 ]

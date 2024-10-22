@@ -5,6 +5,7 @@
 pub mod command;
 pub mod driver;
 pub mod error_code;
+pub mod image_proc;
 pub mod info;
 pub mod param;
 pub mod rle;
