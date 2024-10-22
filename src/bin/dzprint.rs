@@ -133,15 +133,20 @@ fn main() {
                 let timeout = Duration::from_secs(1);
 
                 let mut cmd_buf: Vec<u8> = Vec::new();
-                let cmd = Command::new_host(HostCommand::GetSetPrintDarkness);
-                let cmd = cmd.package(5.to_variable_bytes(), false);
-                cmd_buf.extend(&cmd);
-                let cmd = Command::new_host(HostCommand::ReadDeviceName);
-                let cmd = cmd.package(vec![], false);
-                cmd_buf.extend(&cmd);
-                let cmd = Command::new_host(HostCommand::GetSetPrintDarkness);
-                let cmd = cmd.package(vec![], false);
-                cmd_buf.extend(&cmd);
+                // let cmd = Command::new_host(HostCommand::GetSetPrintDarkness);
+                // let cmd = cmd.package(5.to_variable_bytes(), false);
+                // cmd_buf.extend(&cmd);
+                // let cmd = Command::new_host(HostCommand::Test);
+                // let cmd = cmd.package(vec![0xff], false);
+                // cmd_buf.extend(&cmd);
+                cmd_buf.extend(&[0x1b, 0x40]);
+                cmd_buf.extend(&[0x1b, 0x4a, 0xbf]);
+                cmd_buf.extend(&[0x1f, 0x2a, 0x04, 0x00, 0b11110000]);
+                cmd_buf.extend(&[0x1f, 0x2e, 0xbf]);
+                cmd_buf.extend(&[0x0c]);
+                // let cmd = Command::new_host(HostCommand::GetSetPrintDarkness);
+                // let cmd = cmd.package(vec![], false);
+                // cmd_buf.extend(&cmd);
                 // let cmd = Command::new_host(HostCommand::ReadSoftwareVersion);
                 // let cmd = cmd.package(vec![], false);
                 // cmd_buf.extend(&cmd);
@@ -181,7 +186,7 @@ fn main() {
                 // let cmd = Command::new_host(HostCommand::Init);
                 // let cmd = cmd.package(vec![], false);
                 // cmd_buf.extend(&cmd);
-                let cmd = Command::new_host(HostCommand::Test);
+                let cmd = Command::new_host(HostCommand::GetSetPrintDarkness);
                 let cmd = cmd.package(vec![], false);
                 cmd_buf.extend(&cmd);
                 let mut packed = packager::package_usb(cmd_buf);

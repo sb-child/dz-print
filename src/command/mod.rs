@@ -28,8 +28,7 @@ pub enum HostCommand {
     GetSetPrintPaperGap = 0x1f45,
     GetSetPrintDarkness = 0x1f43,
     ReadManufacturer = 0x1f75,
-    Test = 0x1f4a,
-    // ReadSeries = 0x1f44,
+    Test = 0x1b4a,
 }
 
 #[derive(Debug, Clone, Copy, FromPrimitive, ToPrimitive, PartialEq)]
