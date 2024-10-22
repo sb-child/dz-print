@@ -124,12 +124,16 @@ impl PrintCommand {
 
 pub struct BitmapParser {
     im: Bitmap,
-    line_cursor: u32,
+    next_line_cursor: u32,
 }
 
 impl BitmapParser {
     pub fn new(im: Bitmap) -> Self {
-        BitmapParser { im, line_cursor: 0 }
+        println!("image= w{} x h{}", im.width(), im.height());
+        BitmapParser {
+            im,
+            next_line_cursor: 0,
+        }
     }
 }
 
@@ -137,7 +141,97 @@ impl Iterator for BitmapParser {
     type Item = PrintCommand;
 
     fn next(&mut self) -> Option<Self::Item> {
-        todo!()
+        if self.next_line_cursor >= self.im.height() {
+            println!("next_line_cursor={} None", self.next_line_cursor);
+            return None;
+        }
+        // 跳过空行
+        let mut empty_line_counter = 0;
+        for i in self.next_line_cursor..self.im.height() {
+            if self.im.is_line_empty(i) {
+                empty_line_counter += 1;
+            } else {
+                break;
+            }
+        }
+        if empty_line_counter > 0 {
+            println!(
+                "next_line_cursor={} FeedLines({})",
+                self.next_line_cursor, empty_line_counter
+            );
+            self.next_line_cursor += empty_line_counter;
+            return Some(PrintCommand::FeedLines(empty_line_counter));
+        }
+        // 否则这一行是有东西的
+        // 比较上一行和后续行, 得到重复次数
+        let mut repeat_line_counter = 0;
+        for i in self.next_line_cursor..self.im.height() {
+            // 第 0 行前面是万万不能看的
+            if self.next_line_cursor == 0 {
+                break;
+            }
+            if self.im.same_lines(self.next_line_cursor - 1, i) {
+                repeat_line_counter += 1;
+            } else {
+                break;
+            }
+        }
+        if repeat_line_counter > 0 {
+            println!(
+                "next_line_cursor={} RepeatLine({})",
+                self.next_line_cursor, repeat_line_counter
+            );
+            self.next_line_cursor += repeat_line_counter;
+            return Some(PrintCommand::RepeatLine(repeat_line_counter));
+        }
+        // 否则这一行和上一行不一样
+        // 看看前缀多少空白
+        // 这一行肯定有黑色的像素
+        let first_black = self
+            .im
+            .first_black_pixel_in_line(self.next_line_cursor)
+            .unwrap()
+            - self.im.line_loc_unchecked(self.next_line_cursor).0;
+        let last_black = self
+            .im
+            .last_black_pixel_in_line(self.next_line_cursor)
+            .unwrap()
+            - self.im.line_loc_unchecked(self.next_line_cursor).0;
+        if first_black > 0 {
+            let skipped: Vec<bool> = self
+                .im
+                .get_line(self.next_line_cursor)
+                .into_iter()
+                .take(last_black + 1)
+                .skip(first_black)
+                .collect();
+            println!(
+                "next_line_cursor={} SkipPrintLine({}, {})",
+                self.next_line_cursor,
+                first_black,
+                skipped.len()
+            );
+            self.next_line_cursor += 1;
+            return Some(PrintCommand::SkipPrintLine(
+                self.im.width(),
+                first_black as u32,
+                skipped,
+            ));
+        }
+        // 否则第 0 个像素就是黑色的
+        let line: Vec<bool> = self
+            .im
+            .get_line(self.next_line_cursor)
+            .into_iter()
+            .take(last_black + 1)
+            .collect();
+        println!(
+            "next_line_cursor={} PrintLine({})",
+            self.next_line_cursor,
+            line.len()
+        );
+        self.next_line_cursor += 1;
+        return Some(PrintCommand::PrintLine(self.im.width(), line));
     }
 }
 
@@ -242,6 +336,10 @@ mod test {
             "unexcepted result: {:02x?}",
             x
         );
+
+        let x = PrintCommand::RepeatLine(0).parse();
+        assert_eq!(x, Vec::<Vec<u8>>::new(), "unexcepted result: {:02x?}", x);
+
         // println!("{:02x?}", x);
     }
 }

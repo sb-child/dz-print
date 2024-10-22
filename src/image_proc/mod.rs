@@ -44,6 +44,11 @@ impl Bitmap {
         self.pix[start..end].to_vec()
     }
 
+    pub fn is_line_empty(&self, h: u32) -> bool {
+        let (start, end) = self.line_loc_unchecked(h);
+        !self.pix[start..end].iter().any(|x| *x)
+    }
+
     pub fn same_lines(&self, h1: u32, h2: u32) -> bool {
         let (start1, end1) = self.line_loc_unchecked(h1);
         let (start2, end2) = self.line_loc_unchecked(h2);
@@ -55,6 +60,14 @@ impl Bitmap {
         self.pix[start..end]
             .iter()
             .position(|&x| x)
+            .map(|i| start + i)
+    }
+
+    pub fn last_black_pixel_in_line(&self, h: u32) -> Option<usize> {
+        let (start, end) = self.line_loc_unchecked(h);
+        self.pix[start..end]
+            .iter()
+            .rposition(|&x| x)
             .map(|i| start + i)
     }
 

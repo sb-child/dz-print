@@ -6,7 +6,10 @@ use std::{thread, time::Duration};
 
 use dz_print::{
     command::{packager, variable_bytes::VariableBytesI32, Command, HostCommand},
-    image_proc::cmd_parser::PrintCommand,
+    image_proc::{
+        cmd_parser::{BitmapParser, PrintCommand},
+        Bitmap,
+    },
 };
 
 #[derive(Debug)]
@@ -148,32 +151,15 @@ fn main() {
                 // let cmd = cmd.package(vec![], false);
                 // cmd_buf.extend(&cmd);
 
+                let png_img = image::ImageReader::open("/home/sbchild/test.png").unwrap();
+                let png_img = png_img.decode().unwrap();
+                let png_img = png_img.into_luma8();
+                let bitmap = Bitmap::from_gray_image(&png_img);
+                let parser = BitmapParser::new(bitmap);
+                let cmds: Vec<u8> = parser.map(|x| x.parse()).flatten().flatten().collect();
+
                 cmd_buf.extend(PrintCommand::ResetPrinter.parse().iter().flatten());
-                for x in 0..576 {
-                    cmd_buf.extend(
-                        PrintCommand::SkipPrintLine(
-                            576,
-                            x,
-                            vec![
-                                true, true, true, true, true, true, true, true, false, false,
-                                false, false, false, false, false, false, true, true, true, true,
-                            ],
-                        )
-                        .parse()
-                        .iter()
-                        .flatten(),
-                    );
-                    // cmd_buf.extend(
-                    //     PrintCommand::PrintLine(
-                    //         576,
-                    //         vec![true, false, true, false, true, false, true, false],
-                    //     )
-                    //     .parse()
-                    //     .iter()
-                    //     .flatten(),
-                    // );
-                    cmd_buf.extend(PrintCommand::RepeatLine(0).parse().iter().flatten());
-                }
+                cmd_buf.extend(cmds);
                 cmd_buf.extend(PrintCommand::NextPaper.parse().iter().flatten());
                 println!("len={}", cmd_buf.len());
                 println!("{:02x?}", cmd_buf);
