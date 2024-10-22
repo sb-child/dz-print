@@ -4,7 +4,10 @@
 
 use std::{thread, time::Duration};
 
-use dz_print::command::{packager, variable_bytes::VariableBytesI32, Command, HostCommand};
+use dz_print::{
+    command::{packager, variable_bytes::VariableBytesI32, Command, HostCommand},
+    image_proc::cmd_parser::PrintCommand,
+};
 
 #[derive(Debug)]
 struct Endpoint {
@@ -120,7 +123,8 @@ fn main() {
                 // thread::sleep(Duration::from_secs(1));
 
                 // handle.set_active_configuration(out_ep.config).unwrap();
-                // handle.reset().unwrap();
+                handle.reset().unwrap();
+
                 handle.claim_interface(out_ep.iface).unwrap();
                 handle
                     .set_alternate_setting(out_ep.iface, out_ep.setting)
@@ -139,10 +143,40 @@ fn main() {
                 // let cmd = Command::new_host(HostCommand::GetSetPrintSpeed);
                 // let cmd = cmd.package(0x00.to_variable_bytes(), false);
                 // cmd_buf.extend(&cmd);
-                let cmd = Command::new_host(HostCommand::Test);
-                let cmd = cmd.package(vec![], false);
-                cmd_buf.extend(&cmd);
 
+                // let cmd = Command::new_host(HostCommand::Test);
+                // let cmd = cmd.package(vec![], false);
+                // cmd_buf.extend(&cmd);
+
+                cmd_buf.extend(PrintCommand::ResetPrinter.parse().iter().flatten());
+                for x in 0..576 {
+                    cmd_buf.extend(
+                        PrintCommand::SkipPrintLine(
+                            576,
+                            x,
+                            vec![
+                                true, true, true, true, true, true, true, true, false, false,
+                                false, false, false, false, false, false, true, true, true, true,
+                            ],
+                        )
+                        .parse()
+                        .iter()
+                        .flatten(),
+                    );
+                    // cmd_buf.extend(
+                    //     PrintCommand::PrintLine(
+                    //         576,
+                    //         vec![true, false, true, false, true, false, true, false],
+                    //     )
+                    //     .parse()
+                    //     .iter()
+                    //     .flatten(),
+                    // );
+                    cmd_buf.extend(PrintCommand::RepeatLine(0).parse().iter().flatten());
+                }
+                cmd_buf.extend(PrintCommand::NextPaper.parse().iter().flatten());
+                println!("len={}", cmd_buf.len());
+                println!("{:02x?}", cmd_buf);
                 // cmd_buf.extend(&[0x1b, 0x40]);
                 // // cmd_buf.extend(&[0x1b, 0x4a, 0xbf]);
                 // cmd_buf.extend(&[0x1f, 0x2a, 0x08, 0x00, 0b00001111]);
@@ -157,27 +191,36 @@ fn main() {
                 // let cmd = Command::new_host(HostCommand::ReadSoftwareVersion);
                 // let cmd = cmd.package(vec![], false);
                 // cmd_buf.extend(&cmd);
-                let mut packed = packager::package_usb(cmd_buf);
-                packed.resize(512, 0);
 
-                handle
-                    .write_interrupt(out_ep.address, &packed, timeout)
-                    .unwrap();
+                for p in cmd_buf.chunks(61) {
+                    let packed = packager::package_usb(p.to_vec());
+                    handle
+                        .write_interrupt(out_ep.address, &packed, timeout)
+                        .unwrap();
+                }
+
+                // packed.resize(64, 0);
+
+                // handle
+                //     .write_interrupt(out_ep.address, &packed, timeout)
+                //     .unwrap();
+
                 // ---
                 // handle.set_active_configuration(in_ep.config).unwrap();
                 // handle.claim_interface(in_ep.iface).unwrap();
                 // handle
                 //     .set_alternate_setting(in_ep.iface, in_ep.setting)
                 //     .unwrap();
-                let mut buf = [0; 64];
-                let timeout = Duration::from_secs(1);
 
-                handle
-                    .read_interrupt(in_ep.address, &mut buf, timeout)
-                    .unwrap();
-                let buf = packager::unpackage_usb(buf.to_vec()).unwrap();
+                // let mut buf = [0; 64];
+                // let timeout = Duration::from_secs(1);
 
-                println!("{:02x?}", buf);
+                // handle
+                //     .read_interrupt(in_ep.address, &mut buf, timeout)
+                //     .unwrap();
+                // let buf = packager::unpackage_usb(buf.to_vec()).unwrap();
+
+                // println!("{:02x?}", buf);
 
                 // ---
 
