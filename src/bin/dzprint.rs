@@ -21,12 +21,18 @@ struct Endpoint {
     address: u8,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    main_fn().await
+}
+
+async fn main_fn() -> anyhow::Result<()> {
     let b = backend::USBBackend::new(backend::USBSelector::DeviceSerial(
         "DP27P-Y4094C023".to_string(),
-    ))?;
+    ))
+    .await?;
 
-    return Ok(());
+    // return Ok(());
     match rusb::Context::new() {
         Ok(mut ctx) => match open_device(&mut ctx, 0x3533, 0x5c15) {
             Some((mut device, device_desc, mut handle)) => {

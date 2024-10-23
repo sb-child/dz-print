@@ -20,12 +20,53 @@ pub enum BackendError {
     USBError(#[from] rusb::Error),
     #[error("selector no matches")]
     SelectorNoMatches,
+    #[error("tokio join error: `{0:?}`")]
+    TokioJoinError(#[from] tokio::task::JoinError),
 }
 
-pub struct USBBackend {}
+struct Endpoint {
+    config: u8,
+    iface: u8,
+    setting: u8,
+    address: u8,
+}
+
+pub type CommandPayload = Vec<u8>;
+/// Created -> Sent/Errored -> Received(CommandPayload)
+pub type CommandResultWithResponse =
+    tokio::sync::oneshot::Receiver<Option<tokio::sync::oneshot::Receiver<CommandPayload>>>;
+/// Created -> Sent/Errored
+pub type CommandResultWithoutResponse = tokio::sync::oneshot::Receiver<bool>;
+/// Created -> Sent/Errored -> Received(CommandPayload)
+pub type CommandResultSenderWithResponse =
+    tokio::sync::oneshot::Sender<Option<tokio::sync::oneshot::Receiver<CommandPayload>>>;
+/// Created -> Sent/Errored
+pub type CommandResultSenderWithoutResponse = tokio::sync::oneshot::Sender<bool>;
+
+pub enum Command {
+    WithResponse(CommandPayload, CommandResultSenderWithResponse),
+    WithoutResponse(CommandPayload, CommandResultSenderWithoutResponse),
+}
+
+impl Command {
+    pub fn with_response(payload: CommandPayload) -> (Command, CommandResultWithResponse) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (Command::WithResponse(payload, tx), rx)
+    }
+
+    pub fn without_response(payload: CommandPayload) -> (Command, CommandResultWithoutResponse) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (Command::WithoutResponse(payload, tx), rx)
+    }
+}
+
+pub struct USBBackend {
+    close_chan: tokio::sync::broadcast::Sender<()>,
+    command_tx: tokio::sync::mpsc::Sender<Command>,
+}
 
 impl USBBackend {
-    pub fn new(selector: USBSelector) -> Result<Self, BackendError> {
+    fn new_usb_backend_blocking(selector: USBSelector) -> Result<Self, BackendError> {
         let ctx = rusb::Context::new()?;
         let devices = ctx.devices()?;
         let device = devices.iter().find(|x| {
@@ -81,6 +122,72 @@ impl USBBackend {
         } else {
             return Err(BackendError::SelectorNoMatches);
         };
-        Ok(USBBackend {})
+        let mut in_ep = Endpoint {
+            config: 0,
+            iface: 0,
+            setting: 0,
+            address: 0,
+        };
+        let mut out_ep = Endpoint {
+            config: 0,
+            iface: 0,
+            setting: 0,
+            address: 0,
+        };
+        let cd = device.config_descriptor(0)?;
+        for iface in cd.interfaces() {
+            for desc in iface.descriptors() {
+                for ep in desc.endpoint_descriptors() {
+                    if ep.direction() == rusb::Direction::In
+                        && ep.transfer_type() == rusb::TransferType::Interrupt
+                    {
+                        in_ep = Endpoint {
+                            config: cd.number(),
+                            iface: desc.interface_number(),
+                            setting: desc.setting_number(),
+                            address: ep.address(),
+                        };
+                    }
+                    if ep.direction() == rusb::Direction::Out
+                        && ep.transfer_type() == rusb::TransferType::Interrupt
+                    {
+                        out_ep = Endpoint {
+                            config: cd.number(),
+                            iface: desc.interface_number(),
+                            setting: desc.setting_number(),
+                            address: ep.address(),
+                        };
+                    }
+                }
+            }
+        }
+        let (close_chan, mut close_sig_1) = tokio::sync::broadcast::channel(1);
+        let mut close_sig_2 = close_chan.subscribe();
+        let ctx1 = ctx.clone();
+        let ctx2 = ctx.clone();
+        let device1 = device.clone();
+        let device2 = device.clone();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(1);
+        // IN thread
+        tokio::task::spawn_blocking(move || {
+            close_sig_1.is_empty();
+        });
+        // OUT thread
+        tokio::task::spawn_blocking(move || {
+            close_sig_2.is_empty();
+        });
+        Ok(USBBackend {
+            close_chan,
+            command_tx: cmd_tx,
+        })
+    }
+    pub async fn new(selector: USBSelector) -> Result<Self, BackendError> {
+        let x = tokio::task::spawn_blocking(|| Self::new_usb_backend_blocking(selector)).await?;
+        x
+    }
+}
+impl Drop for USBBackend {
+    fn drop(&mut self) {
+        self.close_chan.send(()).ok();
     }
 }
