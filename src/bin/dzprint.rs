@@ -5,6 +5,7 @@
 use std::{thread, time::Duration};
 
 use dz_print::{
+    backend,
     command::{packager, variable_bytes::VariableBytesI32, Command, HostCommand},
     image_proc::{
         cmd_parser::{BitmapParser, PrintCommand},
@@ -20,7 +21,12 @@ struct Endpoint {
     address: u8,
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
+    let b = backend::USBBackend::new(backend::USBSelector::DeviceSerial(
+        "DP27P-Y4094C023".to_string(),
+    ))?;
+
+    return Ok(());
     match rusb::Context::new() {
         Ok(mut ctx) => match open_device(&mut ctx, 0x3533, 0x5c15) {
             Some((mut device, device_desc, mut handle)) => {
@@ -194,7 +200,7 @@ fn main() {
                 let buf = packager::unpackage_usb(buf.to_vec()).unwrap();
                 println!("{:02x?}", buf);
 
-                return;
+                return Ok(());
 
                 let timeout = Duration::from_secs(1);
 
@@ -287,6 +293,7 @@ fn main() {
             panic!("{:?}", e)
         }
     }
+    return Ok(());
 }
 
 fn open_device<T: rusb::UsbContext>(

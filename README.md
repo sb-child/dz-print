@@ -10,9 +10,13 @@ Motherboard produced by DothanTech(dothantech.com)
 
 ## Notice / 说明
 
-由于 SDK 代码并不开源, 本驱动的底层开发完全基于对官方 SDK 的逆向, 抓包和上机测试。
+由于 SDK 代码并不开源, 本驱动的底层开发完全基于对官方 SDK 的逆向, 抓包, 说明文档和上机测试。
 
 > 官方 SDK 简直太烂了... 错别字先不提, 代码里不知道写了多少封装类, 然后 PC 版重要的功能也 todo 了, Android 版倒是 2024 年还有更新...
+
+## 适用设备
+
+- [x] DP27P (已测试)
 
 ## Protocol / 协议
 
