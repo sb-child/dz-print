@@ -137,6 +137,18 @@ fn main() {
                     .set_alternate_setting(in_ep.iface, in_ep.setting)
                     .unwrap();
 
+                // let timeout = Duration::from_secs(1);
+                // let mut cmd_buf: Vec<u8> = Vec::new();
+                // cmd_buf.extend(&[0x1b, 0x4a]);
+                // for p in cmd_buf.chunks(61) {
+                //     let packed = packager::package_usb(p.to_vec());
+                //     handle
+                //         .write_interrupt(out_ep.address, &packed, timeout)
+                //         .unwrap();
+                //     thread::sleep(Duration::from_millis(1));
+                // }
+                // thread::sleep(Duration::from_millis(500));
+
                 let timeout = Duration::from_secs(1);
 
                 let mut cmd_buf: Vec<u8> = Vec::new();
@@ -153,6 +165,7 @@ fn main() {
                 // let cmd = Command::new_host(HostCommand::GetSetPrintSpeed);
                 // let cmd = cmd.package(vec![0x00], false);
                 // cmd_buf.extend(&cmd);
+
                 let cmd = Command::new_host(HostCommand::Test2);
                 let cmd = cmd.package(vec![0x7f], false);
                 cmd_buf.extend(&cmd);
