@@ -98,14 +98,14 @@
 - `0x5_`
   - `0x50` (X)
   - `0x51` (X)
-  - `0x52` # TODO
+  - `0x52` # TODO 支持的纸张类型
   - `0x53` (X)
   - `0x54` (X)
   - `0x55` (X)
   - `0x56` (X)
-  - `0x57` # TODO
+  - `0x57` # TODO 支持的电机模式
   - `0x58` (X)
-  - `0x59` # TODO
+  - `0x59` # TODO 支持的语言
   - `0x5a` (X)
   - `0x5b` # TODO
   - `0x5c` (X)
@@ -133,11 +133,11 @@
 
 ### TODO
 
-- `0x52` # TODO `02, 03, 04, 00`
+- `0x52` # TODO SupportedGapTypes 支持的纸张类型 `02, 03, 04, 00`
 
-- `0x57` # TODO `0c`
+- `0x57` # TODO SupportedMotorModes 支持的电机模式 `0c`
 
-- `0x59` # TODO `61, 01`
+- `0x59` # TODO SupportedLanguages 支持的语言 `61, 01`
 
 - `0x5b` # TODO `00, 00`
 
@@ -172,7 +172,83 @@
 
 - `0x7f` # TODO `00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00`
 
-- (# FIXME) `设备->主机` `0x9f`
+#### 电池数量, hardwareFlags, softwareFlags
+
+- (# FIXME) `主机->设备` `0x84`
+  - 无参数
+
+```java
+byte[] byteArray = dataPackage.toByteArray(); // 0x84
+if (byteArray.length >= 25) {
+  this.printer_param_2.batteryCount = byteArray[23] & 255;
+} else {
+  this.printer_param_2.batteryCount = 2;
+}
+this.printer_param_2.hardwareFlags = dataPackageReader.readInt();
+if (dataPackageReader.getRemainingLength() >= 4) {
+  this.printer_param_2.softwareFlags = dataPackageReader.readInt();
+} else {
+  this.printer_param_2.softwareFlags = 1 | (this.printer_param_2.hardwareFlags & 16);
+}
+```
+
+#### peripheralFlags
+
+- (# FIXME) 读取 peripheralFlags `主机->设备` `0x83`
+  - 无参数
+- (# FIXME) peripheralFlags `设备->主机` `0x83`
+  - 如果数据长度 > 1 且 `[0]` = `0x01`:
+    - `[1]` peripheralFlags
+  - 否则
+    - `[0]` peripheralFlags
+
+#### 打印头温度/电池电压和充电状态
+
+- (# FIXME) 读取打印头温度/电池电压和充电状态 `主机->设备` `0x88`
+  - 参数 读取打印头温度
+    - `[0]` `0x01`
+  - 参数 读取电池电压和充电状态
+    - `[0]` `0x02`
+- (# FIXME) 打印头温度 `设备->主机` `0x88`
+  - `[0]` `0x01`
+  - `[2:1]` `((short) (((short) (((short) (0 | (readBytes[1] & 255))) << 8)) | (readBytes[2] & 255))) * 0.1d`
+- (# FIXME) 电池电压和充电状态 `设备->主机` `0x88`
+  - `[0]` `0x02`
+  - `[1..]`
+    ```java
+    if (readBytes.length > 10) {
+      this.printer_param_2.chargeStatus = readBytes[10] & 255;
+    }
+    if (readBytes.length > 8) {
+      this.printer_param_2.batteryVoltage = (((readBytes[7] & 255) << 8) + (readBytes[8] & 255)) * 0.01d;
+    }
+    ```
+
+#### `0x9e` 未知
+
+- (# FIXME) `主机->设备` `0x9e`
+
+#### 芯片ID/生产日期/升级CRC/stackHead, stackTail, heapHead, heapTail, maxStack, heapUnused, heapMinUnused
+
+- (# FIXME) `主机->设备` `0x9f`
+  - 参数 读取芯片ID
+    - `[0]` `0x0a`
+  - 参数 读取生产日期
+    - `[0]` `0x11`
+  - 参数 读取升级CRC
+    - `[0]` `0x29`
+  - 参数 读取 stackHead, stackTail, heapHead, heapTail, maxStack, heapUnused, heapMinUnused
+    - `[0]` `0x61` `需要进一步确定`
+
+#### 激活 `> 0x80` 命令
+
+- (# FIXME) `主机->设备` `0x80`
+  - 发送 `> 0x80` 的命令前, 需要发送这个命令
+  - 参数
+    - `[0]` `0x7f`
+- (# FIXME) `设备->主机` `0x80`
+  - `[0]` `0x7f`
+
 
 ### 设备信息
 

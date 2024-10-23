@@ -140,6 +140,52 @@ fn main() {
                 let timeout = Duration::from_secs(1);
 
                 let mut cmd_buf: Vec<u8> = Vec::new();
+                // let cmd = Command::new_host(HostCommand::Init);
+                // let cmd = cmd.package(vec![], false);
+                // cmd_buf.extend(&cmd);
+
+                // let cmd = Command::new_host(HostCommand::GetSetPrintPaperType);
+                // let cmd = cmd.package(vec![0x00], false);
+                // cmd_buf.extend(&cmd);
+                // let cmd = Command::new_host(HostCommand::GetSetPrintDarkness);
+                // let cmd = cmd.package(vec![0x01], false);
+                // cmd_buf.extend(&cmd);
+                // let cmd = Command::new_host(HostCommand::GetSetPrintSpeed);
+                // let cmd = cmd.package(vec![0x00], false);
+                // cmd_buf.extend(&cmd);
+                let cmd = Command::new_host(HostCommand::Test2);
+                let cmd = cmd.package(vec![0x7f], false);
+                cmd_buf.extend(&cmd);
+                let cmd = Command::new_host(HostCommand::Test);
+                let cmd = cmd.package(vec![], false);
+                cmd_buf.extend(&cmd);
+
+                let mut packed = packager::package_usb(cmd_buf);
+                packed.resize(64, 0);
+
+                handle
+                    .write_interrupt(out_ep.address, &packed, timeout)
+                    .unwrap();
+                // ---
+                // handle.set_active_configuration(in_ep.config).unwrap();
+                // handle.claim_interface(in_ep.iface).unwrap();
+                // handle
+                //     .set_alternate_setting(in_ep.iface, in_ep.setting)
+                //     .unwrap();
+
+                let mut buf = [0; 64];
+                let timeout = Duration::from_secs(1);
+                handle
+                    .read_interrupt(in_ep.address, &mut buf, timeout)
+                    .unwrap();
+                let buf = packager::unpackage_usb(buf.to_vec()).unwrap();
+                println!("{:02x?}", buf);
+
+                return;
+
+                let timeout = Duration::from_secs(1);
+
+                let mut cmd_buf: Vec<u8> = Vec::new();
                 // let cmd = Command::new_host(HostCommand::GetSetPrintDarkness);
                 // let cmd = cmd.package(0x01.to_variable_bytes(), false);
                 // cmd_buf.extend(&cmd);
@@ -151,7 +197,7 @@ fn main() {
                 // let cmd = cmd.package(vec![], false);
                 // cmd_buf.extend(&cmd);
 
-                let png_img = image::ImageReader::open("/home/sbchild/test.png").unwrap();
+                let png_img = image::ImageReader::open("/home/sbchild/sshl-ticket.png").unwrap();
                 let png_img = png_img.decode().unwrap();
                 let png_img = png_img.into_luma8();
                 let bitmap = Bitmap::from_gray_image(&png_img);
@@ -159,7 +205,11 @@ fn main() {
                 let cmds: Vec<u8> = parser.map(|x| x.parse()).flatten().flatten().collect();
 
                 cmd_buf.extend(PrintCommand::ResetPrinter.parse().iter().flatten());
-                cmd_buf.extend(cmds);
+                cmd_buf.extend(PrintCommand::FeedLines(2).parse().iter().flatten());
+                cmd_buf.extend(&cmds);
+                // cmd_buf.extend(PrintCommand::NextPaper.parse().iter().flatten());
+                // cmd_buf.extend(PrintCommand::FeedLines(2).parse().iter().flatten());
+                // cmd_buf.extend(&cmds);
                 cmd_buf.extend(PrintCommand::NextPaper.parse().iter().flatten());
                 println!("len={}", cmd_buf.len());
                 // println!("{:02x?}", cmd_buf);
@@ -217,35 +267,6 @@ fn main() {
                 // handle
                 //     .set_alternate_setting(out_ep.iface, out_ep.setting)
                 //     .unwrap();
-                let timeout = Duration::from_secs(1);
-
-                let mut cmd_buf: Vec<u8> = Vec::new();
-                // let cmd = Command::new_host(HostCommand::Init);
-                // let cmd = cmd.package(vec![], false);
-                // cmd_buf.extend(&cmd);
-                let cmd = Command::new_host(HostCommand::GetSetPrintDarkness);
-                let cmd = cmd.package(vec![], false);
-                cmd_buf.extend(&cmd);
-                let mut packed = packager::package_usb(cmd_buf);
-                packed.resize(512, 0);
-
-                handle
-                    .write_interrupt(out_ep.address, &packed, timeout)
-                    .unwrap();
-                // ---
-                // handle.set_active_configuration(in_ep.config).unwrap();
-                // handle.claim_interface(in_ep.iface).unwrap();
-                // handle
-                //     .set_alternate_setting(in_ep.iface, in_ep.setting)
-                //     .unwrap();
-                let mut buf = [0; 64];
-                let timeout = Duration::from_secs(1);
-
-                handle
-                    .read_interrupt(in_ep.address, &mut buf, timeout)
-                    .unwrap();
-                let buf = packager::unpackage_usb(buf.to_vec()).unwrap();
-                println!("{:02x?}", buf);
             }
             None => println!("could not find device"),
         },
