@@ -142,7 +142,7 @@ impl Iterator for BitmapParser {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.next_line_cursor >= self.im.height() {
-            println!("next_line_cursor={} None", self.next_line_cursor);
+            // println!("next_line_cursor={} None", self.next_line_cursor);
             return None;
         }
         // 跳过空行
@@ -155,10 +155,10 @@ impl Iterator for BitmapParser {
             }
         }
         if empty_line_counter > 0 {
-            println!(
-                "next_line_cursor={} FeedLines({})",
-                self.next_line_cursor, empty_line_counter
-            );
+            // println!(
+            //     "next_line_cursor={} FeedLines({})",
+            //     self.next_line_cursor, empty_line_counter
+            // );
             self.next_line_cursor += empty_line_counter;
             return Some(PrintCommand::FeedLines(empty_line_counter));
         }
@@ -177,10 +177,10 @@ impl Iterator for BitmapParser {
             }
         }
         if repeat_line_counter > 0 {
-            println!(
-                "next_line_cursor={} RepeatLine({})",
-                self.next_line_cursor, repeat_line_counter
-            );
+            // println!(
+            //     "next_line_cursor={} RepeatLine({})",
+            //     self.next_line_cursor, repeat_line_counter
+            // );
             self.next_line_cursor += repeat_line_counter;
             return Some(PrintCommand::RepeatLine(repeat_line_counter));
         }
@@ -205,12 +205,12 @@ impl Iterator for BitmapParser {
                 .take(last_black + 1)
                 .skip(first_black)
                 .collect();
-            println!(
-                "next_line_cursor={} SkipPrintLine({}, {})",
-                self.next_line_cursor,
-                first_black,
-                skipped.len()
-            );
+            // println!(
+            //     "next_line_cursor={} SkipPrintLine({}, {})",
+            //     self.next_line_cursor,
+            //     first_black,
+            //     skipped.len()
+            // );
             self.next_line_cursor += 1;
             return Some(PrintCommand::SkipPrintLine(
                 self.im.width(),
@@ -225,11 +225,11 @@ impl Iterator for BitmapParser {
             .into_iter()
             .take(last_black + 1)
             .collect();
-        println!(
-            "next_line_cursor={} PrintLine({})",
-            self.next_line_cursor,
-            line.len()
-        );
+        // println!(
+        //     "next_line_cursor={} PrintLine({})",
+        //     self.next_line_cursor,
+        //     line.len()
+        // );
         self.next_line_cursor += 1;
         return Some(PrintCommand::PrintLine(self.im.width(), line));
     }

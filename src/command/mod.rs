@@ -30,7 +30,8 @@ pub enum HostCommand {
     ReadManufacturer = 0x1f75,
     GetPrinterStatus = 0x1f70,
     // Test = 0x1f70,
-    Test2 = 0x1f80,
+    EnableHighCommand = 0x1f80,
+    GetSensorStatus = 0x1f88,
 }
 
 #[derive(Debug, Clone, Copy, FromPrimitive, ToPrimitive, PartialEq)]
@@ -44,6 +45,8 @@ pub enum DeviceCommand {
     PaperGap = 0x1f45,
     PrintDarkness = 0x1f43,
     PrinterStatus = 0x1f70,
+    HighCommand = 0x1f80,
+    SensorStatus = 0x1f88,
 }
 
 pub struct Command<Direction = DefaultState> {

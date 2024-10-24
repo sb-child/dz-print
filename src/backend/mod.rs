@@ -266,7 +266,7 @@ impl USBBackend {
                         }
                     }
                     if buf.len() != 0 {
-                        println!("OUT thread: writing {} bytes...", buf.len());
+                        // println!("OUT thread: writing {} bytes...", buf.len());
                         raw_packet_len -= buf.len();
                         buf.resize(max_out_size, 0);
                         let buf = packager::package_usb(buf); // + 2 bytes
