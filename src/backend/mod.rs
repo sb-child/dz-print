@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 use rusb::UsbContext;
 use thiserror::Error;
@@ -167,12 +167,61 @@ impl USBBackend {
         let ctx2 = ctx.clone();
         let device1 = device.clone();
         let device2 = device.clone();
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(1);
-        // IN thread
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel(1);
+        let max_in_size = 61;
+        let max_out_size = 61;
+        // OUT thread, send data to device
         tokio::task::spawn_blocking(move || {
+            let mut packet_buf = VecDeque::new();
+            let mut response_sender_buf = VecDeque::new();
+            let mut sender_buf = VecDeque::new();
+            let mut raw_packet_len = 0;
+
+            // let mut pending
+            loop {
+                if !close_sig_1.is_empty() {
+                    close_sig_1.blocking_recv().ok();
+                    return;
+                }
+                assert_eq!(
+                    response_sender_buf.len() + sender_buf.len(),
+                    packet_buf.len()
+                );
+
+                if raw_packet_len >= max_out_size {
+                    // let buf = Vec::with_capacity(max_out_size);
+                }
+
+                let cmd = cmd_rx.try_recv();
+                let cmd = match cmd {
+                    Ok(x) => x,
+                    Err(e) => match e {
+                        tokio::sync::mpsc::error::TryRecvError::Empty => {
+                            continue;
+                        }
+                        tokio::sync::mpsc::error::TryRecvError::Disconnected => {
+                            return;
+                        }
+                    },
+                };
+                match cmd {
+                    Command::WithResponse(p, sender) => {
+                        let packet_len = p.len();
+                        raw_packet_len += packet_len;
+                        packet_buf.push_back(p);
+                        response_sender_buf.push_back(sender);
+                    }
+                    Command::WithoutResponse(p, sender) => {
+                        let packet_len = p.len();
+                        raw_packet_len += packet_len;
+                        packet_buf.push_back(p);
+                        sender_buf.push_back(sender);
+                    }
+                }
+            }
             close_sig_1.is_empty();
         });
-        // OUT thread
+        // IN thread, receive data from device
         tokio::task::spawn_blocking(move || {
             close_sig_2.is_empty();
         });

@@ -14,9 +14,9 @@ Motherboard produced by DothanTech(dothantech.com)
 
 > 官方 SDK 简直太烂了... 错别字先不提, 代码里不知道写了多少封装类, 然后 PC 版重要的功能也 todo 了, Android 版倒是 2024 年还有更新...
 
-## 适用设备
+## Tested On / 已测试
 
-- [x] DP27P (已测试)
+- [x] DP27P
 
 ## Protocol / 协议
 
