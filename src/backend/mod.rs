@@ -171,8 +171,6 @@ impl USBBackend {
         }
         let (close_chan, mut close_sig_1) = tokio::sync::broadcast::channel(1);
         let mut close_sig_2 = close_chan.subscribe();
-        let device1 = device.clone();
-        let device2 = device.clone();
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel(1);
         let (recv_tx, mut recv_rx) = tokio::sync::mpsc::channel(1);
         let max_in_size = 64;
@@ -302,7 +300,7 @@ impl USBBackend {
                                 }
                             }
                         }
-                        thread::sleep(Duration::from_millis(5));
+                        // thread::sleep(Duration::from_millis(5));
                     }
                 }
 
