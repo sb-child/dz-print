@@ -4,6 +4,7 @@
 
 use std::{
     collections::VecDeque,
+    sync::{Arc, Mutex},
     thread,
     time::{self, Duration},
 };
@@ -11,7 +12,7 @@ use std::{
 use rusb::UsbContext;
 use thiserror::Error;
 
-use crate::command::packager;
+use crate::command::{self, packager};
 
 pub enum USBSelector {
     /// by VID and PID, pick the first match
@@ -38,14 +39,15 @@ struct Endpoint {
 }
 
 pub type CommandPayload = Vec<u8>;
+pub type CommandResponse = command::Command<command::Device>;
 /// Created -> Sent/Errored -> Received(CommandPayload)
 pub type CommandResultWithResponse =
-    tokio::sync::oneshot::Receiver<Option<tokio::sync::oneshot::Receiver<CommandPayload>>>;
+    tokio::sync::oneshot::Receiver<Option<tokio::sync::oneshot::Receiver<CommandResponse>>>;
 /// Created -> Sent/Errored
 pub type CommandResultWithoutResponse = tokio::sync::oneshot::Receiver<bool>;
 /// Created -> Sent/Errored -> Received(CommandPayload)
 pub type CommandResultSenderWithResponse =
-    tokio::sync::oneshot::Sender<Option<tokio::sync::oneshot::Receiver<CommandPayload>>>;
+    tokio::sync::oneshot::Sender<Option<tokio::sync::oneshot::Receiver<CommandResponse>>>;
 /// Created -> Sent/Errored
 pub type CommandResultSenderWithoutResponse = tokio::sync::oneshot::Sender<bool>;
 
@@ -169,18 +171,17 @@ impl USBBackend {
         }
         let (close_chan, mut close_sig_1) = tokio::sync::broadcast::channel(1);
         let mut close_sig_2 = close_chan.subscribe();
-        let ctx1 = ctx.clone();
-        let ctx2 = ctx.clone();
         let device1 = device.clone();
         let device2 = device.clone();
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel(1);
         let (recv_tx, mut recv_rx) = tokio::sync::mpsc::channel(1);
-        let max_in_size = 62;
+        let max_in_size = 64;
         let max_out_size = 62;
         let in_timeout = Duration::from_millis(500);
-        let out_timeout = Duration::from_millis(500);
+        let out_timeout = Duration::from_millis(100);
         // open device
-        let h = device.open()?;
+        let h = Arc::new(device.open()?);
+        h.reset().unwrap();
         match h.kernel_driver_active(out_ep.iface) {
             Ok(true) => {
                 h.detach_kernel_driver(out_ep.iface).ok();
@@ -193,13 +194,12 @@ impl USBBackend {
             }
             _ => {}
         };
-        h.reset().unwrap();
         h.claim_interface(out_ep.iface)?;
         h.set_alternate_setting(out_ep.iface, out_ep.setting)?;
         h.claim_interface(in_ep.iface)?;
         h.set_alternate_setting(in_ep.iface, in_ep.setting)?;
-        let h1 = device1.open()?;
-        let h2 = device2.open()?;
+        let h1 = h.clone();
+        let h2 = h.clone();
         // OUT thread, send data to device
         tokio::task::spawn_blocking(move || {
             let mut packet_buf = VecDeque::new();
@@ -211,7 +211,6 @@ impl USBBackend {
                     println!("OUT thread: closed");
                     return;
                 }
-                thread::sleep(Duration::from_millis(1));
                 if raw_packet_len >= max_out_size
                     || tim.elapsed() > time::Duration::from_millis(100)
                 {
@@ -274,7 +273,6 @@ impl USBBackend {
                         buf.resize(max_out_size, 0);
                         let buf = packager::package_usb(buf); // + 2 bytes
                         let res = h1.write_interrupt(out_ep.address, &buf, in_timeout);
-                        thread::sleep(Duration::from_millis(5));
                         match res {
                             Ok(_) => {
                                 for c in committed_cmds {
@@ -304,6 +302,7 @@ impl USBBackend {
                                 }
                             }
                         }
+                        thread::sleep(Duration::from_millis(5));
                     }
                 }
 
@@ -312,6 +311,7 @@ impl USBBackend {
                     Ok(x) => x,
                     Err(e) => match e {
                         tokio::sync::mpsc::error::TryRecvError::Empty => {
+                            thread::sleep(Duration::from_millis(1));
                             continue;
                         }
                         tokio::sync::mpsc::error::TryRecvError::Disconnected => {
@@ -336,13 +336,74 @@ impl USBBackend {
         });
         // IN thread, receive data from device
         tokio::task::spawn_blocking(move || {
+            let mut response_buf: VecDeque<
+                tokio::sync::oneshot::Sender<command::Command<command::Device>>,
+            > = VecDeque::new();
+            let mut received = Vec::new();
+            let mut parsed = VecDeque::new();
             loop {
                 if !close_sig_2.is_empty() {
                     close_sig_2.blocking_recv().ok();
-                    println!("OUT thread: closed");
+                    println!("IN thread: closed");
                     return;
                 }
-                thread::sleep(Duration::from_millis(1));
+                if received.len() > 0 {
+                    loop {
+                        let r = command::Command::parse_device_command(&received);
+                        let (cmd, len) = if let Some((cmd, len)) = r {
+                            (cmd, len)
+                        } else {
+                            break;
+                        };
+                        received = received.into_iter().skip(len).collect();
+                        parsed.push_back(cmd);
+                    }
+                }
+                if response_buf.len() > 0 {
+                    if let Some(r) = response_buf.pop_front() {
+                        if let Some(p) = parsed.pop_front() {
+                            r.send(p).ok();
+                        } else {
+                            response_buf.push_front(r);
+                        }
+                    }
+                    let mut buf = Vec::with_capacity(max_in_size);
+                    buf.resize(max_in_size, 0);
+                    let res = h2.read_interrupt(in_ep.address, &mut buf, out_timeout);
+                    match res {
+                        Ok(_) => {}
+                        Err(e) => match e {
+                            rusb::Error::Timeout => {}
+                            e @ _ => {
+                                println!("IN thread: USB error: {e:?}");
+                                return;
+                            }
+                        },
+                    }
+                    let unpacked = packager::unpackage_usb(buf);
+                    let unpacked = match unpacked {
+                        Some(x) => x,
+                        None => {
+                            continue;
+                        }
+                    };
+                    received.extend(unpacked);
+                }
+                let resp = recv_rx.try_recv();
+                let resp = match resp {
+                    Ok(x) => x,
+                    Err(e) => match e {
+                        tokio::sync::mpsc::error::TryRecvError::Empty => {
+                            thread::sleep(Duration::from_millis(1));
+                            continue;
+                        }
+                        tokio::sync::mpsc::error::TryRecvError::Disconnected => {
+                            println!("IN thread: response channel closed");
+                            return;
+                        }
+                    },
+                };
+                response_buf.push_back(resp);
             }
         });
         Ok(USBBackend {

@@ -28,7 +28,8 @@ pub enum HostCommand {
     GetSetPrintPaperGap = 0x1f45,
     GetSetPrintDarkness = 0x1f43,
     ReadManufacturer = 0x1f75,
-    Test = 0x1f70,
+    GetPrinterStatus = 0x1f70,
+    // Test = 0x1f70,
     Test2 = 0x1f80,
 }
 
@@ -42,6 +43,7 @@ pub enum DeviceCommand {
     PaperType = 0x1f42,
     PaperGap = 0x1f45,
     PrintDarkness = 0x1f43,
+    PrinterStatus = 0x1f70,
 }
 
 pub struct Command<Direction = DefaultState> {
@@ -113,7 +115,8 @@ impl Command {
         }
     }
 
-    pub fn parse_device_command(cmd: Vec<u8>) -> Option<(Command<Device>, usize)> {
+    pub fn parse_device_command(cmd: impl AsRef<Vec<u8>>) -> Option<(Command<Device>, usize)> {
+        let cmd = cmd.as_ref();
         if cmd.len() < 4 {
             return None;
         }
