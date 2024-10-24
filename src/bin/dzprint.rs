@@ -32,7 +32,59 @@ async fn main_fn() -> anyhow::Result<()> {
     ))
     .await?;
 
-    // return Ok(());
+    let png_img = image::ImageReader::open("/home/sbchild/yndtk.png").unwrap();
+    let png_img = png_img.decode().unwrap();
+    let png_img = png_img.into_luma8();
+    let bitmap = Bitmap::from_gray_image(&png_img);
+    let parser = BitmapParser::new(bitmap);
+    // let cmds: Vec<u8> = parser.map(|x| x.parse()).flatten().flatten().collect();
+
+    // cmd_buf.extend(PrintCommand::ResetPrinter.parse().iter().flatten());
+    // cmd_buf.extend(PrintCommand::FeedLines(2).parse().iter().flatten());
+    // cmd_buf.extend(&cmds);
+    // // cmd_buf.extend(PrintCommand::NextPaper.parse().iter().flatten());
+    // // cmd_buf.extend(PrintCommand::FeedLines(2).parse().iter().flatten());
+    // // cmd_buf.extend(&cmds);
+    // cmd_buf.extend(PrintCommand::NextPaper.parse().iter().flatten());
+    // println!("len={}", cmd_buf.len());
+
+    let (cmd, _) = backend::Command::without_response(
+        PrintCommand::ResetPrinter
+            .parse()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
+    b.push(cmd).await.ok();
+
+    for c in parser {
+        for c in c.parse() {
+            let (cmd, _) = backend::Command::without_response(c);
+            b.push(cmd).await.ok();
+        }
+    }
+
+    let (cmd, _) = backend::Command::without_response(
+        PrintCommand::FeedLines(2)
+            .parse()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
+    b.push(cmd).await.ok();
+
+    let (cmd, _) = backend::Command::without_response(
+        PrintCommand::NextPaper
+            .parse()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
+    b.push(cmd).await.ok();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+    return Ok(());
     match rusb::Context::new() {
         Ok(mut ctx) => match open_device(&mut ctx, 0x3533, 0x5c15) {
             Some((mut device, device_desc, mut handle)) => {
@@ -181,9 +233,9 @@ async fn main_fn() -> anyhow::Result<()> {
                 let cmd = Command::new_host(HostCommand::Test2);
                 let cmd = cmd.package(vec![0x7f], false);
                 cmd_buf.extend(&cmd);
-                let cmd = Command::new_host(HostCommand::Test);
-                let cmd = cmd.package(vec![], false);
-                cmd_buf.extend(&cmd);
+                // let cmd = Command::new_host(HostCommand::Test);
+                // let cmd = cmd.package(vec![], false);
+                // cmd_buf.extend(&cmd);
 
                 let mut packed = packager::package_usb(cmd_buf);
                 packed.resize(64, 0);
@@ -206,7 +258,7 @@ async fn main_fn() -> anyhow::Result<()> {
                 let buf = packager::unpackage_usb(buf.to_vec()).unwrap();
                 println!("{:02x?}", buf);
 
-                return Ok(());
+                // return Ok(());
 
                 let timeout = Duration::from_secs(1);
 
@@ -222,7 +274,7 @@ async fn main_fn() -> anyhow::Result<()> {
                 // let cmd = cmd.package(vec![], false);
                 // cmd_buf.extend(&cmd);
 
-                let png_img = image::ImageReader::open("/home/sbchild/sshl-ticket.png").unwrap();
+                let png_img = image::ImageReader::open("/home/sbchild/yndtk.png").unwrap();
                 let png_img = png_img.decode().unwrap();
                 let png_img = png_img.into_luma8();
                 let bitmap = Bitmap::from_gray_image(&png_img);
@@ -252,13 +304,14 @@ async fn main_fn() -> anyhow::Result<()> {
                 // let cmd = Command::new_host(HostCommand::ReadSoftwareVersion);
                 // let cmd = cmd.package(vec![], false);
                 // cmd_buf.extend(&cmd);
-
-                for p in cmd_buf.chunks(61) {
-                    let packed = packager::package_usb(p.to_vec());
-                    handle
-                        .write_interrupt(out_ep.address, &packed, timeout)
-                        .unwrap();
-                    thread::sleep(Duration::from_millis(1));
+                for p in cmd_buf.chunks(1024) {
+                    for p in p.chunks(62) {
+                        let packed = packager::package_usb(p.to_vec());
+                        handle
+                            .write_interrupt(out_ep.address, &packed, timeout)
+                            .unwrap();
+                    }
+                    thread::sleep(Duration::from_millis(80));
                 }
 
                 // packed.resize(64, 0);

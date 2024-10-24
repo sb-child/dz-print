@@ -2,10 +2,16 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    thread,
+    time::{self, Duration},
+};
 
 use rusb::UsbContext;
 use thiserror::Error;
+
+use crate::command::packager;
 
 pub enum USBSelector {
     /// by VID and PID, pick the first match
@@ -168,28 +174,137 @@ impl USBBackend {
         let device1 = device.clone();
         let device2 = device.clone();
         let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel(1);
-        let max_in_size = 61;
-        let max_out_size = 61;
+        let (recv_tx, mut recv_rx) = tokio::sync::mpsc::channel(1);
+        let max_in_size = 62;
+        let max_out_size = 62;
+        let in_timeout = Duration::from_millis(500);
+        let out_timeout = Duration::from_millis(500);
+        // open device
+        let h = device.open()?;
+        match h.kernel_driver_active(out_ep.iface) {
+            Ok(true) => {
+                h.detach_kernel_driver(out_ep.iface).ok();
+            }
+            _ => {}
+        };
+        match h.kernel_driver_active(in_ep.iface) {
+            Ok(true) => {
+                h.detach_kernel_driver(in_ep.iface).ok();
+            }
+            _ => {}
+        };
+        h.reset().unwrap();
+        h.claim_interface(out_ep.iface)?;
+        h.set_alternate_setting(out_ep.iface, out_ep.setting)?;
+        h.claim_interface(in_ep.iface)?;
+        h.set_alternate_setting(in_ep.iface, in_ep.setting)?;
+        let h1 = device1.open()?;
+        let h2 = device2.open()?;
         // OUT thread, send data to device
         tokio::task::spawn_blocking(move || {
             let mut packet_buf = VecDeque::new();
-            let mut response_sender_buf = VecDeque::new();
-            let mut sender_buf = VecDeque::new();
             let mut raw_packet_len = 0;
-
-            // let mut pending
+            let mut tim = time::Instant::now();
             loop {
                 if !close_sig_1.is_empty() {
                     close_sig_1.blocking_recv().ok();
+                    println!("OUT thread: closed");
                     return;
                 }
-                assert_eq!(
-                    response_sender_buf.len() + sender_buf.len(),
-                    packet_buf.len()
-                );
-
-                if raw_packet_len >= max_out_size {
-                    // let buf = Vec::with_capacity(max_out_size);
+                thread::sleep(Duration::from_millis(1));
+                if raw_packet_len >= max_out_size
+                    || tim.elapsed() > time::Duration::from_millis(100)
+                {
+                    tim = time::Instant::now();
+                    let mut buf = Vec::with_capacity(max_out_size);
+                    let mut committed_cmds = Vec::new();
+                    loop {
+                        if buf.len() >= max_out_size {
+                            break;
+                        }
+                        let p = if let Some(p) = packet_buf.pop_front() {
+                            p
+                        } else {
+                            break;
+                        };
+                        match p {
+                            Command::WithResponse(p, sender) => {
+                                if p.len() + buf.len() > max_out_size {
+                                    let next: Vec<u8> = p
+                                        .iter()
+                                        .skip(max_out_size - buf.len())
+                                        .map(|x| x.to_owned())
+                                        .collect();
+                                    let curr: Vec<u8> = p
+                                        .iter()
+                                        .take(max_out_size - buf.len())
+                                        .map(|x| x.to_owned())
+                                        .collect();
+                                    packet_buf.push_front(Command::WithResponse(next, sender));
+                                    buf.extend(curr);
+                                    break;
+                                }
+                                buf.extend(p);
+                                committed_cmds.push(Command::WithResponse(vec![], sender));
+                            }
+                            Command::WithoutResponse(p, sender) => {
+                                if p.len() + buf.len() > max_out_size {
+                                    let next: Vec<u8> = p
+                                        .iter()
+                                        .skip(max_out_size - buf.len())
+                                        .map(|x| x.to_owned())
+                                        .collect();
+                                    let curr: Vec<u8> = p
+                                        .iter()
+                                        .take(max_out_size - buf.len())
+                                        .map(|x| x.to_owned())
+                                        .collect();
+                                    packet_buf.push_front(Command::WithoutResponse(next, sender));
+                                    buf.extend(curr);
+                                    break;
+                                }
+                                buf.extend(p);
+                                committed_cmds.push(Command::WithoutResponse(vec![], sender));
+                            }
+                        }
+                    }
+                    if buf.len() != 0 {
+                        println!("OUT thread: writing {} bytes...", buf.len());
+                        raw_packet_len -= buf.len();
+                        buf.resize(max_out_size, 0);
+                        let buf = packager::package_usb(buf); // + 2 bytes
+                        let res = h1.write_interrupt(out_ep.address, &buf, in_timeout);
+                        thread::sleep(Duration::from_millis(5));
+                        match res {
+                            Ok(_) => {
+                                for c in committed_cmds {
+                                    match c {
+                                        Command::WithResponse(_, sender) => {
+                                            let (tx, rx) = tokio::sync::oneshot::channel();
+                                            sender.send(Some(rx)).ok();
+                                            recv_tx.blocking_send(tx).ok();
+                                        }
+                                        Command::WithoutResponse(_, sender) => {
+                                            sender.send(true).ok();
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                println!("OUT thread: USB error: {:?}", e);
+                                for c in committed_cmds {
+                                    match c {
+                                        Command::WithResponse(_, sender) => {
+                                            sender.send(None).ok();
+                                        }
+                                        Command::WithoutResponse(_, sender) => {
+                                            sender.send(false).ok();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 let cmd = cmd_rx.try_recv();
@@ -200,6 +315,7 @@ impl USBBackend {
                             continue;
                         }
                         tokio::sync::mpsc::error::TryRecvError::Disconnected => {
+                            println!("OUT thread: command channel closed");
                             return;
                         }
                     },
@@ -208,22 +324,26 @@ impl USBBackend {
                     Command::WithResponse(p, sender) => {
                         let packet_len = p.len();
                         raw_packet_len += packet_len;
-                        packet_buf.push_back(p);
-                        response_sender_buf.push_back(sender);
+                        packet_buf.push_back(Command::WithResponse(p, sender));
                     }
                     Command::WithoutResponse(p, sender) => {
                         let packet_len = p.len();
                         raw_packet_len += packet_len;
-                        packet_buf.push_back(p);
-                        sender_buf.push_back(sender);
+                        packet_buf.push_back(Command::WithoutResponse(p, sender));
                     }
                 }
             }
-            close_sig_1.is_empty();
         });
         // IN thread, receive data from device
         tokio::task::spawn_blocking(move || {
-            close_sig_2.is_empty();
+            loop {
+                if !close_sig_2.is_empty() {
+                    close_sig_2.blocking_recv().ok();
+                    println!("OUT thread: closed");
+                    return;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
         });
         Ok(USBBackend {
             close_chan,
@@ -233,6 +353,13 @@ impl USBBackend {
     pub async fn new(selector: USBSelector) -> Result<Self, BackendError> {
         let x = tokio::task::spawn_blocking(|| Self::new_usb_backend_blocking(selector)).await?;
         x
+    }
+
+    pub async fn push(
+        &self,
+        cmd: Command,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<Command>> {
+        self.command_tx.send(cmd).await
     }
 }
 impl Drop for USBBackend {
