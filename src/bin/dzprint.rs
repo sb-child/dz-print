@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+use std::{thread, time::Duration};
+
 use dz_print::{
     backend,
     command::{self, HostCommand},
@@ -83,6 +85,8 @@ async fn main_fn() -> anyhow::Result<()> {
     );
     b.push(cmd).await.ok();
 
+    let mut errored = false;
+
     for c in parser {
         if let Some(c) = c.parse() {
             for c in c {
@@ -91,40 +95,79 @@ async fn main_fn() -> anyhow::Result<()> {
                 // ch.await.ok();
             }
         } else {
-            // let (cmd1, chan1) = backend::Command::with_response(
-            //     command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
-            // );
-            let (cmd2, chan2) = backend::Command::with_response(
-                command::Command::new_host(HostCommand::GetSensorStatus).package(vec![0x01], false),
+            let (cmd1, chan1) = backend::Command::with_response(
+                command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
             );
-            // b.push(cmd1).await.ok();
-            b.push(cmd2).await.ok();
-            // let chan = chan1.await?;
-            // if let Some(chan) = chan {
-            //     let resp = chan.await?;
-            //     println!("Received: {:?}", resp.get_command());
-            // } else {
-            //     println!("Failed");
-            // }
-            let chan = chan2.await?;
+            // let (cmd2, chan2) = backend::Command::with_response(
+            //     command::Command::new_host(HostCommand::GetSensorStatus).package(vec![0x01], false),
+            // );
+            b.push(cmd1).await.ok();
+            // b.push(cmd2).await.ok();
+            let chan = chan1.await?;
             if let Some(chan) = chan {
-                let resp = chan.await?;
-                let payload = resp.get_payload();
-                let temp1 = u16::from_be_bytes([payload[1], payload[2]]);
-                let temp2 = u16::from_be_bytes([payload[3], payload[4]]);
-                let temp3 = u16::from_be_bytes([payload[5], payload[6]]);
-                let temp4 = u16::from_be_bytes([payload[7], payload[8]]);
-                println!(
-                    "Received: {:?} 1={} 2={} 3={} 4={}",
-                    resp.get_command(),
-                    temp1,
-                    temp2,
-                    temp3,
-                    temp4
-                );
+                let resp = chan.await;
+                let resp = if let Ok(resp) = resp {
+                    resp
+                } else {
+                    errored = true;
+                    break;
+                };
+                let stat = resp.get_payload()[0];
+                println!("Received: {:?}", stat);
+                if stat == 35 {
+                    println!("no paper");
+                    break;
+                }
             } else {
                 println!("Failed");
             }
+            // let chan = chan2.await?;
+            // if let Some(chan) = chan {
+            //     let resp = chan.await?;
+            //     let payload = resp.get_payload();
+            //     let temp1 = u16::from_be_bytes([payload[1], payload[2]]);
+            //     let temp2 = u16::from_be_bytes([payload[3], payload[4]]);
+            //     let temp3 = u16::from_be_bytes([payload[5], payload[6]]);
+            //     let temp4 = u16::from_be_bytes([payload[7], payload[8]]);
+            //     println!(
+            //         "Received: {:?} 1={} 2={} 3={} 4={}",
+            //         resp.get_command(),
+            //         temp1,
+            //         temp2,
+            //         temp3,
+            //         temp4
+            //     );
+            // } else {
+            //     println!("Failed");
+            // }
+        }
+    }
+
+    if errored {
+        println!("reset device...");
+        let (cmd, chan) = backend::Command::reset();
+        b.push(cmd).await.ok();
+        chan.await.ok();
+        println!("error:");
+        let (cmd1, chan1) = backend::Command::with_response(
+            command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
+        );
+        b.push(cmd1).await.ok();
+        let chan = chan1.await?;
+        if let Some(chan) = chan {
+            let resp = chan.await;
+            let resp = if let Ok(resp) = resp {
+                resp
+            } else {
+                unreachable!()
+            };
+            let stat = resp.get_payload()[0];
+            println!("Received: {:?}", stat);
+            if stat == 35 {
+                println!("no paper");
+            }
+        } else {
+            println!("Failed");
         }
     }
 

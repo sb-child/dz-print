@@ -54,6 +54,7 @@ pub type CommandResultSenderWithoutResponse = tokio::sync::oneshot::Sender<bool>
 pub enum Command {
     WithResponse(CommandPayload, CommandResultSenderWithResponse),
     WithoutResponse(CommandPayload, CommandResultSenderWithoutResponse),
+    Reset(CommandResultSenderWithoutResponse),
 }
 
 impl Command {
@@ -65,6 +66,11 @@ impl Command {
     pub fn without_response(payload: CommandPayload) -> (Command, CommandResultWithoutResponse) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         (Command::WithoutResponse(payload, tx), rx)
+    }
+
+    pub fn reset() -> (Command, CommandResultWithoutResponse) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        (Command::Reset(tx), rx)
     }
 }
 
@@ -263,6 +269,9 @@ impl USBBackend {
                                 buf.extend(p);
                                 committed_cmds.push(Command::WithoutResponse(vec![], sender));
                             }
+                            Command::Reset(_) => {
+                                unreachable!()
+                            }
                         }
                     }
                     if buf.len() != 0 {
@@ -270,7 +279,9 @@ impl USBBackend {
                         raw_packet_len -= buf.len();
                         buf.resize(max_out_size, 0);
                         let buf = packager::package_usb(buf); // + 2 bytes
+                        println!("writing...");
                         let res = h1.write_interrupt(out_ep.address, &buf, in_timeout);
+                        println!("write done");
                         match res {
                             Ok(_) => {
                                 for c in committed_cmds {
@@ -282,6 +293,9 @@ impl USBBackend {
                                         }
                                         Command::WithoutResponse(_, sender) => {
                                             sender.send(true).ok();
+                                        }
+                                        Command::Reset(_) => {
+                                            unreachable!()
                                         }
                                     }
                                 }
@@ -295,6 +309,9 @@ impl USBBackend {
                                         }
                                         Command::WithoutResponse(_, sender) => {
                                             sender.send(false).ok();
+                                        }
+                                        Command::Reset(_) => {
+                                            unreachable!()
                                         }
                                     }
                                 }
@@ -329,6 +346,12 @@ impl USBBackend {
                         raw_packet_len += packet_len;
                         packet_buf.push_back(Command::WithoutResponse(p, sender));
                     }
+                    Command::Reset(sender) => {
+                        let r: Result<(), rusb::Error> = h1.reset();
+                        thread::sleep(Duration::from_secs(1));
+                        sender.send(r.is_ok()).ok();
+                        println!("reset device: {:?}", r);
+                    }
                 }
             }
         });
@@ -339,6 +362,7 @@ impl USBBackend {
             > = VecDeque::new();
             let mut received = Vec::new();
             let mut parsed = VecDeque::new();
+            let mut timeout_count = 0;
             loop {
                 if !close_sig_2.is_empty() {
                     close_sig_2.blocking_recv().ok();
@@ -358,20 +382,37 @@ impl USBBackend {
                     }
                 }
                 if response_buf.len() > 0 {
+                    if timeout_count > 10 {
+                        println!("clear response buffer");
+                        loop {
+                            if let Some(_) = response_buf.pop_front() {
+                            } else {
+                                break;
+                            };
+                        }
+                        timeout_count = 0;
+                        continue;
+                    }
                     if let Some(r) = response_buf.pop_front() {
                         if let Some(p) = parsed.pop_front() {
                             r.send(p).ok();
+                            timeout_count = 0;
+                            continue;
                         } else {
                             response_buf.push_front(r);
                         }
                     }
                     let mut buf = Vec::with_capacity(max_in_size);
                     buf.resize(max_in_size, 0);
+                    println!("reading...");
                     let res = h2.read_interrupt(in_ep.address, &mut buf, out_timeout);
+                    println!("read done");
                     match res {
                         Ok(_) => {}
                         Err(e) => match e {
-                            rusb::Error::Timeout => {}
+                            rusb::Error::Timeout => {
+                                timeout_count += 1;
+                            }
                             e @ _ => {
                                 println!("IN thread: USB error: {e:?}");
                                 return;
@@ -385,6 +426,7 @@ impl USBBackend {
                             continue;
                         }
                     };
+                    println!("received: {:X?}", unpacked);
                     received.extend(unpacked);
                 }
                 let resp = recv_rx.try_recv();
