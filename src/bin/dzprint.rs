@@ -32,7 +32,7 @@ async fn main_fn() -> anyhow::Result<()> {
     // 正常 100
     // 较快 110
     // 最快 120
-    let parser = BitmapParser::new(bitmap, 50);
+    let parser = BitmapParser::new(bitmap, 120);
 
     let (cmd, chan) = backend::Command::without_response(
         command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x00], false),
@@ -41,7 +41,7 @@ async fn main_fn() -> anyhow::Result<()> {
     chan.await.ok();
 
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x00], false),
+        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x04], false),
     );
     b.push(cmd).await.ok();
     chan.await.ok();

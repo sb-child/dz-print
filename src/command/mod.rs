@@ -120,6 +120,7 @@ impl Command {
 
     pub fn parse_device_command(cmd: impl AsRef<Vec<u8>>) -> Option<(Command<Device>, usize)> {
         let cmd = cmd.as_ref();
+        // println!("{:X?}", cmd);
         if cmd.len() < 4 {
             return None;
         }
