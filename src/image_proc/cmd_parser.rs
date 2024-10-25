@@ -17,14 +17,14 @@ pub enum PrintCommand {
     RepeatLine(u32),
     /// 定位到下一张纸
     NextPaper,
+    /// 断点,
+    Breakpoint,
 }
 
 impl PrintCommand {
-    pub fn parse(&self) -> Vec<Vec<u8>> {
+    pub fn parse(&self) -> Option<Vec<Vec<u8>>> {
         match self {
-            PrintCommand::ResetPrinter => {
-                vec![vec![0x1b, 0x40]]
-            }
+            PrintCommand::ResetPrinter => Some(vec![vec![0x1b, 0x40]]),
             PrintCommand::FeedLines(ln) => {
                 let mut buf = vec![];
                 let max_feed = 255;
@@ -40,7 +40,7 @@ impl PrintCommand {
                     };
                     buf.push(vec![0x1b, 0x4a, x as u8]);
                 }
-                buf
+                Some(buf)
             }
             PrintCommand::PrintLine(mw, dots) => {
                 if *mw > 65535 {
@@ -60,7 +60,7 @@ impl PrintCommand {
                 c.extend(&[0x1f, 0x2a]);
                 c.extend(w16.to_le_bytes());
                 c.extend(b);
-                vec![c]
+                Some(vec![c])
             }
             PrintCommand::SkipPrintLine(mw, skip, dots) => {
                 if *mw > 1528 || skip > mw {
@@ -96,7 +96,7 @@ impl PrintCommand {
                 c.extend(&[0x1f, 0x2b]);
                 c.extend([snaped_skip_bytes as u8, bytes_to_print as u8]);
                 c.extend(b);
-                vec![c]
+                Some(vec![c])
             }
             PrintCommand::RepeatLine(ln) => {
                 let mut buf = vec![];
@@ -113,11 +113,10 @@ impl PrintCommand {
                     };
                     buf.push(vec![0x1f, 0x2e, x as u8 - 1]);
                 }
-                buf
+                Some(buf)
             }
-            PrintCommand::NextPaper => {
-                vec![vec![0x0c]]
-            }
+            PrintCommand::NextPaper => Some(vec![vec![0x0c]]),
+            PrintCommand::Breakpoint => None,
         }
     }
 }
@@ -125,14 +124,20 @@ impl PrintCommand {
 pub struct BitmapParser {
     im: Bitmap,
     next_line_cursor: u32,
+    breakpoint: u32,
+    prev_breakpoint: u32,
+    first_breakpoint: bool,
 }
 
 impl BitmapParser {
-    pub fn new(im: Bitmap) -> Self {
+    pub fn new(im: Bitmap, bp: u32) -> Self {
         println!("image= w{} x h{}", im.width(), im.height());
         BitmapParser {
             im,
             next_line_cursor: 0,
+            breakpoint: bp,
+            prev_breakpoint: 0,
+            first_breakpoint: false,
         }
     }
 }
@@ -145,9 +150,24 @@ impl Iterator for BitmapParser {
             // println!("next_line_cursor={} None", self.next_line_cursor);
             return None;
         }
+        if self.breakpoint > 0
+            && ((self.next_line_cursor % self.breakpoint == 0
+                && self.prev_breakpoint != self.next_line_cursor)
+                || !self.first_breakpoint)
+        {
+            self.prev_breakpoint = self.next_line_cursor;
+            self.first_breakpoint = true;
+            return Some(PrintCommand::Breakpoint);
+        }
         // 跳过空行
         let mut empty_line_counter = 0;
         for i in self.next_line_cursor..self.im.height() {
+            if self.breakpoint > 0
+                && empty_line_counter > 0
+                && (self.next_line_cursor + empty_line_counter) % self.breakpoint == 0
+            {
+                break;
+            }
             if self.im.is_line_empty(i) {
                 empty_line_counter += 1;
             } else {
@@ -168,6 +188,12 @@ impl Iterator for BitmapParser {
         for i in self.next_line_cursor..self.im.height() {
             // 第 0 行前面是万万不能看的
             if self.next_line_cursor == 0 {
+                break;
+            }
+            if self.breakpoint > 0
+                && repeat_line_counter > 0
+                && (self.next_line_cursor + repeat_line_counter) % self.breakpoint == 0
+            {
                 break;
             }
             if self.im.same_lines(self.next_line_cursor - 1, i) {
@@ -241,7 +267,7 @@ mod test {
 
     #[test]
     fn test_cmd_parse() {
-        let x = PrintCommand::FeedLines(2233).parse();
+        let x = PrintCommand::FeedLines(2233).parse().unwrap();
         assert_eq!(
             x,
             vec![
@@ -259,10 +285,12 @@ mod test {
             x
         );
 
-        let x = PrintCommand::NextPaper.parse();
+        let x = PrintCommand::NextPaper.parse().unwrap();
         assert_eq!(x, vec![vec![0x0c]], "unexcepted result: {:02x?}", x);
 
-        let x = PrintCommand::PrintLine(10, vec![false, false, true, true, true]).parse();
+        let x = PrintCommand::PrintLine(10, vec![false, false, true, true, true])
+            .parse()
+            .unwrap();
         assert_eq!(
             x,
             vec![vec![0x1f, 0x2a, 0x05, 0x00, 0x38]],
@@ -270,7 +298,7 @@ mod test {
             x
         );
 
-        let x = PrintCommand::RepeatLine(8964).parse();
+        let x = PrintCommand::RepeatLine(8964).parse().unwrap();
         assert_eq!(
             x,
             vec![
@@ -326,10 +354,12 @@ mod test {
             x
         );
 
-        let x = PrintCommand::ResetPrinter.parse();
+        let x = PrintCommand::ResetPrinter.parse().unwrap();
         assert_eq!(x, vec![vec![0x1b, 0x40]], "unexcepted result: {:02x?}", x);
 
-        let x = PrintCommand::SkipPrintLine(10, 5, vec![false, true]).parse();
+        let x = PrintCommand::SkipPrintLine(10, 5, vec![false, true])
+            .parse()
+            .unwrap();
         assert_eq!(
             x,
             vec![vec![0x1f, 0x2b, 0x00, 0x02, 0x02, 0x00]],
@@ -337,7 +367,7 @@ mod test {
             x
         );
 
-        let x = PrintCommand::RepeatLine(0).parse();
+        let x = PrintCommand::RepeatLine(0).parse().unwrap();
         assert_eq!(x, Vec::<Vec<u8>>::new(), "unexcepted result: {:02x?}", x);
 
         // println!("{:02x?}", x);

@@ -22,11 +22,29 @@ async fn main_fn() -> anyhow::Result<()> {
     ))
     .await?;
 
-    let png_img = image::ImageReader::open("/home/sbchild/yndtk.png").unwrap();
+    let png_img = image::ImageReader::open("/home/sbchild/test.png").unwrap();
     let png_img = png_img.decode().unwrap();
     let png_img = png_img.into_luma8();
     let bitmap = Bitmap::from_gray_image(&png_img);
-    let parser = BitmapParser::new(bitmap);
+    // 断点:
+    // 最慢 50
+    // 较慢 75
+    // 正常 100
+    // 较快 110
+    // 最快 120
+    let parser = BitmapParser::new(bitmap, 50);
+
+    let (cmd, chan) = backend::Command::without_response(
+        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x00], false),
+    );
+    b.push(cmd).await.ok();
+    chan.await.ok();
+
+    let (cmd, chan) = backend::Command::without_response(
+        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x00], false),
+    );
+    b.push(cmd).await.ok();
+    chan.await.ok();
 
     let (cmd, chan) = backend::Command::with_response(
         command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
@@ -37,7 +55,6 @@ async fn main_fn() -> anyhow::Result<()> {
     if let Some(chan) = chan {
         println!("waiting for response");
         let resp = chan.await?;
-
         println!("received: {:?}", resp.get_command());
     } else {
         println!("failed");
@@ -59,22 +76,21 @@ async fn main_fn() -> anyhow::Result<()> {
     let (cmd, _) = backend::Command::without_response(
         PrintCommand::ResetPrinter
             .parse()
+            .unwrap()
             .into_iter()
             .flatten()
             .collect::<Vec<_>>(),
     );
     b.push(cmd).await.ok();
 
-    let mut x = 0;
-
     for c in parser {
-        for c in c.parse() {
-            let (cmd, ch) = backend::Command::without_response(c);
-            b.push(cmd).await.ok();
-            // ch.await.ok();
-        }
-        x += 1;
-        if x % 50 == 0 {
+        if let Some(c) = c.parse() {
+            for c in c {
+                let (cmd, ch) = backend::Command::without_response(c);
+                b.push(cmd).await.ok();
+                // ch.await.ok();
+            }
+        } else {
             // let (cmd1, chan1) = backend::Command::with_response(
             //     command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
             // );
@@ -115,6 +131,7 @@ async fn main_fn() -> anyhow::Result<()> {
     let (cmd, _) = backend::Command::without_response(
         PrintCommand::FeedLines(2)
             .parse()
+            .unwrap()
             .into_iter()
             .flatten()
             .collect::<Vec<_>>(),
@@ -124,6 +141,7 @@ async fn main_fn() -> anyhow::Result<()> {
     let (cmd, _) = backend::Command::without_response(
         PrintCommand::NextPaper
             .parse()
+            .unwrap()
             .into_iter()
             .flatten()
             .collect::<Vec<_>>(),
