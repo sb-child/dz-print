@@ -208,6 +208,8 @@ impl USBBackend {
         tokio::task::spawn_blocking(move || {
             let mut packet_buf = VecDeque::new();
             let mut raw_packet_len = 0;
+            let mut total_raw_bytes = 0;
+            let mut total_bytes = 0;
             let mut tim = time::Instant::now();
             loop {
                 if !close_sig_1.is_empty() {
@@ -275,13 +277,16 @@ impl USBBackend {
                         }
                     }
                     if buf.len() != 0 {
-                        // println!("OUT thread: writing {} bytes...", buf.len());
+                        total_bytes += buf.len();
+                        println!(
+                            "OUT thread: writing {} bytes, total {} bytes",
+                            buf.len(),
+                            total_bytes
+                        );
                         raw_packet_len -= buf.len();
                         buf.resize(max_out_size, 0);
                         let buf = packager::package_usb(buf); // + 2 bytes
-                        println!("writing...");
                         let res = h1.write_interrupt(out_ep.address, &buf, in_timeout);
-                        println!("write done");
                         match res {
                             Ok(_) => {
                                 for c in committed_cmds {
@@ -326,7 +331,7 @@ impl USBBackend {
                     Ok(x) => x,
                     Err(e) => match e {
                         tokio::sync::mpsc::error::TryRecvError::Empty => {
-                            thread::sleep(Duration::from_millis(1));
+                            // thread::sleep(Duration::from_millis(1));
                             continue;
                         }
                         tokio::sync::mpsc::error::TryRecvError::Disconnected => {
@@ -404,9 +409,7 @@ impl USBBackend {
                     }
                     let mut buf = Vec::with_capacity(max_in_size);
                     buf.resize(max_in_size, 0);
-                    println!("reading...");
                     let res = h2.read_interrupt(in_ep.address, &mut buf, out_timeout);
-                    println!("read done");
                     match res {
                         Ok(_) => {}
                         Err(e) => match e {
@@ -426,7 +429,7 @@ impl USBBackend {
                             continue;
                         }
                     };
-                    println!("received: {:X?}", unpacked);
+                    // println!("received: {:X?}", unpacked);
                     received.extend(unpacked);
                 }
                 let resp = recv_rx.try_recv();
@@ -434,7 +437,7 @@ impl USBBackend {
                     Ok(x) => x,
                     Err(e) => match e {
                         tokio::sync::mpsc::error::TryRecvError::Empty => {
-                            thread::sleep(Duration::from_millis(1));
+                            // thread::sleep(Duration::from_millis(1));
                             continue;
                         }
                         tokio::sync::mpsc::error::TryRecvError::Disconnected => {

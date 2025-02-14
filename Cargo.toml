@@ -17,8 +17,16 @@ image = "0.25.2"
 rusb = "0.9.4"
 num-traits = "0.2"
 num-derive = "0.4"
-strum = { version = "0.26", features = ["derive"] }
+strum = { version = "0.27", features = ["derive"] }
 rayon = "1.10.0"
 tokio = { version = "1.41.0", features = ["full"] }
-thiserror = "1.0.65"
+thiserror = "2.0.3"
 anyhow = "1.0.91"
+axum = { version = "0.8.1", features = ["tracing", "http2", "macros"] }
+axum-server = { version = "0.7", features = [
+    "tls-rustls",
+], default-features = false }
+tracing = "0.1.40"
+tower-http = { version = "0.6.1", features = ["trace"] }
+tracing-subscriber = "0.3.18"
+serde = { version = "1.0.215", features = ["derive"] }

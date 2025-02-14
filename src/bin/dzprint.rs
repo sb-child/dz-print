@@ -24,7 +24,7 @@ async fn main_fn() -> anyhow::Result<()> {
     ))
     .await?;
 
-    let png_img = image::ImageReader::open("/home/sbchild/test.png").unwrap();
+    let png_img = image::ImageReader::open("/home/sbchild/temp.png").unwrap();
     let png_img = png_img.decode().unwrap();
     let png_img = png_img.into_luma8();
     let bitmap = Bitmap::from_gray_image(&png_img);
@@ -34,32 +34,50 @@ async fn main_fn() -> anyhow::Result<()> {
     // 正常 100
     // 较快 110
     // 最快 120
-    let parser = BitmapParser::new(bitmap, 120);
+    let parser = BitmapParser::new(bitmap, 0);
 
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x00], false),
+        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x04], false),
     );
     b.push(cmd).await.ok();
     chan.await.ok();
 
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x04], false),
+        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x00], false),
     );
     b.push(cmd).await.ok();
     chan.await.ok();
 
-    let (cmd, chan) = backend::Command::with_response(
-        command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
-    );
-    b.push(cmd).await.ok();
-    println!("pushed");
-    let chan = chan.await?;
-    if let Some(chan) = chan {
-        println!("waiting for response");
-        let resp = chan.await?;
-        println!("received: {:?}", resp.get_command());
-    } else {
-        println!("failed");
+    let mut succ = false;
+    for i in 0..3 {
+        let (cmd, chan) = backend::Command::with_response(
+            command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
+        );
+        b.push(cmd).await.ok();
+        println!("发送指令");
+        let chan = chan.await?;
+        if let Some(chan) = chan {
+            println!("等待设备响应");
+            let resp = chan.await;
+            match resp {
+                Ok(resp) => {
+                    println!("接收到回复: {:?}", resp.get_command());
+                    succ = true;
+                }
+                Err(_) => {
+                    println!("接收失败, 剩余重试 {i} 次...");
+                    continue;
+                }
+            }
+        } else {
+            println!("指令无响应");
+            continue;
+        }
+        break;
+    }
+    if !succ {
+        println!("初始化失败");
+        return Ok(());
     }
 
     let (cmd, chan) = backend::Command::with_response(
@@ -191,7 +209,7 @@ async fn main_fn() -> anyhow::Result<()> {
     );
     b.push(cmd).await.ok();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     return Ok(());
 }

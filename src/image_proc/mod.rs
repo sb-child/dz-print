@@ -19,7 +19,7 @@ impl Bitmap {
         im.width();
         im.height();
         // black = true, white = false
-        let pix: Vec<bool> = im.par_iter().map(|x| *x == 0).collect();
+        let pix: Vec<bool> = im.par_iter().map(|x| *x <= 128).collect();
         Bitmap {
             w: im.width(),
             h: im.height(),

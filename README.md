@@ -18,6 +18,13 @@ Motherboard produced by DothanTech(dothantech.com)
 
 - [x] DP27P
 
+## Roadmap / 路线图
+
+- [x] USB
+- [ ] 蓝牙(BLE)
+- [x] 底层 API
+- [ ] 打印调度器
+
 ## Protocol / 协议
 
 [点击查看](protocol.md)当前分析出的打印机协议和命令
