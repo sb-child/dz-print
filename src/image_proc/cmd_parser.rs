@@ -17,7 +17,7 @@ pub enum PrintCommand {
     RepeatLine(u32),
     /// 定位到下一张纸
     NextPaper,
-    /// 断点,
+    /// 断点
     Breakpoint,
 }
 
