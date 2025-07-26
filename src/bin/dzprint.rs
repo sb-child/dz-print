@@ -37,7 +37,13 @@ async fn main_fn() -> anyhow::Result<()> {
     let parser = BitmapParser::new(bitmap, 120);
 
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x00], false),
+        command::Command::new_host(HostCommand::GetSetPrintPaperType).package(vec![0x00], false),
+    );
+    b.push(cmd).await.ok();
+    chan.await.ok();
+
+    let (cmd, chan) = backend::Command::without_response(
+        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x05], false),
     );
     b.push(cmd).await.ok();
     chan.await.ok();

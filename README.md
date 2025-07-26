@@ -24,6 +24,8 @@ Motherboard produced by DothanTech(dothantech.com)
 
 ## 运行
 
+依赖 `dbus-devel`
+
 ```bash
 cargo run --bin dzprint
 ```

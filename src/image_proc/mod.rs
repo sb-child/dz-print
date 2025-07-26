@@ -5,6 +5,7 @@
 pub mod cmd_parser;
 use image::GrayImage;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use tiny_skia::Pixmap;
 
 #[derive(Clone)]
 pub struct Bitmap {
@@ -20,6 +21,25 @@ impl Bitmap {
         im.height();
         // black = true, white = false
         let pix: Vec<bool> = im.par_iter().map(|x| *x == 0).collect();
+        Bitmap {
+            w: im.width(),
+            h: im.height(),
+            pix,
+        }
+    }
+
+    /// black (0) pixel will convert to `true`, otherwise to `false`
+    pub fn from_pixmap(im: &Pixmap) -> Bitmap {
+        im.width();
+        im.height();
+        // > 127 black = true, otherwise white = false
+        let pix: Vec<bool> = im
+            .pixels()
+            .par_iter()
+            .map(|px| px.demultiply())
+            .map(|px| px.red() > 127 || px.green() > 127 || px.blue() > 127)
+            .collect();
+
         Bitmap {
             w: im.width(),
             h: im.height(),

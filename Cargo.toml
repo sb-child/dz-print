@@ -23,3 +23,8 @@ tokio = { version = "1.41.0", features = ["full"] }
 thiserror = "2.0.12"
 anyhow = "1.0.91"
 clap = { version = "4.5", features = ["derive"] }
+typst = "0.13.1"
+typst-render = "0.13.1"
+ttf-parser = "0.25.1"
+chrono = "0.4.41"
+tiny-skia = "0.11.4"
