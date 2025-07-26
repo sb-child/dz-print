@@ -38,6 +38,7 @@ impl Bitmap {
             .par_iter()
             .map(|px| px.demultiply())
             .map(|px| px.red() > 127 || px.green() > 127 || px.blue() > 127)
+            .map(|x| !x)
             .collect();
 
         Bitmap {

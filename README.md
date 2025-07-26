@@ -22,12 +22,15 @@ Motherboard produced by DothanTech(dothantech.com)
 
 [点击查看](protocol.md)当前分析出的打印机协议和命令
 
-## 运行
+## 开发和使用 / Development and How to use
 
-依赖 `dbus-devel`
+- 依赖 `dbus-devel`
+- 记得设置并重载 udev 规则, 类似 `SUBSYSTEM=="usb", ATTRS{idVendor}=="3533", ATTRS{idProduct}=="5c15", MODE="0666"`
 
 ```bash
 cargo run --bin dzprint
+cargo run --bin dzprint_typst
+cargo run --bin dzcli
 ```
 
 ## License / 许可证
