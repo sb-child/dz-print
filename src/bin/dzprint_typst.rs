@@ -73,7 +73,7 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
     chan.await?;
     println!("set darkness");
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x05], false),
+        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x09], false),
     );
     b.push(cmd).await?;
     chan.await?;
