@@ -17,7 +17,7 @@ use typst::{
     syntax::{FileId, Source, VirtualPath},
     text::{Font, FontBook, FontInfo},
     utils::LazyHash,
-    Document, Library, World,
+    Library, World,
 };
 
 #[tokio::main]
@@ -73,13 +73,13 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
     chan.await?;
     println!("set darkness");
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x09], false),
+        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x05], false),
     );
     b.push(cmd).await?;
     chan.await?;
     println!("set speed");
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x04], false),
+        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x02], false),
     );
     b.push(cmd).await?;
     chan.await?;
@@ -176,16 +176,16 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
         }
         panic!("print errored");
     }
-    println!("feed 2 lines");
-    let (cmd, _) = backend::Command::without_response(
-        PrintCommand::FeedLines(2)
-            .parse()
-            .unwrap()
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>(),
-    );
-    b.push(cmd).await?;
+    // println!("feed 2 lines");
+    // let (cmd, _) = backend::Command::without_response(
+    //     PrintCommand::FeedLines(2)
+    //         .parse()
+    //         .unwrap()
+    //         .into_iter()
+    //         .flatten()
+    //         .collect::<Vec<_>>(),
+    // );
+    // b.push(cmd).await?;
     println!("next paper");
     let (cmd, _) = backend::Command::without_response(
         PrintCommand::NextPaper
@@ -243,11 +243,13 @@ impl World for Minecraft {
         }
     }
 
-    fn file(&self, id: FileId) -> FileResult<Bytes> {
+    fn file(&self, _id: FileId) -> FileResult<Bytes> {
+        // todo
         Err(FileError::AccessDenied)
     }
 
     fn font(&self, index: usize) -> Option<Font> {
+        // 需要优化一下?
         let font_unifont_bin = include_bytes!("../asset/unifont-16.0.04.ttf");
         let font_unifont = Font::new(Bytes::new(font_unifont_bin), 0);
         match index {
@@ -256,8 +258,8 @@ impl World for Minecraft {
         }
     }
 
-    fn today(&self, offset: Option<i64>) -> Option<Datetime> {
-        let now = Local::now();
+    fn today(&self, _offset: Option<i64>) -> Option<Datetime> {
+        let _now = Local::now();
         // todo
         None
     }
