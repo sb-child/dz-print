@@ -64,7 +64,10 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
     );
     println!("converting to bitmap");
     let bitmap = Bitmap::from_pixmap(&pm);
-    let parser = BitmapParser::new(bitmap, 120);
+    // 这个 bp 参数其实是 magic number，以下是建议值
+    // 最慢 50 | 较慢 75 | 正常 100 | 较快 110 | 最快 120
+    // 可能受打印浓度影响
+    let parser = BitmapParser::new(bitmap, 100);
     println!("set paper type");
     let (cmd, chan) = backend::Command::without_response(
         command::Command::new_host(HostCommand::GetSetPrintPaperType).package(vec![0x00], false),
@@ -131,6 +134,8 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
                 let resp = if let Ok(resp) = resp {
                     resp
                 } else {
+                    // 如果收不到东西，那一定是打印机 buffer 炸了
+                    // 这是打印机固件写的烂，我没什么好办法
                     println!("receive error");
                     errored = true;
                     break;
@@ -164,7 +169,7 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
             let resp = if let Ok(resp) = resp {
                 resp
             } else {
-                unreachable!()
+                unreachable!("炸了炸了，但我不知道怎么修")
             };
             let stat = resp.get_payload()[0];
             println!("status: {:?}", stat);

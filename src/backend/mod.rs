@@ -212,7 +212,7 @@ impl USBBackend {
             loop {
                 if !close_sig_1.is_empty() {
                     close_sig_1.blocking_recv().ok();
-                    println!("OUT thread: closed");
+                    // println!("OUT thread: closed");
                     return;
                 }
                 if raw_packet_len >= max_out_size
@@ -279,9 +279,9 @@ impl USBBackend {
                         raw_packet_len -= buf.len();
                         buf.resize(max_out_size, 0);
                         let buf = packager::package_usb(buf); // + 2 bytes
-                        println!("writing...");
+                        // println!("writing...");
                         let res = h1.write_interrupt(out_ep.address, &buf, in_timeout);
-                        println!("write done");
+                        // println!("write done");
                         match res {
                             Ok(_) => {
                                 for c in committed_cmds {
@@ -301,7 +301,7 @@ impl USBBackend {
                                 }
                             }
                             Err(e) => {
-                                println!("OUT thread: USB error: {:?}", e);
+                                // println!("OUT thread: USB error: {:?}", e);
                                 for c in committed_cmds {
                                     match c {
                                         Command::WithResponse(_, sender) => {
@@ -330,7 +330,7 @@ impl USBBackend {
                             continue;
                         }
                         tokio::sync::mpsc::error::TryRecvError::Disconnected => {
-                            println!("OUT thread: command channel closed");
+                            // println!("OUT thread: command channel closed");
                             return;
                         }
                     },
@@ -350,7 +350,7 @@ impl USBBackend {
                         let r: Result<(), rusb::Error> = h1.reset();
                         thread::sleep(Duration::from_secs(1));
                         sender.send(r.is_ok()).ok();
-                        println!("reset device: {:?}", r);
+                        // println!("reset device: {:?}", r);
                     }
                 }
             }
@@ -366,7 +366,7 @@ impl USBBackend {
             loop {
                 if !close_sig_2.is_empty() {
                     close_sig_2.blocking_recv().ok();
-                    println!("IN thread: closed");
+                    // println!("IN thread: closed");
                     return;
                 }
                 if received.len() > 0 {
@@ -383,7 +383,7 @@ impl USBBackend {
                 }
                 if response_buf.len() > 0 {
                     if timeout_count > 10 {
-                        println!("clear response buffer");
+                        // println!("clear response buffer");
                         loop {
                             if let Some(_) = response_buf.pop_front() {
                             } else {
@@ -404,9 +404,9 @@ impl USBBackend {
                     }
                     let mut buf = Vec::with_capacity(max_in_size);
                     buf.resize(max_in_size, 0);
-                    println!("reading...");
+                    // println!("reading...");
                     let res = h2.read_interrupt(in_ep.address, &mut buf, out_timeout);
-                    println!("read done");
+                    // println!("read done");
                     match res {
                         Ok(_) => {}
                         Err(e) => match e {
@@ -414,7 +414,7 @@ impl USBBackend {
                                 timeout_count += 1;
                             }
                             e @ _ => {
-                                println!("IN thread: USB error: {e:?}");
+                                // println!("IN thread: USB error: {e:?}");
                                 return;
                             }
                         },
@@ -426,7 +426,7 @@ impl USBBackend {
                             continue;
                         }
                     };
-                    println!("received: {:X?}", unpacked);
+                    // println!("received: {:X?}", unpacked);
                     received.extend(unpacked);
                 }
                 let resp = recv_rx.try_recv();
@@ -438,7 +438,7 @@ impl USBBackend {
                             continue;
                         }
                         tokio::sync::mpsc::error::TryRecvError::Disconnected => {
-                            println!("IN thread: response channel closed");
+                            // println!("IN thread: response channel closed");
                             return;
                         }
                     },

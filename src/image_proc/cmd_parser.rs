@@ -130,8 +130,12 @@ pub struct BitmapParser {
 }
 
 impl BitmapParser {
+    /// 打印命令转换器
+    /// 
+    /// - im: 位图
+    /// - bp: 每隔多少行插入一个断点命令
     pub fn new(im: Bitmap, bp: u32) -> Self {
-        println!("image= w{} x h{}", im.width(), im.height());
+        // println!("image= w{} x h{}", im.width(), im.height());
         BitmapParser {
             im,
             next_line_cursor: 0,
