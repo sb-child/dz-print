@@ -9,11 +9,12 @@ Motherboard produced by DothanTech(dothantech.com)
 ## Communication / 通讯方式
 
 - [x] USB
-- [ ] 蓝牙(TODO)
+- [ ] 蓝牙 (TODO)
 
 ## Tested On / 已测试
 
 - [x] DP27P
+- [ ] ... (help wanted)
 
 ## Notice / 说明
 
@@ -23,7 +24,8 @@ Motherboard produced by DothanTech(dothantech.com)
 
 ## Protocol / 协议
 
-[点击查看](protocol.md)当前分析出的打印机协议和命令
+- [点击查看](protocol.md)当前分析出的打印机协议和命令
+- [点击查看](print-status.md)当前已知的打印机状态类型
 
 或者直接看[源码](src/command/mod.rs)
 
@@ -47,7 +49,7 @@ cargo run --bin dzcli
 
 `src/`
 - `asset/` 资源文件，目前被示例代码使用
-- `backend/` 通讯实现
+- `backend/` 底层通讯实现
 - `bin/` 可执行的示例代码
   - 看上面
 - `command/` 通讯协议
@@ -62,3 +64,5 @@ cargo run --bin dzcli
 ## License / 许可证
 
 MPL-2.0, see [LICENSE](./LICENSE)
+
+- `src/asset` 中的文件可能是从别的地方复制过来的, 请查看[这个](src/asset/README.md)
