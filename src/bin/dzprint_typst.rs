@@ -252,8 +252,11 @@ impl World for Minecraft {
         // 需要优化一下?
         let font_unifont_bin = include_bytes!("../asset/unifont-16.0.04.ttf");
         let font_unifont = Font::new(Bytes::new(font_unifont_bin), 0);
+        let font_unifontex_bin = include_bytes!("../asset/UnifontExMono.ttf");
+        let font_unifontex = Font::new(Bytes::new(font_unifontex_bin), 0);
         match index {
             0 => font_unifont,
+            1 => font_unifontex,
             _ => None,
         }
     }
@@ -271,8 +274,13 @@ fn make_library() -> Library {
 
 fn make_fontbook() -> FontBook {
     let mut fb = FontBook::new();
-    let font_unifont = include_bytes!("../asset/unifont-16.0.04.ttf");
-    let font_unifont_info = FontInfo::new(font_unifont, 0).unwrap();
+    let font_unifont_bin = include_bytes!("../asset/unifont-16.0.04.ttf");
+    let mut font_unifont_info = FontInfo::new(font_unifont_bin, 0).unwrap();
+    font_unifont_info.family = "Unifont".to_string();
     fb.push(font_unifont_info);
+    let font_unifontex_bin = include_bytes!("../asset/UnifontExMono.ttf");
+    let mut font_unifontex_info = FontInfo::new(font_unifontex_bin, 0).unwrap();
+    font_unifontex_info.family = "UnifontExMono".to_string();
+    fb.push(font_unifontex_info);
     fb
 }
