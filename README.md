@@ -53,7 +53,7 @@ cargo run --bin dzcli
 - `bin/` 可执行的示例代码
   - 看上面
 - `command/` 通讯协议
-  - `checksum.rs` 纠错码计算
+  - `checksum.rs` 校验码计算
   - `mod.rs` 命令列表和单命令编解码
   - `packager.rs` 命令打包
   - `variable_bytes.rs` 某种妙妙编解码
