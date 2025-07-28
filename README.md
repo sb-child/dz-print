@@ -61,6 +61,13 @@ cargo run --bin dzcli
   - `mod.rs` 位图类型和转换
   - `cmd_parser.rs` 打印命令生成
 
+## TODO
+
+- 优化流控，精确控制命令打包和发送过程
+- dzcli, CLI 和 Web 界面，集成查改设置，打印位图和 Typst 功能
+- handle 多设备，设备断连和故障处理
+- 蓝牙！
+
 ## License / 许可证
 
 MPL-2.0, see [LICENSE](./LICENSE)
