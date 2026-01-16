@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use super::variable_bytes::{FromVariableBytes, VariableBytesI32};
+use super::variable_bytes::{ToVariableBytes, VariableBytesI32};
 
 pub fn package_usb(x: Vec<u8>) -> Vec<u8> {
     let packet_len_buf = (x.len() as i32).to_variable_bytes();
@@ -21,11 +21,7 @@ pub fn unpackage_usb(x: Vec<u8>) -> Option<Vec<u8>> {
     if packet_type != 0x1e {
         return None;
     }
-    let (packet_len, b) = if let Some(x) = vec![x[1], x[2]].from_variable_bytes() {
-        x
-    } else {
-        return None;
-    };
+    let (packet_len, b) = vec![x[1], x[2]].to_variable_bytes()?;
     let prefix_len = 1 + b;
     if x.len() < prefix_len + packet_len as usize {
         return None;

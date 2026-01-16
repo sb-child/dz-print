@@ -43,7 +43,8 @@ enum Subcommands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = CommandArgs::parse();
+    tracing_subscriber::fmt::init();
+    let _args = CommandArgs::parse();
     main_fn().await
 }
 

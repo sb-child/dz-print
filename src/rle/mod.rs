@@ -2,7 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+// wip
+
 /// RLE encode processing function
+#[allow(clippy::ptr_arg, clippy::needless_return)]
 pub fn m304a(arr: &mut Vec<i8>, dzint: &mut i32, b: i8, mut i: i32, line_bytes: i32) -> bool {
     while i >= 63 {
         if *dzint + 2 > line_bytes {
@@ -43,7 +46,7 @@ pub fn m304a(arr: &mut Vec<i8>, dzint: &mut i32, b: i8, mut i: i32, line_bytes: 
                     return false;
                 }
             } else {
-                if *dzint + 1 <= line_bytes {
+                if *dzint < line_bytes {
                     arr[{
                         let x = *dzint;
                         *dzint = x + 1;
@@ -109,6 +112,7 @@ pub fn m304a(arr: &mut Vec<i8>, dzint: &mut i32, b: i8, mut i: i32, line_bytes: 
 }
 
 /// RLE encode
+#[allow(clippy::ptr_arg, clippy::needless_return)]
 pub fn m305a(arr: Vec<i8>, i: i32, arr2: &mut Vec<i8>, line_bytes: i32) -> i32 {
     if i > 0 {
         let mut dzint = 0;

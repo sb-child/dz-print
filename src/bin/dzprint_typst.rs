@@ -26,6 +26,7 @@ use typst::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
     main_fn().await
 }
 
@@ -54,7 +55,7 @@ async fn main_fn() -> anyhow::Result<()> {
     for p in doc.pages {
         println!("rendering page {}", p.number);
         // 576px = 48mm
-        let r = typst_render::render(&p, 576.0 / (2.8346456693 * 48.0));
+        let r = typst_render::render(&p, 576.0 / (2.834_645_7 * 48.0));
         print_page(&b, r).await?;
     }
     Ok(())
@@ -279,6 +280,7 @@ impl World for Minecraft {
 
 fn make_library() -> Library {
     let mut library = Library::builder().build();
+    #[allow(unused_variables)]
     let scope = library.global.scope_mut();
     // scope.define_func::<QrCodeFunc>();
     library
@@ -287,6 +289,7 @@ fn make_library() -> Library {
 pub struct QrCodeFunc {}
 
 impl NativeFunc for QrCodeFunc {
+    #[allow(unreachable_code, unused_variables)]
     fn data() -> &'static NativeFuncData {
         let data = NativeFuncData {
             function: typst_library::foundations::NativeFuncPtr(&Self::f),
@@ -307,6 +310,7 @@ impl NativeFunc for QrCodeFunc {
 // Fn(&mut Engine, Tracked<Context>, &mut Args) -> SourceResult<Value> + Send + Sync;
 
 impl QrCodeFunc {
+    #[allow(unreachable_code, unused_variables)]
     pub fn f(
         engine: &mut typst_library::engine::Engine,
         context: typst::comemo::Tracked<typst_library::foundations::Context>,

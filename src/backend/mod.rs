@@ -11,6 +11,7 @@ use std::{
 
 use rusb::UsbContext;
 use thiserror::Error;
+use tracing::{debug, error, info, trace, warn};
 
 use crate::command::{self, packager};
 
@@ -191,13 +192,13 @@ impl USBBackend {
             Ok(true) => {
                 h.detach_kernel_driver(out_ep.iface).ok();
             }
-            _ => {}
+            e => warn!("out_ep: kernel_driver_active() returns error: {e:?}"),
         };
         match h.kernel_driver_active(in_ep.iface) {
             Ok(true) => {
                 h.detach_kernel_driver(in_ep.iface).ok();
             }
-            _ => {}
+            e => warn!("in_ep: kernel_driver_active() returns error: {e:?}"),
         };
         h.claim_interface(out_ep.iface)?;
         h.set_alternate_setting(out_ep.iface, out_ep.setting)?;
@@ -213,7 +214,7 @@ impl USBBackend {
             loop {
                 if !close_sig_1.is_empty() {
                     close_sig_1.blocking_recv().ok();
-                    // println!("OUT thread: closed");
+                    debug!("OUT thread: closed");
                     return;
                 }
                 if raw_packet_len >= max_out_size
@@ -275,8 +276,8 @@ impl USBBackend {
                             }
                         }
                     }
-                    if buf.len() != 0 {
-                        // println!("OUT thread: writing {} bytes...", buf.len());
+                    if !buf.is_empty() {
+                        debug!("OUT thread: writing {} bytes...", buf.len());
                         raw_packet_len -= buf.len();
                         buf.resize(max_out_size, 0);
                         let buf = packager::package_usb(buf); // + 2 bytes
@@ -301,8 +302,8 @@ impl USBBackend {
                                     }
                                 }
                             }
-                            Err(_e) => {
-                                // println!("OUT thread: USB error: {:?}", e);
+                            Err(e) => {
+                                error!("OUT thread: USB error: {:?}", e);
                                 for c in committed_cmds {
                                     match c {
                                         Command::WithResponse(_, sender) => {
@@ -331,7 +332,7 @@ impl USBBackend {
                             continue;
                         }
                         tokio::sync::mpsc::error::TryRecvError::Disconnected => {
-                            // println!("OUT thread: command channel closed");
+                            debug!("OUT thread: command channel closed");
                             return;
                         }
                     },
@@ -351,7 +352,7 @@ impl USBBackend {
                         let r: Result<(), rusb::Error> = h1.reset();
                         thread::sleep(Duration::from_secs(1));
                         sender.send(r.is_ok()).ok();
-                        // println!("reset device: {:?}", r);
+                        info!("reset device: {:?}", r);
                     }
                 }
             }
@@ -367,10 +368,10 @@ impl USBBackend {
             loop {
                 if !close_sig_2.is_empty() {
                     close_sig_2.blocking_recv().ok();
-                    // println!("IN thread: closed");
+                    debug!("IN thread: closed");
                     return;
                 }
-                if received.len() > 0 {
+                if !received.is_empty() {
                     loop {
                         let r = command::Command::parse_device_command(&received);
                         let (cmd, len) = if let Some((cmd, len)) = r {
@@ -382,15 +383,10 @@ impl USBBackend {
                         parsed.push_back(cmd);
                     }
                 }
-                if response_buf.len() > 0 {
+                if !response_buf.is_empty() {
                     if timeout_count > 10 {
-                        // println!("clear response buffer");
-                        loop {
-                            if let Some(_) = response_buf.pop_front() {
-                            } else {
-                                break;
-                            };
-                        }
+                        debug!("clear response buffer");
+                        while response_buf.pop_front().is_some() {}
                         timeout_count = 0;
                         continue;
                     }
@@ -403,8 +399,7 @@ impl USBBackend {
                             response_buf.push_front(r);
                         }
                     }
-                    let mut buf = Vec::with_capacity(max_in_size);
-                    buf.resize(max_in_size, 0);
+                    let mut buf = vec![0; max_in_size];
                     // println!("reading...");
                     let res = h2.read_interrupt(in_ep.address, &mut buf, out_timeout);
                     // println!("read done");
@@ -414,8 +409,8 @@ impl USBBackend {
                             rusb::Error::Timeout => {
                                 timeout_count += 1;
                             }
-                            _e @ _ => {
-                                // println!("IN thread: USB error: {e:?}");
+                            e => {
+                                error!("IN thread: USB error: {e:?}");
                                 return;
                             }
                         },
@@ -427,7 +422,7 @@ impl USBBackend {
                             continue;
                         }
                     };
-                    // println!("received: {:X?}", unpacked);
+                    trace!("received: {:X?}", unpacked);
                     received.extend(unpacked);
                 }
                 let resp = recv_rx.try_recv();
@@ -439,7 +434,7 @@ impl USBBackend {
                             continue;
                         }
                         tokio::sync::mpsc::error::TryRecvError::Disconnected => {
-                            // println!("IN thread: response channel closed");
+                            debug!("IN thread: response channel closed");
                             return;
                         }
                     },

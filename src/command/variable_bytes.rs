@@ -34,14 +34,14 @@ impl VariableBytesI32 for i32 {
     }
 }
 
-pub trait FromVariableBytes {
-    fn from_variable_bytes(&self) -> Option<(i32, usize)>;
-    fn from_variable_bytes_fixed(&self, x: usize) -> Option<i32>;
+pub trait ToVariableBytes {
+    fn to_variable_bytes(&self) -> Option<(i32, usize)>;
+    fn to_variable_bytes_fixed(&self, x: usize) -> Option<i32>;
 }
 
-impl FromVariableBytes for Vec<u8> {
-    fn from_variable_bytes(&self) -> Option<(i32, usize)> {
-        if self.len() >= 1 && self[0] & 0b11000000 != 0b11000000 {
+impl ToVariableBytes for Vec<u8> {
+    fn to_variable_bytes(&self) -> Option<(i32, usize)> {
+        if !self.is_empty() && self[0] & 0b11000000 != 0b11000000 {
             // 1 byte
             Some((self[0] as i32, 1))
         } else if self.len() >= 2 && self[0] & 0b11000000 == 0b11000000 {
@@ -57,7 +57,7 @@ impl FromVariableBytes for Vec<u8> {
         }
     }
 
-    fn from_variable_bytes_fixed(&self, x: usize) -> Option<i32> {
+    fn to_variable_bytes_fixed(&self, x: usize) -> Option<i32> {
         if self.len() < x {
             return None;
         }
@@ -97,7 +97,7 @@ impl FromVariableBytes for Vec<u8> {
 
 #[cfg(test)]
 mod test {
-    use crate::command::variable_bytes::FromVariableBytes;
+    use crate::command::variable_bytes::ToVariableBytes;
 
     use super::VariableBytesI32;
 
@@ -106,7 +106,7 @@ mod test {
         for i in 0..16384 {
             let a: i32 = i;
             let v = a.to_variable_bytes();
-            let b = v.from_variable_bytes();
+            let b = v.to_variable_bytes();
             if let Some((b, s)) = b {
                 if a != b {
                     panic!("failure: {} {:02x?} {} {}", a, v, b, s)
@@ -126,7 +126,7 @@ mod test {
             v.push(89);
             v.push(06);
             v.push(04);
-            let b = v.from_variable_bytes();
+            let b = v.to_variable_bytes();
             if let Some((b, s)) = b {
                 if a != b {
                     panic!("failure: {} {:02x?} {} {}", a, v, b, s)

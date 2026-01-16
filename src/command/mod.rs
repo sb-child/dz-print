@@ -8,7 +8,7 @@ pub mod variable_bytes;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::marker::PhantomData;
-use variable_bytes::{FromVariableBytes, VariableBytesI32};
+use variable_bytes::{ToVariableBytes, VariableBytesI32};
 pub struct DefaultState;
 pub struct Host;
 pub struct Device;
@@ -60,14 +60,9 @@ impl Command<Host> {
         let payload_len_buf = (p.len() as i32).to_variable_bytes();
         // 命令组 + 命令类型 + 数据长度 + 数据... + 校验和
         let packet_len = 2 + payload_len_buf.len() + p.len() + 1;
-        let mut buf = Vec::<u8>::with_capacity(packet_len);
-        for _ in 0..packet_len {
-            buf.push(0);
-        }
+        let mut buf = vec![0; packet_len];
         (buf[0], buf[1]) = self.get_header();
-        for i in 0..payload_len_buf.len() {
-            buf[2 + i] = payload_len_buf[i];
-        }
+        buf[2..(payload_len_buf.len() + 2)].copy_from_slice(&payload_len_buf[..]);
         for i in 0..p.len() {
             buf[2 + payload_len_buf.len() + i] = p[i];
         }
@@ -114,7 +109,7 @@ impl Command {
         Command {
             cmd: Commands::Host(cmd),
             payload: vec![],
-            direction: PhantomData::default(),
+            direction: PhantomData,
         }
     }
 
@@ -126,12 +121,8 @@ impl Command {
         }
         let (cg, ct) = (cmd[0], cmd[1]);
         let c = u16::from_be_bytes([cg, ct]);
-        let c = if let Some(c) = DeviceCommand::from_u16(c) {
-            c
-        } else {
-            return None;
-        };
-        let packet_len_bytes = vec![cmd[2], cmd[3]].from_variable_bytes();
+        let c = DeviceCommand::from_u16(c)?;
+        let packet_len_bytes = vec![cmd[2], cmd[3]].to_variable_bytes();
         let (packet_len, packet_len_offset) = if let Some(x) = packet_len_bytes {
             (x.0, x.1)
         } else {
@@ -141,8 +132,7 @@ impl Command {
         if cmd.len() < command_len {
             return None;
         }
-        let mut payload = Vec::<u8>::with_capacity(packet_len as usize);
-        payload.resize(packet_len as usize, 0);
+        let mut payload = vec![0; packet_len as usize];
         payload.copy_from_slice(
             &cmd[2 + packet_len_offset..2 + packet_len_offset + packet_len as usize],
         );
@@ -160,7 +150,7 @@ impl Command {
             Command {
                 cmd: Commands::Device(c),
                 payload,
-                direction: PhantomData::default(),
+                direction: PhantomData,
             },
             command.len(),
         ))

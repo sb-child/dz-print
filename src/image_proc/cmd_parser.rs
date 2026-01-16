@@ -47,10 +47,9 @@ impl PrintCommand {
                     return Self::FeedLines(1).parse();
                 }
                 let w = (*mw).min(dots.len() as u32);
-                let bytes_to_print = (w + 7) / 8;
-                let mut b: Vec<u8> = Vec::with_capacity(bytes_to_print as usize);
-                b.resize(bytes_to_print as usize, 0);
-                for (idx, bit) in dots.into_iter().take(w as usize).enumerate() {
+                let bytes_to_print = w.div_ceil(8);
+                let mut b: Vec<u8> = vec![0; bytes_to_print as usize];
+                for (idx, bit) in dots.iter().take(w as usize).enumerate() {
                     let byte = idx / 8;
                     let shift = 7 - idx % 8;
                     b[byte] |= (*bit as u8) << shift;
@@ -69,19 +68,16 @@ impl PrintCommand {
                 let w = (mw - skip).min(dots.len() as u32);
                 let snaped_skip_bytes = skip / 8;
                 let snaped_skip_offset = skip % 8;
-                let bytes_to_print = 1 + (w + 7) / 8;
+                let bytes_to_print = 1 + w.div_ceil(8);
                 let mut offset_dots = Vec::with_capacity(8 * bytes_to_print as usize);
-                for _ in 0..snaped_skip_offset {
-                    offset_dots.push(false);
-                }
+                offset_dots.extend(std::iter::repeat_n(false, snaped_skip_offset as usize));
                 offset_dots.extend(dots);
 
                 // println!("{:?}", dots);
                 // println!("{:?}", offset_dots);
                 // println!("w={}", w);
 
-                let mut b: Vec<u8> = Vec::with_capacity(bytes_to_print as usize);
-                b.resize(bytes_to_print as usize, 0);
+                let mut b: Vec<u8> = vec![0; bytes_to_print as usize];
                 for (idx, bit) in offset_dots
                     .into_iter()
                     .take((snaped_skip_offset + w) as usize)
@@ -131,7 +127,7 @@ pub struct BitmapParser {
 
 impl BitmapParser {
     /// 打印命令转换器
-    /// 
+    ///
     /// - im: 位图
     /// - bp: 每隔多少行插入一个断点命令
     pub fn new(im: Bitmap, bp: u32) -> Self {
@@ -155,7 +151,7 @@ impl Iterator for BitmapParser {
             return None;
         }
         if self.breakpoint > 0
-            && ((self.next_line_cursor % self.breakpoint == 0
+            && ((self.next_line_cursor.is_multiple_of(self.breakpoint)
                 && self.prev_breakpoint != self.next_line_cursor)
                 || !self.first_breakpoint)
         {
@@ -168,7 +164,7 @@ impl Iterator for BitmapParser {
         for i in self.next_line_cursor..self.im.height() {
             if self.breakpoint > 0
                 && empty_line_counter > 0
-                && (self.next_line_cursor + empty_line_counter) % self.breakpoint == 0
+                && (self.next_line_cursor + empty_line_counter).is_multiple_of(self.breakpoint)
             {
                 break;
             }
@@ -196,7 +192,7 @@ impl Iterator for BitmapParser {
             }
             if self.breakpoint > 0
                 && repeat_line_counter > 0
-                && (self.next_line_cursor + repeat_line_counter) % self.breakpoint == 0
+                && (self.next_line_cursor + repeat_line_counter).is_multiple_of(self.breakpoint)
             {
                 break;
             }
@@ -261,7 +257,7 @@ impl Iterator for BitmapParser {
         //     line.len()
         // );
         self.next_line_cursor += 1;
-        return Some(PrintCommand::PrintLine(self.im.width(), line));
+        Some(PrintCommand::PrintLine(self.im.width(), line))
     }
 }
 

@@ -15,6 +15,7 @@ use dz_print::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
     main_fn().await
 }
 
@@ -200,5 +201,5 @@ async fn main_fn() -> anyhow::Result<()> {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
 
-    return Ok(());
+    Ok(())
 }

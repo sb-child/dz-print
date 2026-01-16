@@ -26,6 +26,8 @@ typst-library = "0.14.2"
 ttf-parser = "0.25.1"
 chrono = "0.4.43"
 tiny-skia = "0.11.4"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"
 
 [profile.release]
 opt-level = 2
