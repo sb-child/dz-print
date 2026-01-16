@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::{thread, time::Duration};
+// use std::{thread, time::Duration};
 
 use dz_print::{
     backend,
@@ -24,7 +24,7 @@ async fn main_fn() -> anyhow::Result<()> {
     ))
     .await?;
 
-    let png_img = image::ImageReader::open("/home/sbchild/test.png").unwrap();
+    let png_img = image::ImageReader::open("/tmp/print.png").unwrap();
     let png_img = png_img.decode().unwrap();
     let png_img = png_img.into_luma8();
     let bitmap = Bitmap::from_gray_image(&png_img);
@@ -43,13 +43,13 @@ async fn main_fn() -> anyhow::Result<()> {
     chan.await.ok();
 
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x05], false),
+        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x03], false),
     );
     b.push(cmd).await.ok();
     chan.await.ok();
 
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x04], false),
+        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x00], false),
     );
     b.push(cmd).await.ok();
     chan.await.ok();
@@ -96,8 +96,9 @@ async fn main_fn() -> anyhow::Result<()> {
     for c in parser {
         if let Some(c) = c.parse() {
             for c in c {
-                let (cmd, ch) = backend::Command::without_response(c);
+                let (cmd, _ch) = backend::Command::without_response(c);
                 b.push(cmd).await.ok();
+                // will slow down the print speed
                 // ch.await.ok();
             }
         } else {

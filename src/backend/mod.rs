@@ -4,7 +4,7 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread,
     time::{self, Duration},
 };
@@ -32,6 +32,7 @@ pub enum BackendError {
 }
 
 struct Endpoint {
+    #[allow(unused)]
     config: u8,
     iface: u8,
     setting: u8,
@@ -279,7 +280,7 @@ impl USBBackend {
                         raw_packet_len -= buf.len();
                         buf.resize(max_out_size, 0);
                         let buf = packager::package_usb(buf); // + 2 bytes
-                        // println!("writing...");
+                                                              // println!("writing...");
                         let res = h1.write_interrupt(out_ep.address, &buf, in_timeout);
                         // println!("write done");
                         match res {
@@ -300,7 +301,7 @@ impl USBBackend {
                                     }
                                 }
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 // println!("OUT thread: USB error: {:?}", e);
                                 for c in committed_cmds {
                                     match c {
@@ -413,7 +414,7 @@ impl USBBackend {
                             rusb::Error::Timeout => {
                                 timeout_count += 1;
                             }
-                            e @ _ => {
+                            _e @ _ => {
                                 // println!("IN thread: USB error: {e:?}");
                                 return;
                             }

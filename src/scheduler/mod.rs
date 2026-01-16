@@ -3,7 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+// use num_traits::{FromPrimitive, ToPrimitive};
 
 #[derive(Debug, Clone, Copy)]
 pub enum PaperType {

@@ -16,12 +16,12 @@ use dz_print::{
 use tiny_skia::Pixmap;
 use typst::{
     diag::{FileError, FileResult},
-    foundations::{Bytes, Datetime},
+    foundations::{Bytes, Datetime, NativeFunc, NativeFuncData},
     layout::PagedDocument,
     syntax::{FileId, Source, VirtualPath},
     text::{Font, FontBook, FontInfo},
     utils::LazyHash,
-    Library, World,
+    Library, LibraryExt, World,
 };
 
 #[tokio::main]
@@ -80,7 +80,7 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
     chan.await?;
     println!("set darkness");
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x05], false),
+        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x09], false),
     );
     b.push(cmd).await?;
     chan.await?;
@@ -278,7 +278,42 @@ impl World for Minecraft {
 }
 
 fn make_library() -> Library {
-    Library::builder().build()
+    let mut library = Library::builder().build();
+    let scope = library.global.scope_mut();
+    // scope.define_func::<QrCodeFunc>();
+    library
+}
+
+pub struct QrCodeFunc {}
+
+impl NativeFunc for QrCodeFunc {
+    fn data() -> &'static NativeFuncData {
+        let data = NativeFuncData {
+            function: typst_library::foundations::NativeFuncPtr(&Self::f),
+            name: todo!(),
+            title: todo!(),
+            docs: todo!(),
+            keywords: todo!(),
+            contextual: todo!(),
+            scope: todo!(),
+            params: todo!(),
+            returns: todo!(),
+        };
+        todo!();
+        // &data
+    }
+}
+
+// Fn(&mut Engine, Tracked<Context>, &mut Args) -> SourceResult<Value> + Send + Sync;
+
+impl QrCodeFunc {
+    pub fn f(
+        engine: &mut typst_library::engine::Engine,
+        context: typst::comemo::Tracked<typst_library::foundations::Context>,
+        args: &mut typst_library::foundations::Args,
+    ) -> typst_library::diag::SourceResult<typst_library::foundations::Value> {
+        todo!()
+    }
 }
 
 fn make_fontbook() -> FontBook {
