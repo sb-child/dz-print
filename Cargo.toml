@@ -8,26 +8,26 @@ homepage = "https://github.com/sb-child/dz-print"
 license = "MPL-2.0"
 
 [dependencies]
-btleplug = "0.11.6"
+btleplug = "0.12.0"
 bytebuffer = "2.3.0"
-image = "0.25.2"
+image = "0.25.10"
 rusb = "0.9.4"
 num-traits = "0.2"
 num-derive = "0.4"
-strum = { version = "0.27", features = ["derive"] }
-rayon = "1.10.0"
-tokio = { version = "1.49.0", features = ["full"] }
-thiserror = "2.0.12"
-anyhow = "1.0.91"
-clap = { version = "4.5", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
+rayon = "1.11.0"
+tokio = { version = "1.51.1", features = ["full"] }
+thiserror = "2.0.18"
+anyhow = "1.0.102"
+clap = { version = "4.6", features = ["derive"] }
 typst = "0.14.2"
-typst-render = "0.14.2"
 typst-library = "0.14.2"
 ttf-parser = "0.25.1"
-chrono = "0.4.43"
-tiny-skia = "0.11.4"
+chrono = "0.4.44"
+# typst-render currently using
+tiny-skia = "=0.11.4"
 tracing = "0.1.44"
-tracing-subscriber = "0.3.22"
+tracing-subscriber = "0.3.23"
 
 [profile.release]
 opt-level = 2
