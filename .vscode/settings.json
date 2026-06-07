@@ -1,5 +1,4 @@
 {
-    "tinymist.fontPaths": [
-        "${workspaceFolder}/src/asset"
-    ]
+    "tinymist.fontPaths": ["${workspaceFolder}/src/asset"],
+    "tinymist.systemFonts": false
 }

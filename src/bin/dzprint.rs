@@ -8,8 +8,7 @@ use dz_print::{
     backend,
     command::{self, HostCommand},
     image_proc::{
-        cmd_parser::{BitmapParser, PrintCommand},
-        Bitmap,
+        Bitmap, DitherMode, cmd_parser::{BitmapParser, PrintCommand}
     },
 };
 
@@ -28,7 +27,7 @@ async fn main_fn() -> anyhow::Result<()> {
     let png_img = image::ImageReader::open("/tmp/print.png").unwrap();
     let png_img = png_img.decode().unwrap();
     let png_img = png_img.into_luma8();
-    let bitmap = Bitmap::from_gray_image(&png_img);
+    let bitmap = Bitmap::from_gray_image(&png_img, DitherMode::FloydSteinberg);
     // 断点:
     // 最慢 50
     // 较慢 75

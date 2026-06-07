@@ -4,8 +4,16 @@
 
 pub mod cmd_parser;
 use image::GrayImage;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use tiny_skia::Pixmap;
+
+#[derive(Clone, Copy)]
+pub enum DitherMode {
+    /// 亮度截断
+    Threshold,
+    /// Floyd-Steinberg 误差扩散
+    FloydSteinberg,
+}
 
 #[derive(Clone)]
 pub struct Bitmap {
@@ -16,35 +24,79 @@ pub struct Bitmap {
 
 impl Bitmap {
     /// black (0) pixel will convert to `true`, otherwise to `false`
-    pub fn from_gray_image(im: &GrayImage) -> Bitmap {
-        im.width();
-        im.height();
-        // black = true, white = false
-        let pix: Vec<bool> = im.par_iter().map(|x| *x == 0).collect();
-        Bitmap {
-            w: im.width(),
-            h: im.height(),
-            pix,
-        }
+    pub fn from_gray_image(im: &GrayImage, mode: DitherMode) -> Bitmap {
+        let w = im.width();
+        let h = im.height();
+        let mut gray: Vec<u8> = im.pixels().map(|p| p[0]).collect();
+
+        Self::process_dither(&mut gray, w as usize, h as usize, mode);
+
+        let pix: Vec<bool> = gray.into_iter().map(|px| px < 128).collect();
+        Bitmap { w, h, pix }
     }
 
     /// black (0) pixel will convert to `true`, otherwise to `false`
-    pub fn from_pixmap(im: &Pixmap) -> Bitmap {
-        im.width();
-        im.height();
-        // > 127 black = true, otherwise white = false
-        let pix: Vec<bool> = im
+    pub fn from_pixmap(im: &Pixmap, mode: DitherMode) -> Bitmap {
+        let w = im.width();
+        let h = im.height();
+
+        // 转换为灰度缓冲 (Luma)
+        let mut gray: Vec<u8> = im
             .pixels()
-            .par_iter()
-            .map(|px| px.demultiply())
-            .map(|px| px.red() > 127 || px.green() > 127 || px.blue() > 127)
-            .map(|x| !x)
+            .iter()
+            .map(|px| {
+                let px = px.demultiply();
+                // 常规的灰度化公式
+                (0.299 * px.red() as f32 + 0.587 * px.green() as f32 + 0.114 * px.blue() as f32)
+                    as u8
+            })
             .collect();
 
-        Bitmap {
-            w: im.width(),
-            h: im.height(),
-            pix,
+        Self::process_dither(&mut gray, w as usize, h as usize, mode);
+
+        // 黑色为 true，白色为 false
+        let pix: Vec<bool> = gray.into_iter().map(|px| px < 128).collect();
+        Bitmap { w, h, pix }
+    }
+
+    fn process_dither(gray: &mut Vec<u8>, w: usize, h: usize, mode: DitherMode) {
+        match mode {
+            DitherMode::Threshold => {
+                gray.par_iter_mut().for_each(|px| {
+                    *px = if *px > 127 { 255 } else { 0 };
+                });
+            }
+            DitherMode::FloydSteinberg => {
+                for y in 0..h {
+                    for x in 0..w {
+                        let idx = y * w + x;
+                        let old_pixel = gray[idx];
+                        let new_pixel = if old_pixel > 127 { 255 } else { 0 };
+                        gray[idx] = new_pixel;
+
+                        let err = old_pixel as i16 - new_pixel as i16;
+                        if err == 0 {
+                            continue;
+                        }
+                        if x + 1 < w {
+                            let i = idx + 1;
+                            gray[i] = (gray[i] as i16 + err * 7 / 16).clamp(0, 255) as u8;
+                        }
+                        if y + 1 < h {
+                            if x > 0 {
+                                let i = (y + 1) * w + x - 1;
+                                gray[i] = (gray[i] as i16 + err * 3 / 16).clamp(0, 255) as u8;
+                            }
+                            let i = (y + 1) * w + x;
+                            gray[i] = (gray[i] as i16 + err * 5 / 16).clamp(0, 255) as u8;
+                            if x + 1 < w {
+                                let i = (y + 1) * w + x + 1;
+                                gray[i] = (gray[i] as i16 + err * 1 / 16).clamp(0, 255) as u8;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

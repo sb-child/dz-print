@@ -2,7 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::env;
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use chrono::Local;
 use dz_print::{
@@ -10,7 +13,7 @@ use dz_print::{
     command::{self, HostCommand},
     image_proc::{
         cmd_parser::{BitmapParser, PrintCommand},
-        Bitmap,
+        Bitmap, DitherMode,
     },
 };
 use tiny_skia::Pixmap;
@@ -35,10 +38,11 @@ async fn main_fn() -> anyhow::Result<()> {
     let file_name = env::args()
         .nth(1)
         .ok_or(anyhow::anyhow!("please specify a filename"))?;
+    let file_path = std::path::PathBuf::from(&file_name);
     println!("reading file");
     let file_content = tokio::fs::read_to_string(file_name).await?;
     println!("creating world");
-    let world = Minecraft::new(file_content);
+    let world = Minecraft::new(&file_path, file_content);
     println!("compiling document");
     let doc = typst::compile::<PagedDocument>(&world);
     for w in doc.warnings {
@@ -68,7 +72,7 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
         "please ensure your page width is 576px or 48mm"
     );
     println!("converting to bitmap");
-    let bitmap = Bitmap::from_pixmap(&pm);
+    let bitmap = Bitmap::from_pixmap(&pm, DitherMode::FloydSteinberg);
     // 这个 bp 参数其实是 magic number，以下是建议值
     // 最慢 50 | 较慢 75 | 正常 100 | 较快 110 | 最快 120
     // 可能受打印浓度影响
@@ -216,19 +220,41 @@ struct Minecraft {
     library: LazyHash<Library>,
     main_fileid: FileId,
     main_content: String,
+    root_path: PathBuf,
 }
 
 impl Minecraft {
-    fn new(main_content: String) -> Self {
+    fn new(main_file_path: &Path, main_content: String) -> Self {
         let fontbook = LazyHash::new(make_fontbook());
         let library = LazyHash::new(make_library());
-        let main_fileid = FileId::new_fake(VirtualPath::new("/main.typ"));
+        let root_path = main_file_path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .to_path_buf();
+        let root_path = root_path.canonicalize().unwrap_or(root_path);
+        let main_filename = main_file_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let vpath = VirtualPath::new(format!("/{}", main_filename));
+        let main_fileid = FileId::new_fake(vpath);
         Self {
             fontbook,
             library,
             main_fileid,
             main_content,
+            root_path,
         }
+    }
+
+    fn resolve_path(&self, vpath: &VirtualPath) -> FileResult<PathBuf> {
+        let path = vpath
+            .resolve(&self.root_path)
+            .ok_or(FileError::AccessDenied)?;
+        if !path.starts_with(&self.root_path) {
+            return Err(FileError::AccessDenied);
+        }
+        Ok(path)
     }
 }
 
@@ -247,15 +273,17 @@ impl World for Minecraft {
 
     fn source(&self, id: FileId) -> FileResult<Source> {
         if id == self.main_fileid {
-            Ok(Source::new(id, self.main_content.clone()))
-        } else {
-            Err(FileError::AccessDenied)
+            return Ok(Source::new(id, self.main_content.clone()));
         }
+        let path = self.resolve_path(id.vpath())?;
+        let content = std::fs::read_to_string(&path).map_err(|e| FileError::from_io(e, &path))?;
+        Ok(Source::new(id, content))
     }
 
-    fn file(&self, _id: FileId) -> FileResult<Bytes> {
-        // todo
-        Err(FileError::AccessDenied)
+    fn file(&self, id: FileId) -> FileResult<Bytes> {
+        let path = self.resolve_path(id.vpath())?;
+        let content = std::fs::read(&path).map_err(|e| FileError::from_io(e, &path))?;
+        Ok(Bytes::new(content))
     }
 
     fn font(&self, index: usize) -> Option<Font> {

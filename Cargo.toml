@@ -15,15 +15,15 @@ rusb = "0.9.4"
 num-traits = "0.2"
 num-derive = "0.4"
 strum = { version = "0.28", features = ["derive"] }
-rayon = "1.11.0"
-tokio = { version = "1.51.1", features = ["full"] }
+rayon = "1.12.0"
+tokio = { version = "1.52.3", features = ["full"] }
 thiserror = "2.0.18"
 anyhow = "1.0.102"
 clap = { version = "4.6", features = ["derive"] }
 typst = "0.14.2"
 typst-library = "0.14.2"
 ttf-parser = "0.25.1"
-chrono = "0.4.44"
+chrono = "0.4.45"
 # typst-render currently using
 tiny-skia = "=0.11.4"
 tracing = "0.1.44"
