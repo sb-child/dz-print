@@ -559,7 +559,17 @@ impl TryFrom<&str> for GapSetting {
     type Error = PrintSettingError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        todo!()
+        let lower = value.trim().to_lowercase();
+        let num_str = lower.strip_suffix("mm").unwrap_or(&lower).trim();
+        let val_f: f64 = num_str
+            .parse()
+            .map_err(|_| PrintSettingError::InvalidString(value.to_string()))?;
+        let val_rounded = (val_f * 100.0).round();
+        if val_rounded < 0.0 || val_rounded > u16::MAX as f64 {
+            return Err(PrintSettingError::InvalidU16(val_rounded as u16));
+        }
+        let val_u16 = val_rounded as u16;
+        Self::try_from(val_u16)
     }
 }
 
