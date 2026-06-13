@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use std::{
+    collections::HashMap,
     env,
     path::{Path, PathBuf},
 };
@@ -23,7 +24,7 @@ use typst::{
     layout::PagedDocument,
     syntax::{FileId, Source, VirtualPath},
     text::{Font, FontBook, FontInfo},
-    utils::LazyHash,
+    utils::{LazyHash, PicoStr},
     Library, LibraryExt, World,
 };
 
@@ -51,6 +52,65 @@ async fn main_fn() -> anyhow::Result<()> {
     let doc = doc
         .output
         .map_err(|e| anyhow::anyhow!("compile error: {e:?}"))?;
+
+    let mut page_settings_map: HashMap<usize, PrintSettings> = HashMap::new();
+    let page_settings_selector = typst::foundations::Selector::Label(
+        typst::foundations::Label::new(PicoStr::intern("print-settings")).unwrap(),
+    );
+
+    println!("load page settings");
+    for content in doc.introspector.query(&page_settings_selector) {
+        if let Some(location) = content.location() {
+            let page_num = doc.introspector.page(location).get();
+            println!("parsing page setting {page_num}");
+            let values = content
+                .get_by_name("value")
+                .map_err(|e| anyhow::anyhow!("parse page setting: {e:?}"))?;
+            let typst::foundations::Value::Dict(v) = values else {
+                continue;
+            };
+            let paper = match v.get("paper").ok() {
+                Some(typst::foundations::Value::Str(x)) => PaperSetting::try_from(x.as_str())
+                    .map_err(|e| anyhow::anyhow!("parse paper setting: {e:?}"))?,
+                Some(e) => return Err(anyhow::anyhow!("parse paper setting: Invalid Type {e:?}")),
+                None => PaperSetting::default(),
+            };
+            macro_rules! parse_numeric_setting {
+                ($field_name:expr, $setting_type:ty, $cast_type:ty) => {
+                    match v.get($field_name).ok() {
+                        Some(typst::foundations::Value::Int(x)) => {
+                            <$setting_type>::try_from(*x as $cast_type).map_err(|e| {
+                                anyhow::anyhow!("parse {} setting: {e:?}", $field_name)
+                            })?
+                        }
+                        Some(typst::foundations::Value::Str(x)) => {
+                            <$setting_type>::try_from(x.as_str()).map_err(|e| {
+                                anyhow::anyhow!("parse {} setting: {e:?}", $field_name)
+                            })?
+                        }
+                        Some(_) => {
+                            return Err(anyhow::anyhow!(
+                                "parse {} setting: InvalidType",
+                                $field_name
+                            ))
+                        }
+                        None => <$setting_type>::default(),
+                    }
+                };
+            }
+            let darkness = parse_numeric_setting!("darkness", DarknessSetting, u8);
+            let speed = parse_numeric_setting!("speed", SpeedSetting, u8);
+            let gap = parse_numeric_setting!("gap", GapSetting, u16);
+            let ps = PrintSettings {
+                paper,
+                darkness,
+                speed,
+                gap,
+            };
+            page_settings_map.insert(page_num, ps);
+        }
+    }
+
     println!("connecting to printer");
     let b = backend::USBBackend::new(backend::USBSelector::DeviceSerial(
         "DP27P-Y4094C023".to_string(),
@@ -60,12 +120,17 @@ async fn main_fn() -> anyhow::Result<()> {
         println!("rendering page {}", p.number);
         // 576px = 48mm
         let r = typst_render::render(&p, 576.0 / (2.834_645_7 * 48.0));
-        print_page(&b, r).await?;
+        let ps = page_settings_map
+            .get(&(p.number as usize))
+            .cloned()
+            .unwrap_or_default();
+        println!("printing page {}: {:?}, bp {}", p.number, ps, ps.bp());
+        print_page(&b, r, ps).await?;
     }
     Ok(())
 }
 
-async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
+async fn print_page(b: &backend::USBBackend, pm: Pixmap, ps: PrintSettings) -> anyhow::Result<()> {
     assert_eq!(
         pm.width(),
         576,
@@ -76,22 +141,30 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap) -> anyhow::Result<()> {
     // 这个 bp 参数其实是 magic number，以下是建议值
     // 最慢 50 | 较慢 75 | 正常 100 | 较快 110 | 最快 120
     // 可能受打印浓度影响
-    let parser = BitmapParser::new(bitmap, 100);
+    let parser = BitmapParser::new(bitmap, ps.bp());
     println!("set paper type");
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintPaperType).package(vec![0x00], false),
+        command::Command::new_host(HostCommand::GetSetPrintPaperType)
+            .package(ps.paper_vec(), false),
     );
     b.push(cmd).await?;
     chan.await?;
     println!("set darkness");
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintDarkness).package(vec![0x09], false),
+        command::Command::new_host(HostCommand::GetSetPrintDarkness)
+            .package(ps.darkness_vec(), false),
     );
     b.push(cmd).await?;
     chan.await?;
     println!("set speed");
     let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(vec![0x02], false),
+        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(ps.speed_vec(), false),
+    );
+    b.push(cmd).await?;
+    chan.await?;
+    println!("set gap");
+    let (cmd, chan) = backend::Command::without_response(
+        command::Command::new_host(HostCommand::GetSetPrintPaperGap).package(ps.gap_vec(), false),
     );
     b.push(cmd).await?;
     chan.await?;
@@ -303,6 +376,235 @@ impl World for Minecraft {
         let _now = Local::now();
         // todo
         None
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+enum PrintSettingError {
+    #[error("Invalid value `{0}`")]
+    InvalidU8(u8),
+    #[error("Invalid value `{0}`")]
+    InvalidU16(u16),
+    #[error("Invalid string `{0}`")]
+    InvalidString(String),
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+enum SpeedSetting {
+    /// 最慢(1)
+    Min,
+    /// 稍慢(2)
+    Speed1,
+    /// 正常(3)
+    #[default]
+    Normal,
+    /// 稍快(4)
+    Speed3,
+    /// 最快(5)
+    Max,
+}
+
+impl TryFrom<u8> for SpeedSetting {
+    type Error = PrintSettingError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Min),
+            2 => Ok(Self::Speed1),
+            3 => Ok(Self::Normal),
+            4 => Ok(Self::Speed3),
+            5 => Ok(Self::Max),
+            _ => Err(Self::Error::InvalidU8(value)),
+        }
+    }
+}
+
+impl TryFrom<&str> for SpeedSetting {
+    type Error = PrintSettingError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "min" | "1" => Ok(Self::Min),
+            "2" => Ok(Self::Speed1),
+            "normal" | "3" => Ok(Self::Normal),
+            "4" => Ok(Self::Speed3),
+            "max" | "5" => Ok(Self::Max),
+            _ => Err(Self::Error::InvalidString(value.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+enum DarknessSetting {
+    /// 最浅(1)
+    Min,
+    Darkness1,
+    Darkness2,
+    Darkness3,
+    Darkness4,
+    /// 正常(6)
+    #[default]
+    Normal,
+    Darkness6,
+    Darkness7,
+    Darkness8,
+    Darkness9,
+    Darkness10,
+    Darkness11,
+    Darkness12,
+    Darkness13,
+    /// 最深(15)
+    Max,
+}
+
+impl TryFrom<u8> for DarknessSetting {
+    type Error = PrintSettingError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Min),
+            2 => Ok(Self::Darkness1),
+            3 => Ok(Self::Darkness2),
+            4 => Ok(Self::Darkness3),
+            5 => Ok(Self::Darkness4),
+            6 => Ok(Self::Normal),
+            7 => Ok(Self::Darkness6),
+            8 => Ok(Self::Darkness7),
+            9 => Ok(Self::Darkness8),
+            10 => Ok(Self::Darkness9),
+            11 => Ok(Self::Darkness10),
+            12 => Ok(Self::Darkness11),
+            13 => Ok(Self::Darkness12),
+            14 => Ok(Self::Darkness13),
+            15 => Ok(Self::Max),
+            _ => Err(Self::Error::InvalidU8(value)),
+        }
+    }
+}
+
+impl TryFrom<&str> for DarknessSetting {
+    type Error = PrintSettingError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "min" | "1" => Ok(Self::Min),
+            "2" => Ok(Self::Darkness1),
+            "3" => Ok(Self::Darkness2),
+            "4" => Ok(Self::Darkness3),
+            "5" => Ok(Self::Darkness4),
+            "normal" | "6" => Ok(Self::Normal),
+            "7" => Ok(Self::Darkness6),
+            "8" => Ok(Self::Darkness7),
+            "9" => Ok(Self::Darkness8),
+            "10" => Ok(Self::Darkness9),
+            "11" => Ok(Self::Darkness10),
+            "12" => Ok(Self::Darkness11),
+            "13" => Ok(Self::Darkness12),
+            "14" => Ok(Self::Darkness13),
+            "max" | "15" => Ok(Self::Max),
+            _ => Err(Self::Error::InvalidString(value.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+enum PaperSetting {
+    /// 小票纸
+    #[default]
+    Ticket = 0,
+    /// 不干胶
+    Adhesive = 2,
+    /// 卡纸
+    CardPaper = 3,
+    /// 透明贴
+    Transparent = 4,
+}
+
+impl TryFrom<&str> for PaperSetting {
+    type Error = PrintSettingError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "ticket" => Ok(Self::Ticket),
+            "adhesive" => Ok(Self::Adhesive),
+            "cardpaper" => Ok(Self::CardPaper),
+            "transparent" => Ok(Self::Transparent),
+            _ => Err(Self::Error::InvalidString(value.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GapSetting(u16);
+
+impl Default for GapSetting {
+    fn default() -> Self {
+        Self(50)
+    }
+}
+
+impl TryFrom<u16> for GapSetting {
+    type Error = PrintSettingError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        if value < 50 {
+            Err(Self::Error::InvalidU16(value))
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+
+impl TryFrom<&str> for GapSetting {
+    type Error = PrintSettingError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        todo!()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PrintSettings {
+    paper: PaperSetting,
+    darkness: DarknessSetting,
+    speed: SpeedSetting,
+    gap: GapSetting,
+}
+
+impl PrintSettings {
+    fn bp(&self) -> u32 {
+        let basic_bp = match self.speed {
+            SpeedSetting::Min => 50,
+            SpeedSetting::Speed1 => 75,
+            SpeedSetting::Normal => 100,
+            SpeedSetting::Speed3 => 110,
+            SpeedSetting::Max => 120,
+        };
+        let normal_darkness = 5;
+        let step = 3;
+        let adjustment = (normal_darkness - self.darkness as i32) * step;
+        let final_bp = basic_bp as i32 + adjustment;
+        final_bp.max(0) as u32
+    }
+
+    fn paper_vec(&self) -> Vec<u8> {
+        let v = self.paper as u8;
+        v.to_be_bytes().to_vec()
+    }
+
+    fn speed_vec(&self) -> Vec<u8> {
+        let v = self.speed as u8;
+        v.to_be_bytes().to_vec()
+    }
+
+    fn darkness_vec(&self) -> Vec<u8> {
+        let v = self.darkness as u8;
+        v.to_be_bytes().to_vec()
+    }
+
+    fn gap_vec(&self) -> Vec<u8> {
+        let v = self.gap.0;
+        v.to_be_bytes().to_vec()
     }
 }
 
