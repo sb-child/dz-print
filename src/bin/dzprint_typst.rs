@@ -20,13 +20,15 @@ use dz_print::{
 use tiny_skia::Pixmap;
 use typst::{
     diag::{FileError, FileResult},
-    foundations::{Bytes, Datetime, NativeFunc, NativeFuncData},
-    layout::PagedDocument,
-    syntax::{FileId, Source, VirtualPath},
+    foundations::{Bytes, Datetime, Duration, NativeFunc, NativeFuncData},
+    introspection::Introspector as _,
+    syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot},
     text::{Font, FontBook, FontInfo},
     utils::{LazyHash, PicoStr},
     Library, LibraryExt, World,
 };
+use typst_layout::PagedDocument;
+use typst_render::RenderOptions;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -59,9 +61,13 @@ async fn main_fn() -> anyhow::Result<()> {
     );
 
     println!("load page settings");
-    for content in doc.introspector.query(&page_settings_selector) {
+    for content in doc.introspector().query(&page_settings_selector) {
         if let Some(location) = content.location() {
-            let page_num = doc.introspector.page(location).get();
+            let page_num = doc
+                .introspector()
+                .page(location)
+                .expect("idk the page")
+                .get();
             println!("parsing page setting {page_num}");
             let values = content
                 .get_by_name("value")
@@ -116,10 +122,14 @@ async fn main_fn() -> anyhow::Result<()> {
         "DP27P-Y4094C023".to_string(),
     ))
     .await?;
-    for p in doc.pages {
+    for p in doc.pages() {
         println!("rendering page {}", p.number);
         // 576px = 48mm
-        let r = typst_render::render(&p, 576.0 / (2.834_645_7 * 48.0));
+        let opts = RenderOptions {
+            pixel_per_pt: (576.0 / (2.834_645_7 * 48.0)).into(),
+            ..Default::default()
+        };
+        let r = typst_render::render(&p, &opts);
         let ps = page_settings_map
             .get(&(p.number as usize))
             .cloned()
@@ -309,8 +319,9 @@ impl Minecraft {
             .file_name()
             .unwrap_or_default()
             .to_string_lossy();
-        let vpath = VirtualPath::new(format!("/{}", main_filename));
-        let main_fileid = FileId::new_fake(vpath);
+        let vpath = VirtualPath::new(format!("/{}", main_filename)).expect("no way");
+        let p = RootedPath::new(VirtualRoot::Project, vpath);
+        let main_fileid = FileId::unique(p);
         Self {
             fontbook,
             library,
@@ -322,8 +333,8 @@ impl Minecraft {
 
     fn resolve_path(&self, vpath: &VirtualPath) -> FileResult<PathBuf> {
         let path = vpath
-            .resolve(&self.root_path)
-            .ok_or(FileError::AccessDenied)?;
+            .realize(&self.root_path)
+            .map_err(|e| FileError::Realize(e))?;
         if !path.starts_with(&self.root_path) {
             return Err(FileError::AccessDenied);
         }
@@ -372,7 +383,7 @@ impl World for Minecraft {
         }
     }
 
-    fn today(&self, _offset: Option<i64>) -> Option<Datetime> {
+    fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
         let _now = Local::now();
         // todo
         None
@@ -641,6 +652,7 @@ impl NativeFunc for QrCodeFunc {
             scope: todo!(),
             params: todo!(),
             returns: todo!(),
+            def_site: todo!(),
         };
         todo!();
         // &data

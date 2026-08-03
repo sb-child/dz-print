@@ -1,7 +1,7 @@
 [package]
 name = "dz-print"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Third-party USB/Bluetooth Driver for Detonger(detonger.com) Printing Machines"
 authors = ["sbchild <sbchild0@gmail.com> <zinu5k7d1k2uzsxa@proton.me>"]
 homepage = "https://github.com/sb-child/dz-print"
@@ -13,22 +13,25 @@ bytebuffer = "2.3.0"
 image = "0.25.10"
 rusb = "0.9.4"
 num-traits = "0.2"
-num-derive = "0.4"
+num-derive = "0.5"
 strum = { version = "0.28", features = ["derive"] }
 rayon = "1.12.0"
-tokio = { version = "1.52.3", features = ["full"] }
-thiserror = "2.0.18"
-anyhow = "1.0.102"
+tokio = { version = "1.53.1", features = ["full"] }
+thiserror = "2.0.19"
+anyhow = "1.0.104"
 clap = { version = "4.6", features = ["derive"] }
-typst = "0.14.2"
-typst-library = "0.14.2"
+typst = "0.15.1"
+typst-layout = "0.15.1"
+typst-library = "0.15.1"
 ttf-parser = "0.25.1"
 chrono = "0.4.45"
 # typst-render currently using
-tiny-skia = "=0.11.4"
+tiny-skia = "=0.12.0"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-typst-render = "0.14.2"
+typst-render = "0.15.1"
+# spin = "^0.9" <- wasmi v1.1.0 <- typst-library v0.15.1
+spin = "=0.9.9"
 
 [profile.release]
 opt-level = 2
