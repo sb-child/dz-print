@@ -13,3 +13,6 @@ insert_final_newline = false
 
 [*.md]
 indent_size = 2
+
+[*.typ]
+indent_size = 2

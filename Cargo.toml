@@ -32,6 +32,10 @@ tracing-subscriber = "0.3.23"
 typst-render = "0.15.1"
 # spin = "^0.9" <- wasmi v1.1.0 <- typst-library v0.15.1
 spin = "=0.9.9"
+tempfile = "3.27.0"
+ureq = "3.3.0"
+tar = "0.4.46"
+flate2 = "1.1.9"
 
 [profile.release]
 opt-level = 2

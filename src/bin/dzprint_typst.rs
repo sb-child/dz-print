@@ -13,19 +13,20 @@ use dz_print::{
     backend,
     command::{self, HostCommand},
     image_proc::{
-        cmd_parser::{BitmapParser, PrintCommand},
         Bitmap, DitherMode,
+        cmd_parser::{BitmapParser, PrintCommand},
     },
 };
+use tempfile::{TempDir, tempdir};
 use tiny_skia::Pixmap;
 use typst::{
+    Library, LibraryExt, World,
     diag::{FileError, FileResult},
     foundations::{Bytes, Datetime, Duration, NativeFunc, NativeFuncData},
     introspection::Introspector as _,
-    syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot},
+    syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot, package::PackageSpec},
     text::{Font, FontBook, FontInfo},
     utils::{LazyHash, PicoStr},
-    Library, LibraryExt, World,
 };
 use typst_layout::PagedDocument;
 use typst_render::RenderOptions;
@@ -45,7 +46,8 @@ async fn main_fn() -> anyhow::Result<()> {
     println!("reading file");
     let file_content = tokio::fs::read_to_string(file_name).await?;
     println!("creating world");
-    let world = Minecraft::new(&file_path, file_content);
+    let package_cache_dir = tempdir()?;
+    let world = Minecraft::new(&file_path, file_content, package_cache_dir);
     println!("compiling document");
     let doc = typst::compile::<PagedDocument>(&world);
     for w in doc.warnings {
@@ -297,6 +299,69 @@ async fn print_page(b: &backend::USBBackend, pm: Pixmap, ps: PrintSettings) -> a
     Ok(())
 }
 
+fn load_builtin_fonts() -> (Vec<Font>, FontBook) {
+    let mut fonts = Vec::new();
+    let mut book = FontBook::new();
+
+    let font_sources: &[(&[u8], &str)] = &[
+        (include_bytes!("../asset/unifont-16.0.04.ttf"), "Unifont"),
+        (
+            include_bytes!("../asset/UnifontExMono.ttf"),
+            "UnifontExMono",
+        ),
+    ];
+    for (bytes, family_override) in font_sources {
+        let typst_bytes = Bytes::new(bytes);
+        if let Some(font) = Font::new(typst_bytes, 0) {
+            let mut info = font.info().clone();
+            info.family = family_override.to_string();
+
+            book.push(info);
+            fonts.push(font);
+        }
+    }
+    (fonts, book)
+}
+
+fn prepare_package(pkg: &PackageSpec, cache_dir: &Path) -> FileResult<PathBuf> {
+    let package_dir = cache_dir.join(format!(
+        "{}__{}__{}",
+        pkg.namespace.as_str(),
+        pkg.name.as_str(),
+        pkg.version.to_string(),
+    ));
+    if package_dir.exists() {
+        return Ok(package_dir);
+    }
+    if pkg.namespace == "preview" {
+        let url = format!(
+            "https://packages.typst.org/preview/{}-{}.tar.gz",
+            pkg.name, pkg.version
+        );
+        println!("Downloading package: {url} to {}", package_dir.display());
+        let response = ureq::get(&url).call().map_err(|e| {
+            FileError::Other(Some(format!("Failed to download package: {e}").into()))
+        })?;
+        let mut body = response.into_body();
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(body.as_reader()));
+        let dld_dir = cache_dir.with_extension("_downloading");
+        if dld_dir.exists() {
+            let _ = std::fs::remove_dir_all(&dld_dir);
+        }
+        std::fs::create_dir_all(&dld_dir).map_err(|e| FileError::from_io(e, &dld_dir))?;
+        archive
+            .unpack(&dld_dir)
+            .map_err(|e| FileError::Other(Some(format!("Failed to unpack package: {e}").into())))?;
+        std::fs::rename(&dld_dir, &package_dir).map_err(|e| FileError::from_io(e, &package_dir))?;
+        Ok(package_dir)
+    } else {
+        Err(FileError::NotFound(PathBuf::from(format!(
+            "@{}/{} version {}",
+            pkg.namespace, pkg.name, pkg.version
+        ))))
+    }
+}
+
 /// 我的[世界](typst::World)
 struct Minecraft {
     fontbook: LazyHash<FontBook>,
@@ -304,11 +369,14 @@ struct Minecraft {
     main_fileid: FileId,
     main_content: String,
     root_path: PathBuf,
+    fonts: Vec<Font>,
+    package_cache_dir: TempDir,
 }
 
 impl Minecraft {
-    fn new(main_file_path: &Path, main_content: String) -> Self {
-        let fontbook = LazyHash::new(make_fontbook());
+    fn new(main_file_path: &Path, main_content: String, package_cache_dir: TempDir) -> Self {
+        let (fonts, fontbook) = load_builtin_fonts();
+        let fontbook = LazyHash::new(fontbook);
         let library = LazyHash::new(make_library());
         let root_path = main_file_path
             .parent()
@@ -328,17 +396,32 @@ impl Minecraft {
             main_fileid,
             main_content,
             root_path,
+            fonts,
+            package_cache_dir,
         }
     }
 
-    fn resolve_path(&self, vpath: &VirtualPath) -> FileResult<PathBuf> {
-        let path = vpath
-            .realize(&self.root_path)
-            .map_err(|e| FileError::Realize(e))?;
-        if !path.starts_with(&self.root_path) {
-            return Err(FileError::AccessDenied);
+    fn resolve_id(&self, id: FileId) -> FileResult<PathBuf> {
+        if id == self.main_fileid {
+            return Err(FileError::Other(Some("Main file is virtual".into())));
         }
-        Ok(path)
+        match id.root() {
+            VirtualRoot::Project => {
+                let path = id
+                    .vpath()
+                    .realize(&self.root_path)
+                    .map_err(FileError::Realize)?;
+
+                if !path.starts_with(&self.root_path) {
+                    return Err(FileError::AccessDenied);
+                }
+                Ok(path)
+            }
+            VirtualRoot::Package(package_spec) => {
+                let pkg_dir = prepare_package(package_spec, self.package_cache_dir.path())?;
+                id.vpath().realize(&pkg_dir).map_err(FileError::Realize)
+            }
+        }
     }
 }
 
@@ -359,28 +442,19 @@ impl World for Minecraft {
         if id == self.main_fileid {
             return Ok(Source::new(id, self.main_content.clone()));
         }
-        let path = self.resolve_path(id.vpath())?;
+        let path = self.resolve_id(id)?;
         let content = std::fs::read_to_string(&path).map_err(|e| FileError::from_io(e, &path))?;
         Ok(Source::new(id, content))
     }
 
     fn file(&self, id: FileId) -> FileResult<Bytes> {
-        let path = self.resolve_path(id.vpath())?;
+        let path = self.resolve_id(id)?;
         let content = std::fs::read(&path).map_err(|e| FileError::from_io(e, &path))?;
         Ok(Bytes::new(content))
     }
 
     fn font(&self, index: usize) -> Option<Font> {
-        // 需要优化一下?
-        let font_unifont_bin = include_bytes!("../asset/unifont-16.0.04.ttf");
-        let font_unifont = Font::new(Bytes::new(font_unifont_bin), 0);
-        let font_unifontex_bin = include_bytes!("../asset/UnifontExMono.ttf");
-        let font_unifontex = Font::new(Bytes::new(font_unifontex_bin), 0);
-        match index {
-            0 => font_unifont,
-            1 => font_unifontex,
-            _ => None,
-        }
+        self.fonts.get(index).cloned()
     }
 
     fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
@@ -644,7 +718,7 @@ impl NativeFunc for QrCodeFunc {
     fn data() -> &'static NativeFuncData {
         let data = NativeFuncData {
             function: typst_library::foundations::NativeFuncPtr(&Self::f),
-            name: todo!(),
+            name: "qrcode",
             title: todo!(),
             docs: todo!(),
             keywords: todo!(),
@@ -652,7 +726,7 @@ impl NativeFunc for QrCodeFunc {
             scope: todo!(),
             params: todo!(),
             returns: todo!(),
-            def_site: todo!(),
+            def_site: None,
         };
         todo!();
         // &data

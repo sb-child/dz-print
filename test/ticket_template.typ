@@ -33,7 +33,7 @@
   - 推荐设置 `#set text(font: "Unifont", size: 8pt)`
   - 还有 `#show math.equation: set text(font: "UnifontExMono")`
   - 或者 `#set text(font: "UnifontExMono", size: 8pt)`
-- 目前不支持导入 Typst 文件以及其他资源，目前的行为是 return AccessDenied
+- 支持导入 Typst 文件，typst.app 或本地 package
 - 渲染为宽度 576px 的图片后，会经过亮度截断处理为黑白位图，在考虑做二值化了，todo
 = 字体样式
 Unifont 字体没有别的 variant，所以斜体和粗体是不工作的，todo：
