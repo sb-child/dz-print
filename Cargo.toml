@@ -36,6 +36,7 @@ tempfile = "3.27.0"
 ureq = "3.3.0"
 tar = "0.4.46"
 flate2 = "1.1.9"
+deku = "0.20.3"
 
 [profile.release]
 opt-level = 2

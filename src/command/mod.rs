@@ -8,11 +8,14 @@ pub mod envelope;
 pub mod models;
 pub mod packager;
 pub mod response;
+pub mod template;
 pub mod varint;
+
+// --- 以下内容弃用重写
+
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::marker::PhantomData;
-use varint::{ToVariableBytes, VariableBytesI32};
 pub struct DefaultState;
 pub struct Host;
 pub struct Device;

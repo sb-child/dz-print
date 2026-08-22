@@ -15,6 +15,116 @@
 //!
 //! `0xC0|xxx` 指的是两个字节取或。
 
+use deku::{DekuError, DekuReader, DekuWriter, ctx::Order, no_std_io, reader::Reader};
+
+macro_rules! impl_var_int {
+    (
+        $(
+            $(#[$meta:meta])*
+            $vis:vis struct $name:ident {
+                bytes: $b:expr,
+                mode: $mode:expr $(,)?
+            }
+        );* $(;)?
+    ) => {
+        $(
+            $(#[$meta])*
+            #[derive(Debug, PartialEq, Clone, Copy, Default)]
+            $vis struct $name {
+                v: i32,
+            }
+
+            impl $name {
+                /// 编码所占用的字节数
+                pub const B: usize = $b;
+
+                /// 创建新实例
+                pub const fn new(v: i32) -> Self {
+                    Self { v }
+                }
+
+                /// 获取实例的值 (Getter)
+                pub const fn get(&self) -> i32 {
+                    self.v
+                }
+
+                /// 设置实例的值 (Setter)
+                pub fn set(&mut self, val: i32) {
+                    self.v = val;
+                }
+            }
+
+            impl<'a> DekuReader<'a> for $name {
+                fn from_reader_with_ctx<R: no_std_io::Read + no_std_io::Seek>(
+                    reader: &mut Reader<R>,
+                    _ctx: (),
+                ) -> Result<Self, DekuError>
+                where
+                    Self: Sized,
+                {
+                    let mut buf = [0u8; Self::B];
+                    reader.read_bytes_const(&mut buf, Order::Msb0)?;
+
+                    let dec = $mode.decode(&buf).ok_or_else(|| {
+                        DekuError::Parse(format!("Failed to parse {buf:?} in {:?} mode.", $mode).into())
+                    })?;
+
+                    let (val, read) = dec;
+                    reader.bits_read -= (Self::B - read) * 8;
+                    Ok(Self { v: val })
+                }
+            }
+
+            impl DekuWriter for $name {
+                fn to_writer<W: no_std_io::Write + no_std_io::Seek>(
+                    &self,
+                    writer: &mut deku::prelude::Writer<W>,
+                    _ctx: (),
+                ) -> Result<(), DekuError> {
+                    let v = $mode.encode_safe(self.v).ok_or_else(|| {
+                        DekuError::Parse(
+                            format!("Failed to encode {:?} in {:?} mode.", self.v, $mode).into(),
+                        )
+                    })?;
+                    writer.write_bytes(&v)?;
+                    Ok(())
+                }
+            }
+        )*
+    };
+}
+
+impl_var_int! {
+    /// 自动变长：编码 1/2/3 字节，解码自动识别 1/2 字节
+    /// - 编码上限 `4194303`，解码上限 `16383`
+    /// - 作为包长度字段时调用方必须保证 `<= 16383`
+    pub struct VarAuto {
+        bytes: 3,
+        mode: VarintMode::Auto,
+    };
+    /// 2 字节大端：`0xC0|高位 低位`
+    /// - 上限 `16383`
+    /// - 0x25 命令专用
+    pub struct VarFixed2 {
+        bytes: 2,
+        mode: VarintMode::Fixed2,
+    };
+    /// 3 字节大端：`0xC0|高位 中位 低位`
+    /// - 上限 `4194303`
+    /// - 0x45 命令专用
+    pub struct VarFixed3 {
+        bytes: 3,
+        mode: VarintMode::Fixed3,
+    };
+    /// 0xC0 标志 + 2 字节大端：`0xC0 高位 低位`
+    /// - 上限 `65535`
+    /// - 0x26 命令 + `v1` 机型专用
+    pub struct VarC0Be16 {
+        bytes: 2,
+        mode: VarintMode::C0Be16,
+    };
+}
+
 /// 编解码模式
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VarintMode {
@@ -60,6 +170,52 @@ impl VarintMode {
             VarintMode::Fixed2 => 2,
             VarintMode::Fixed3 | VarintMode::C0Be16 => 3,
         }
+    }
+
+    /// 编码。v 必须 >= 0 且 <= max_value()，否则返回 None。
+    pub fn encode_safe(self, v: i32) -> Option<Vec<u8>> {
+        if v >= 0 && v <= self.max_value() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(self.encoded_len(v));
+        self.encode_into(v, &mut out);
+        Some(out)
+    }
+
+    /// 编码到已有缓冲尾部。v 必须 >= 0 且 <= max_value()，否则返回 None。
+    pub fn encode_into_safe(self, v: i32, out: &mut Vec<u8>) -> Option<()> {
+        if v >= 0 && v <= self.max_value() {
+            return None;
+        }
+        match self {
+            VarintMode::Auto if v < 192 => {
+                out.push(v as u8);
+            }
+            VarintMode::Auto if v < 16_384 => {
+                out.push(0xC0 | ((v >> 8) as u8));
+                out.push((v & 0xFF) as u8);
+            }
+            VarintMode::Auto => {
+                out.push(0xC0 | ((v >> 16) as u8));
+                out.push(((v >> 8) & 0xFF) as u8);
+                out.push((v & 0xFF) as u8);
+            }
+            VarintMode::Fixed2 => {
+                out.push(0xC0 | ((v >> 8) as u8));
+                out.push((v & 0xFF) as u8);
+            }
+            VarintMode::Fixed3 => {
+                out.push(0xC0 | ((v >> 16) as u8));
+                out.push(((v >> 8) & 0xFF) as u8);
+                out.push((v & 0xFF) as u8);
+            }
+            VarintMode::C0Be16 => {
+                out.push(0xC0);
+                out.push(((v >> 8) & 0xFF) as u8);
+                out.push((v & 0xFF) as u8);
+            }
+        }
+        Some(())
     }
 
     /// 编码。v 必须 >= 0 且 <= max_value()，否则 panic。
