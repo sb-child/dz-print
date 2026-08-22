@@ -17,6 +17,10 @@
 - 一行字节，从左到右的每一个比特代表一个点(dot)。
 - 该点为比特1，代表打印(黑色)。该点为比特0，代表空白(白色不打印)。
 
+## 字符串
+
+字符串的编码可能是 GBK/GB2312。字符串有后缀 `0x00`。
+
 ## 机型区别对待
 
 为了方便区分，下面用 `vx` 代表这 3 个版本之一。
@@ -192,7 +196,7 @@
   - `0x3e` (X)
   - `0x3f` (X)
 
-- `0x4_` 打印设置
+- `0x4_` 打印设置 (可读取写入)
   - `0x40` (X)
   - `0x41` (X)
   - `0x42` 打印纸类型
@@ -200,8 +204,8 @@
   - `0x44` 打印速度
   - `0x45` 打印纸间隔
   - `0x46` (X)
-  - `0x47` # TODO 电机模式
-  - `0x48` # TODO 自动关机时间(分钟)
+  - `0x47` 电机模式
+  - `0x48` 自动关机时间(分钟)
   - `0x49` # TODO
   - `0x4a` (X)
   - `0x4b` (X)
@@ -210,43 +214,98 @@
   - `0x4e` (X)
   - `0x4f` (X)
 
-- `0x5_`
+- `0x5_` 设备信息
   - `0x50` (X)
   - `0x51` (X)
-  - `0x52` # TODO 支持的纸张类型
+  - `0x52` 支持的纸张类型
   - `0x53` (X)
   - `0x54` (X)
   - `0x55` (X)
   - `0x56` (X)
-  - `0x57` # TODO 支持的电机模式
+  - `0x57` 支持的电机模式
   - `0x58` (X)
-  - `0x59` # TODO 支持的语言
+  - `0x59` 支持的语言
   - `0x5a` (X)
-  - `0x5b` # TODO
+  - `0x5b` (X)
   - `0x5c` (X)
   - `0x5d` (X)
   - `0x5e` (X)
   - `0x5f` (X)
 
-- `0x7_` 设备信息
-  - `0x70` # TODO 打印机状态
-  - `0x71` # TODO DPI
-  - `0x72` # TODO 打印宽度, 出纸宽度
-  - `0x73` # TODO 打印统计
+- `0x7_` 设备信息 (可读取)
+  - `0x70` 获取打印机状态
+    - [打印状态](print-status.md)
+  - `0x71` 获取设备DPI
+    - 返回: `<Dpi:u16BE>`: 打印头DPI(比如`300`)
+  - `0x72` 获取打印宽度和出纸宽度
+    - 返回: `<PrintWidth:u16BE> <PaperWidth:u16BE> 00 00 00 00 00`
+      - `PrintWidth`: 打印头点数(比如`576`)
+      - `PaperWidth`: 支持最大纸宽(0.1mm)(比如`570`=57.0mm)
+  - `0x73` 获取打印统计信息 # TODO 可能有理解偏差
+    - 返回: `<WorkLines:u32BE> <PrintLines:u32BE> <NullLines:u32BE> <PrintPages:u32BE>`
+      - `WorkLines`: 电机一共走过的行数。
+      - `PrintLines`: 其中打印过的行数。
+      - `NullLines`: 其中走过的空行数。
+      - `PrintPages`: 打印过的总页数。
   - `0x74` (X)
   - `0x75` 制造商
+    - 返回: `<Manufacturer:string>`
+      - `Manufacturer`: 制造商名称。字符串。
   - `0x76` (X)
-  - `0x77` # TODO
-  - `0x78` # FIXME
+  - `0x77` 流控数据 # TODO 到底怎么用
+  - `0x78` 时间同步 (可读取写入) # TODO 到底怎么用
   - `0x79` 设备名
-  - `0x7a` # TODO 硬件版本
-  - `0x7b` # TODO
-  - `0x7c` 软件版本
-  - `0x7d` # TODO 蓝牙mac地址
+    - 返回: `<DeviceName:string>`
+      - `DeviceName`: 设备名，格式 `型号-序列号`
+  - `0x7a` 硬件版本 # TODO 不知道怎么parse
+    - 返回: `0x26, 0x01, 0x04, 0x01, 0x04` = 硬件版本 2.6
+  - `0x7b` 缓冲数据 # TODO
+  - `0x7c` 软件版本 # TODO
+  - `0x7d` 蓝牙mac地址
+    - 返回: `10 <BtMacAddr:6bytes> 14 <BtMacAddr:6bytes>`
+      - `BtMacAddr`: 蓝牙mac地址，示例 `60 6e 41 37 c4 37`=`60:6e:41:37:c4:37`。不知道为什么会重复两次。
   - `0x7e` # TODO 打印机会重启
   - `0x7f` # TODO
+- `0x8_`
+  - `0x80` 激活参数 # TODO
+  - `0x81`
+  - `0x82`
+  - `0x83`
+  - `0x84` 握手 # TODO
+  - `0x85`
+  - `0x86`
+  - `0x87`
+  - `0x88` 设备信息查询 # TODO
+  - `0x89`
+  - `0x8a`
+  - `0x8b`
+  - `0x8c`
+  - `0x8d`
+  - `0x8e`
+  - `0x8f`
+- `0x9_`
+  - `0x90`
+  - `0x91`
+  - `0x92`
+  - `0x93`
+  - `0x94`
+  - `0x95`
+  - `0x96`
+  - `0x97`
+  - `0x98`
+  - `0x99`
+  - `0x9a`
+  - `0x9b`
+  - `0x9c`
+  - `0x9d`
+  - `0x9e` 握手 # TODO
+  - `0x9f`
 
-### TODO
+---
+
+以下是比较旧的文档
+
+## TODO
 
 - `0x52` # TODO SupportedGapTypes 支持的纸张类型 `02, 03, 04, 00`
 
@@ -288,7 +347,7 @@
 
 - `0x7f` # TODO `00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00`
 
-#### 电池数量, hardwareFlags, softwareFlags
+### 电池数量, hardwareFlags, softwareFlags
 
 - (# FIXME) `主机->设备` `0x84`
   - 无参数
@@ -308,7 +367,7 @@ if (dataPackageReader.getRemainingLength() >= 4) {
 }
 ```
 
-#### peripheralFlags
+### peripheralFlags
 
 - (# FIXME) 读取 peripheralFlags `主机->设备` `0x83`
   - 无参数
@@ -318,7 +377,7 @@ if (dataPackageReader.getRemainingLength() >= 4) {
   - 否则
     - `[0]` peripheralFlags
 
-#### 打印头温度/电池电压和充电状态
+### 打印头温度/电池电压和充电状态
 
 - (# FIXME) 读取打印头温度/电池电压和充电状态 `主机->设备` `0x88`
   - 参数 读取打印头温度
@@ -340,11 +399,11 @@ if (dataPackageReader.getRemainingLength() >= 4) {
     }
     ```
 
-#### `0x9e` 未知
+### `0x9e` 未知
 
 - (# FIXME) `主机->设备` `0x9e`
 
-#### 芯片ID/生产日期/升级CRC/stackHead, stackTail, heapHead, heapTail, maxStack, heapUnused, heapMinUnused
+### 芯片ID/生产日期/升级CRC/stackHead, stackTail, heapHead, heapTail, maxStack, heapUnused, heapMinUnused
 
 - (# FIXME) `主机->设备` `0x9f`
   - 参数 读取芯片ID
@@ -356,7 +415,7 @@ if (dataPackageReader.getRemainingLength() >= 4) {
   - 参数 读取 stackHead, stackTail, heapHead, heapTail, maxStack, heapUnused, heapMinUnused
     - `[0]` `0x61` `需要进一步确定`
 
-#### 激活 `> 0x80` 命令
+### 激活 `> 0x80` 命令
 
 - (# FIXME) `主机->设备` `0x80`
   - 发送 `> 0x80` 的命令前, 需要发送这个命令
