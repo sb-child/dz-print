@@ -2,6 +2,8 @@
 
 ## [变长编码](src/command/varint.rs)
 
+## [RLE 编码](rle.md)
+
 ## 单位
 
 - 1个物理毫米(mm) = `25.4 / DPI`
