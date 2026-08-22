@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use super::variable_bytes::{ToVariableBytes, VariableBytesI32};
+use super::varint::{ToVariableBytes, VariableBytesI32};
 
 pub fn package_usb(x: Vec<u8>) -> Vec<u8> {
     let packet_len_buf = (x.len() as i32).to_variable_bytes();

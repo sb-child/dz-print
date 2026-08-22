@@ -3,12 +3,16 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 pub mod checksum;
+pub mod command;
+pub mod envelope;
+pub mod models;
 pub mod packager;
-pub mod variable_bytes;
+pub mod response;
+pub mod varint;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::marker::PhantomData;
-use variable_bytes::{ToVariableBytes, VariableBytesI32};
+use varint::{ToVariableBytes, VariableBytesI32};
 pub struct DefaultState;
 pub struct Host;
 pub struct Device;
@@ -184,7 +188,9 @@ mod test {
             assert_eq!(b, 17);
             assert_eq!(
                 cmd.get_payload(),
-                vec![0x33, 0x2e, 0x31, 0x2e, 0x32, 0x30, 0x32, 0x33, 0x30, 0x36, 0x32, 0x30, 0x00]
+                vec![
+                    0x33, 0x2e, 0x31, 0x2e, 0x32, 0x30, 0x32, 0x33, 0x30, 0x36, 0x32, 0x30, 0x00
+                ]
             );
             assert_eq!(cmd.get_command(), DeviceCommand::SoftwareVersion);
         } else {
