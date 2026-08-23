@@ -2,6 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//! 开始页命令
+//!
+//! - `StartPageV2Tl`: v2机型: `1f 20`
+//! - `StartPageV0Tl`: v0机型: `1b 40`
+//! - v1机型: 没有这种命令，不需要开始页。
+
 use super::der;
 
 /// 开始页命令: v2机型: `1f 20`

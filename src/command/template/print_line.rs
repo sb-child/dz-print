@@ -2,6 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//! 打印一行
+//!
+//! - `PrintLineV2Tl`: v2机型: `1f 21`
+//! - `PrintLineV1Tl`: v1机型: `1f 2a`
+//! - `PrintLineV2V1Tl`: v2,v1机型: `1f 2b`
+//! - `PrintLineV0Tl`: v0机型: `1d 76`
+
 use super::der;
 use super::varint::VarAuto;
 
