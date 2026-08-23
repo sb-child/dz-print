@@ -186,6 +186,7 @@ def gen(data: dict[str, Any]):
 
 
 def main():
+    # todo
     commands_fp = script_dir / "req-cmd.toml"
     with open(commands_fp, "rb") as f:
         data = tomllib.load(f)

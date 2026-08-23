@@ -69,14 +69,14 @@
 ## 命令列表 - 命令组 `0x1a` (仅`v0`机型)
 
 - `0x3_`
-  - `0x37` 水平偏移(设置标签宽度)
+  - `0x37` 水平偏移 `rust:PageOffsetV0Tl` [代码](src/command/req_template/page_offset.rs)
     - `1a 37 <n>`
       - `n`: 水平偏移*毫米* + 150。1字节。`n = (偏移mm / (DPI/25.4)) + 150`
-  - `0x38` 页开始参数。
+  - `0x38` 页开始参数。`rust:StartPageSeq1V0Tl` [代码](src/command/req_template/start_page_seqs_v0.rs)
     - `1a 38 01` (参数固定 `0x01`)
-  - `0x39` 页开始参数。
+  - `0x39` 页开始参数。`rust:StartPageSeq2V0Tl` [代码](src/command/req_template/start_page_seqs_v0.rs)
     - `1a 39 01` (参数固定 `0x01`)
-  - `0x3a` 页开始参数。
+  - `0x3a` 页开始参数。`rust:StartPageSeq3V0Tl` [代码](src/command/req_template/start_page_seqs_v0.rs)
     - `1a 3a 02` (参数固定 `0x02`)
 
 ## 命令列表 - 命令组 `0x1b`
@@ -128,14 +128,14 @@
     - `v2`机型: `1f 26 <Lines:变长>` `rust:TotalLinesV2Tl` [代码](src/command/req_template/total_lines.rs)
     - `v1`机型: `1f 26 <Lines:C0Be16>` `rust:TotalLinesV1Tl` [代码](src/command/req_template/total_lines.rs)
     - `v0`机型: 没有这种命令。
-  - `0x27` 水平偏移(设置标签宽度)
+  - `0x27` 设置标签宽度 `rust:PageWidthV2V1Tl` [代码](src/command/req_template/page_width.rs)
     - `v2,v1`机型: `1f 27 <Width>`: `Width` = (宽(dot)+7)/8, 1字节。
     - `v0`机型: 见 `1a 37`。
   - `0x28` 结束页命令(结束一页) `rust:EndPageV2Tl` [代码](src/command/req_template/end_page.rs)
     - `v2`机型: `1f 28`，无参数。
     - `v1`机型: 见 `0c`。
     - `v0`机型: 见 `1d 56`。
-  - `0x29` 打印RLE*字节级*压缩的一行
+  - `0x29` 打印RLE*字节级*压缩的一行 `rust:PrintLineRleByteV2Tl` [代码](src/command/req_template/print_line_rle.rs)
     - `v2`机型: `1f 29 <RleByteLen:变长> <RleData>`。编码失败回退 `1f 2b`。
       - `RleByteLen`: RLE数据字节数。
       - `RleData`: RLE数据。
@@ -153,11 +153,11 @@
       - `DataLen`: 位图数据长度。取值 `0~191`。
       - `Data`: 位图数据。
     - `v0`机型: 见 `1d 76`。
-  - `0x2c` 打印RLE*位级*压缩的一行(RLE5X)
+  - `0x2c` 打印RLE*位级*压缩的一行(RLE5X) `rust:PrintLineRle5xV2Tl` [代码](src/command/req_template/print_line_rle.rs)
     - `v2`机型: `1f 2c <符号数:变长> <5位位流>`。编码失败回退 `1f 2b`。
     - `v1`机型: 没有这种命令。见 `1f 2b`。
     - `v0`机型: 没有这种命令。见 `1d 76`。
-  - `0x2d` 打印RLE*位级*压缩的一行(RLE5D)
+  - `0x2d` 打印RLE*位级*压缩的一行(RLE5D) `rust:PrintLineRle5dV2Tl` [代码](src/command/req_template/print_line_rle.rs)
     - `v2`机型: `1f 2d <符号数:变长> <5位位流>`。编码失败回退 `1f 2b`。
     - `v1`机型: 没有这种命令。见 `1f 2b`。
     - `v0`机型: 没有这种命令。见 `1d 76`。
@@ -178,19 +178,19 @@
   - `0x37` (X)
   - `0x38` (X)
   - `0x39` (X)
-  - `0x3a` 打印RLE*位级*压缩的一行(RLE4X)
+  - `0x3a` 打印RLE*位级*压缩的一行(RLE4X) `rust:PrintLineRle4xV2Tl` [代码](src/command/req_template/print_line_rle.rs)
     - `v2`机型: `1f 3a <符号数:变长> <4位位流>`。编码失败回退 `1f 2b`。
     - `v1`机型: 没有这种命令。见 `1f 2b`。
     - `v0`机型: 没有这种命令。见 `1d 76`。
-  - `0x3b` 打印RLE*位级*压缩的一行(RLE4D)
+  - `0x3b` 打印RLE*位级*压缩的一行(RLE4D) `rust:PrintLineRle4dV2Tl` [代码](src/command/req_template/print_line_rle.rs)
     - `v2`机型: `1f 3b <符号数:变长> <4位位流>`。编码失败回退 `1f 2b`。
     - `v1`机型: 没有这种命令。见 `1f 2b`。
     - `v0`机型: 没有这种命令。见 `1d 76`。
-  - `0x3c` 打印RLE*位级*压缩的一行(RLE6X)
+  - `0x3c` 打印RLE*位级*压缩的一行(RLE6X) `rust:PrintLineRle6xV2Tl` [代码](src/command/req_template/print_line_rle.rs)
     - `v2`机型: `1f 3c <符号数:变长> <6位位流>`。编码失败回退 `1f 2b`。
     - `v1`机型: 没有这种命令。见 `1f 2b`。
     - `v0`机型: 没有这种命令。见 `1d 76`。
-  - `0x3d` 打印RLE*位级*压缩的一行(RLE6D)
+  - `0x3d` 打印RLE*位级*压缩的一行(RLE6D) `rust:PrintLineRle6dV2Tl` [代码](src/command/req_template/print_line_rle.rs)
     - `v2`机型: `1f 3d <符号数:变长> <6位位流>`。编码失败回退 `1f 2b`。
     - `v1`机型: 没有这种命令。见 `1f 2b`。
     - `v0`机型: 没有这种命令。见 `1d 76`。
