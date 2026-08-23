@@ -12,10 +12,6 @@ use thiserror::Error;
 pub enum RleTransformError {
     #[error("Data is empty.")]
     EmptyData,
-    #[error("selector no matches")]
-    SelectorNoMatches,
-    #[error("tokio join error: `{0:?}`")]
-    TokioJoinError(#[from] tokio::task::JoinError),
 }
 
 pub struct BitmapLine {
