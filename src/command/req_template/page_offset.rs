@@ -4,7 +4,7 @@
 
 //! 设置水平偏移
 //!
-//! - `PageOffsetV0Tl`: v1机型: `1a 37`
+//! - `PageOffsetV0Tl`: v0机型: `1a 37`
 //! - v1,v2机型: 没有这种命令。
 
 use super::der;

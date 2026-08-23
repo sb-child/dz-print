@@ -16,5 +16,5 @@ pub enum PrinterErrorCode {
     TphTooCold = 39,
     UsedupRibbon = 40,
     UsedupRibbon2 = 41,
-    LabelCanOpend = 50,
+    LabelCanOpened = 50,
 }

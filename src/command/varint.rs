@@ -24,7 +24,6 @@ macro_rules! impl_var_int {
         $(
             $(#[$meta:meta])*
             $vis:vis struct $name:ident {
-                bytes: $b:expr,
                 mode: $mode:expr $(,)?
             }
         );* $(;)?
@@ -37,9 +36,6 @@ macro_rules! impl_var_int {
             }
 
             impl $name {
-                /// 编码所占用的字节数
-                pub const B: usize = $b;
-
                 /// 创建新实例
                 pub const fn new(v: i32) -> Self {
                     Self { v }
@@ -64,16 +60,15 @@ macro_rules! impl_var_int {
                 where
                     Self: Sized,
                 {
-                    let mut buf = [0u8; Self::B];
-                    reader.read_bytes_const(&mut buf, Order::Msb0)?;
-
-                    let dec = $mode.decode(&buf).ok_or_else(|| {
-                        DekuError::Parse(format!("Failed to parse {buf:?} in {:?} mode.", $mode).into())
-                    })?;
-
-                    let (val, read) = dec;
-                    reader.bits_read -= (Self::B - read) * 8;
-                    Ok(Self { v: val })
+                    let mut b0 = [0u8; 1];
+                    reader.read_bytes(1, &mut b0, Order::Msb0)?;
+                    if b0[0] & 0xC0 == 0xC0 {
+                        let mut b1 = [0u8; 1];
+                        reader.read_bytes(1, &mut b1, Order::Msb0)?;
+                        Ok(Self { v: (((b0[0] & 0x3F) as i32) << 8) | b1[0] as i32 })
+                    } else {
+                        Ok(Self { v: b0[0] as i32 })
+                    }
                 }
             }
 
@@ -101,28 +96,24 @@ impl_var_int! {
     /// - 编码上限 `4194303`，解码上限 `16383`
     /// - 作为包长度字段时调用方必须保证 `<= 16383`
     pub struct VarAuto {
-        bytes: 3,
         mode: VarintMode::Auto,
     };
     /// 2 字节大端：`0xC0|高位 低位`
     /// - 上限 `16383`
     /// - 0x25 命令专用
     pub struct VarFixed2 {
-        bytes: 2,
         mode: VarintMode::Fixed2,
     };
     /// 3 字节大端：`0xC0|高位 中位 低位`
     /// - 上限 `4194303`
     /// - 0x45 命令专用
     pub struct VarFixed3 {
-        bytes: 3,
         mode: VarintMode::Fixed3,
     };
     /// 0xC0 标志 + 2 字节大端：`0xC0 高位 低位`
     /// - 上限 `65535`
     /// - 0x26 命令 + `v1` 机型专用
     pub struct VarC0Be16 {
-        bytes: 3,
         mode: VarintMode::C0Be16,
     };
 }

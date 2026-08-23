@@ -71,7 +71,7 @@
 - `0x3_`
   - `0x37` 水平偏移 `rust:PageOffsetV0Tl` [代码](src/command/req_template/page_offset.rs)
     - `1a 37 <n>`
-      - `n`: 水平偏移*毫米* + 150。1字节。`n = (偏移mm / (DPI/25.4)) + 150`
+      - `n`: 水平偏移*毫米* + 150。1字节。`n = (偏移px / (DPI/25.4)) + 150`
   - `0x38` 页开始参数。`rust:StartPageSeq1V0Tl` [代码](src/command/req_template/start_page_seqs_v0.rs)
     - `1a 38 01` (参数固定 `0x01`)
   - `0x39` 页开始参数。`rust:StartPageSeq2V0Tl` [代码](src/command/req_template/start_page_seqs_v0.rs)
@@ -123,7 +123,7 @@
   - `0x23` (X)
   - `0x24` (X)
   - `0x25` 加热控制 `rust:HeatControlV2V1V0Tl` [代码](src/command/req_template/heat_control.rs)
-    - `v0,v1,v2`机型: `1f 25 <StartDots:变长> <EndDots:变长>`
+    - `v0,v1,v2`机型: `1f 25 <StartDots:VarFixed2> <EndDots:VarFixed2>`
   - `0x26` 设置本次打印总行数(包括空白行)
     - `v2`机型: `1f 26 <Lines:变长>` `rust:TotalLinesV2Tl` [代码](src/command/req_template/total_lines.rs)
     - `v1`机型: `1f 26 <Lines:C0Be16>` `rust:TotalLinesV1Tl` [代码](src/command/req_template/total_lines.rs)

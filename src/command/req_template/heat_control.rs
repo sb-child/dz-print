@@ -4,7 +4,7 @@
 
 //! 加热控制
 //!
-//! - `PrintLineV2Tl`: v2,v1,v0机型: `1f 25`
+//! - `HeatControlV2V1V0Tl`: v2,v1,v0机型: `1f 25`
 
 use super::der;
 use super::varint::VarFixed2;

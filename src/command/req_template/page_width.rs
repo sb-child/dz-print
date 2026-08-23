@@ -4,7 +4,7 @@
 
 //! 设置打印宽度
 //!
-//! - `LabelWidthV2V1Tl`: v2,v1机型: `1f 27`
+//! - `PageWidthV2V1Tl`: v2,v1机型: `1f 27`
 //! - v0机型: 见 `1a 37`（HorizontalOffsetV0Tl）。
 
 use super::der;
@@ -36,7 +36,7 @@ mod tests {
     }
 
     #[test]
-    fn test_label_width_v2v1_tl_2() {
+    fn test_page_width_v2v1_tl_2() {
         let b = PageWidthV2V1Tl {
             bytes: VarAuto::new(191),
             ..Default::default()

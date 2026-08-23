@@ -57,6 +57,7 @@ pub struct PrintLineV0Tl {
     #[deku(endian = "little")]
     /// data_len = 位图数据字节数。建议值=`data.len()`。取值 `0..=65535`。
     data_len: u16,
+    #[deku(magic = b"\x01\x00")]
     /// data = 位图数据。
     data: Vec<u8>,
     _tail: (),
@@ -151,7 +152,7 @@ mod tests {
             ..Default::default()
         };
         let enc = enc_tl(&b);
-        let exp = hexdec("1d 76 30 00 0c 00 01 02 03");
+        let exp = hexdec("1d 76 30 00 0c 00 01 00 01 02 03");
         eq(&enc, &exp);
     }
 
@@ -163,7 +164,7 @@ mod tests {
             ..Default::default()
         };
         let enc = enc_tl(&b);
-        let exp = hexdec("1d 76 30 00 ae 08 01 02 03 04");
+        let exp = hexdec("1d 76 30 00 ae 08 01 00 01 02 03 04");
         eq(&enc, &exp);
     }
 }
