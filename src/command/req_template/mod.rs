@@ -10,11 +10,13 @@ pub mod darkness;
 pub mod end_page;
 pub mod feed_line;
 pub mod gap_length;
+pub mod heat_control;
 pub mod print_line;
 pub mod repeat_line;
 pub mod speed;
 pub mod start_page;
 pub mod start_page_seqs_v0;
+pub mod total_lines;
 
 #[cfg(test)]
 mod test_toolkits {

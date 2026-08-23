@@ -122,11 +122,11 @@
     - `v1,v0`机型: 见 `1b 4a`。
   - `0x23` (X)
   - `0x24` (X)
-  - `0x25` 加热控制 # TODO: 什么机型支持？怎么用？要用VarFixed2?
+  - `0x25` 加热控制 `rust:HeatControlV2V1V0Tl` [代码](src/command/req_template/heat_control.rs)
     - `v0,v1,v2`机型: `1f 25 <StartDots:变长> <EndDots:变长>`
   - `0x26` 设置本次打印总行数(包括空白行)
-    - `v2`机型: `1f 26 <Lines:变长>`
-    - `v1`机型: `1f 26 <Lines:C0Be16>`
+    - `v2`机型: `1f 26 <Lines:变长>` `rust:TotalLinesV2Tl` [代码](src/command/req_template/total_lines.rs)
+    - `v1`机型: `1f 26 <Lines:C0Be16>` `rust:TotalLinesV1Tl` [代码](src/command/req_template/total_lines.rs)
     - `v0`机型: 没有这种命令。
   - `0x27` 水平偏移(设置标签宽度)
     - `v2,v1`机型: `1f 27 <Width>`: `Width` = (宽(dot)+7)/8, 1字节。
