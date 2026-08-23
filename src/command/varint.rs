@@ -15,6 +15,8 @@
 //!
 //! `0xC0|xxx` 指的是两个字节取或。
 
+use std::ops::Range;
+
 use deku::{DekuError, DekuReader, DekuWriter, ctx::Order, no_std_io, reader::Reader};
 
 macro_rules! impl_var_int {
@@ -174,7 +176,7 @@ impl VarintMode {
 
     /// 编码。v 必须 >= 0 且 <= max_value()，否则返回 None。
     pub fn encode_safe(self, v: i32) -> Option<Vec<u8>> {
-        if v >= 0 && v <= self.max_value() {
+        if v < 0 || v > self.max_value() {
             return None;
         }
         let mut out = Vec::with_capacity(self.encoded_len(v));
@@ -184,7 +186,7 @@ impl VarintMode {
 
     /// 编码到已有缓冲尾部。v 必须 >= 0 且 <= max_value()，否则返回 None。
     pub fn encode_into_safe(self, v: i32, out: &mut Vec<u8>) -> Option<()> {
-        if v >= 0 && v <= self.max_value() {
+        if v < 0 || v > self.max_value() {
             return None;
         }
         match self {
