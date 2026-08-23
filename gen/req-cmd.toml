@@ -1,0 +1,33 @@
+[root]
+[root.darkness]
+docs = "设置打印浓度"
+extra = ""
+
+[[darkness]]
+pattern = "1f 43 <darkness>"
+supports = [2, 1]
+[darkness.docs.darkness]
+is = "打印浓度"
+type = "u8"
+range = "0..=14"
+
+[[darkness]]
+pattern = "1f 43 <darkness>"
+supports = [0]
+[darkness.docs.darkness]
+is = "打印浓度 + 1"
+extra = ""
+type = "u8"
+range = "1..=15"
+endian = "little"
+
+[end-page]
+supports = [2, 1, 0]
+[feed-line]
+supports = [2, 1, 0]
+[gap-length]
+[print-line]
+[repeat-line]
+[speed]
+[start-page]
+[start-page-seqs-v0]
