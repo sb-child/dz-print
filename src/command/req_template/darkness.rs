@@ -23,7 +23,7 @@ mod tests {
     use super::super::test_toolkits::{enc_tl, eq, hexdec};
     use super::*;
     #[test]
-    fn test_darkness_v2v1_tl_1() {
+    fn test_darkness_v2v1v0_tl_1() {
         let b = DarknessV2V1V0Tl {
             darkness: 5,
             ..Default::default()

@@ -9,6 +9,7 @@ pub use derive_aliases::derive as der;
 pub mod darkness;
 pub mod end_page;
 pub mod feed_line;
+pub mod gap_length;
 pub mod print_line;
 pub mod repeat_line;
 pub mod speed;
