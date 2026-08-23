@@ -122,7 +122,7 @@ impl_var_int! {
     /// - 上限 `65535`
     /// - 0x26 命令 + `v1` 机型专用
     pub struct VarC0Be16 {
-        bytes: 2,
+        bytes: 3,
         mode: VarintMode::C0Be16,
     };
 }

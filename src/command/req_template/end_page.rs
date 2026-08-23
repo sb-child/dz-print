@@ -37,7 +37,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_print_line_v2_tl_1() {
+    fn test_end_page_v2_tl_1() {
         let b = EndPageV2Tl {
             ..Default::default()
         };
@@ -47,7 +47,7 @@ mod tests {
     }
 
     #[test]
-    fn test_print_line_v2_tl_2() {
+    fn test_end_page_v1_tl_1() {
         let b = EndPageV1Tl {
             ..Default::default()
         };
@@ -57,7 +57,7 @@ mod tests {
     }
 
     #[test]
-    fn test_print_line_v2v1_tl_1() {
+    fn test_end_page_v0_tl_1() {
         let b = EndPageV0Tl {
             ..Default::default()
         };

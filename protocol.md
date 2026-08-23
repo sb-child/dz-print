@@ -64,7 +64,7 @@
 
 ## 命令列表 - 裸命令
 
-- `0x0c` 结束页命令(结束一页)。`0c`。无参数。仅`v1`机型。`rust:EndPageV1Tl` [代码](src/command/template/end_page.rs)
+- `0x0c` 结束页命令(结束一页)。`0c`。无参数。仅`v1`机型。`rust:EndPageV1Tl` [代码](src/command/req_template/end_page.rs)
 
 ## 命令列表 - 命令组 `0x1a` (仅`v0`机型)
 
@@ -82,47 +82,47 @@
 ## 命令列表 - 命令组 `0x1b`
 
 - `0x4_`
-  - `0x40` 开始页命令 `rust:StartPageV0Tl` [代码](src/command/template/start_page.rs)
+  - `0x40` 开始页命令 `rust:StartPageV0Tl` [代码](src/command/req_template/start_page.rs)
     - `v2`机型: 见 `1f 20`。
     - `v1`机型: 没有这种命令(不需要开始页)。
     - `v0`机型: `1b 40`。无参数。
-  - `0x4a` 走纸 `rust:FeedLineV1V0Tl` [代码](src/command/template/feed_line.rs)
+  - `0x4a` 走纸 `rust:FeedLineV1V0Tl` [代码](src/command/req_template/feed_line.rs)
     - `v2`机型: 如果 `BLE && n <= 255` 才会使用 `1b 4a <n>`。否则见 `1f 22`。
     - `v1,v0`机型: `1b 4a <n>`: 走纸 `n` 行。取值 `1 ~ 255`。
 
 ## 命令列表 - 命令组 `0x1d` (仅`v0`机型)
 
 - `0x5_`
-  - `0x56` 结束页命令(结束一页): `1d 56 42 00`。无参数。走纸到标签间隙。`rust:EndPageV0Tl` [代码](src/command/template/end_page.rs)
+  - `0x56` 结束页命令(结束一页): `1d 56 42 00`。无参数。走纸到标签间隙。`rust:EndPageV0Tl` [代码](src/command/req_template/end_page.rs)
 - `0x7_`
-  - `0x76` 打印一行: `1d 76 30 00 <Len:定长> 01 00 <Data>` | `rust:PrintLineV0Tl` [代码](src/command/template/print_line.rs)
+  - `0x76` 打印一行: `1d 76 30 00 <Len:定长> 01 00 <Data>` | `rust:PrintLineV0Tl` [代码](src/command/req_template/print_line.rs)
     - `Len`: 位图数据字节数，2字节小端(u16LE)。
     - `Data`: 位图数据。
 
 ## 命令列表 - 命令组 `0x1f`
 
 - `0x2_` 打印命令 (特殊命令)
-  - `0x20` 开始页命令: `rust:StartPageV2Tl` [代码](src/command/template/start_page.rs)
+  - `0x20` 开始页命令: `rust:StartPageV2Tl` [代码](src/command/req_template/start_page.rs)
     - `v2`机型: `1f 20 <PAGE_KEY:定长> 00 00 00 00 <PRINT_SEPARATE_LINE> 00`
       - `PAGE_KEY`: 本页的编号，2字节大端(u16BE)。范围 `1~65534`，溢出重置到 `1`。
       - `PRINT_SEPARATE_LINE`: 是否打印分隔线，1字节。取值 `0 | 1`。
     - `v1`机型: 没有这种命令，不需要开始页。
     - `v0`机型: 见 `1b 40`。
-  - `0x21` 打印一行: `rust:PrintLineV2Tl` [代码](src/command/template/print_line.rs)
+  - `0x21` 打印一行: `rust:PrintLineV2Tl` [代码](src/command/req_template/print_line.rs)
     - `v2`机型: `1f 21 <Repeats:变长> <Skips:变长> <Data>`
       - `Repeats`: 重复次数 - 1。0 代表这一行只打印一次。取值 `0~16383`。
       - `Skips`: 向右偏移的字节数。取值 `0~191`。
       - `Data`: 位图数据。
     - `v1`机型: 见 `1f 2b`。
     - `v0`机型: 见 `1d 76`。
-  - `0x22` 走纸 `rust:FeedLineV2Tl` [代码](src/command/template/feed_line.rs)
+  - `0x22` 走纸 `rust:FeedLineV2Tl` [代码](src/command/req_template/feed_line.rs)
     - `v2`机型: `1f 22 <n:变长>`
       - `n`: 走纸行数 - 1。取值 `0~16383`。
       - 如果 `BLE && (n+1) <= 255`，应使用 `1b 4a <n2>`，此处的 `n2` 取值 `1~255`。
     - `v1,v0`机型: 见 `1b 4a`。
   - `0x23` (X)
   - `0x24` (X)
-  - `0x25` 加热控制 # TODO: 什么机型支持？怎么用？
+  - `0x25` 加热控制 # TODO: 什么机型支持？怎么用？要用VarFixed2?
     - `v2`机型+(): `1f 25 <StartDots:变长> <EndDots:变长>`
   - `0x26` 设置本次打印总行数(包括空白行)
     - `v2`机型: `1f 26 <Lines:变长>`
@@ -131,7 +131,7 @@
   - `0x27` 水平偏移(设置标签宽度)
     - `v2,v1`机型: `1f 27 <Width>`: `Width` = (宽(dot)+7)/8, 1字节。
     - `v0`机型: 见 `1a 37`。
-  - `0x28` 结束页命令(结束一页) `rust:EndPageV2Tl` [代码](src/command/template/end_page.rs)
+  - `0x28` 结束页命令(结束一页) `rust:EndPageV2Tl` [代码](src/command/req_template/end_page.rs)
     - `v2`机型: `1f 28`，无参数。
     - `v1`机型: 见 `0c`。
     - `v0`机型: 见 `1d 56`。
@@ -141,13 +141,13 @@
       - `RleData`: RLE数据。
     - `v1`机型: 没有这种命令。见 `1f 2b`。
     - `v0`机型: 没有这种命令。见 `1d 76`。
-  - `0x2a` 打印一行 `rust:PrintLineV1Tl` [代码](src/command/template/print_line.rs)
+  - `0x2a` 打印一行 `rust:PrintLineV1Tl` [代码](src/command/req_template/print_line.rs)
     - `v2`机型: 见 `1f 21`。
     - `v1`机型: `1f 2a <Dots:定长> <Data>`
       - `Dots`: 位图数据的点数(位数)，2字节小端(u16LE)。
       - `Data`: 位图数据。
     - `v0`机型: 见 `1d 76`。
-  - `0x2b` 打印一行 `rust:PrintLineV2V1Tl` [代码](src/command/template/print_line.rs)
+  - `0x2b` 打印一行 `rust:PrintLineV2V1Tl` [代码](src/command/req_template/print_line.rs)
     - `v2,v1`机型: `1f 2b <Skips:变长> <DataLen:变长> <Data>`
       - `Skips`: 向右偏移的字节数。取值 `0~191`。
       - `DataLen`: 位图数据长度。取值 `0~191`。
@@ -161,7 +161,7 @@
     - `v2`机型: `1f 2d <符号数:变长> <5位位流>`。编码失败回退 `1f 2b`。
     - `v1`机型: 没有这种命令。见 `1f 2b`。
     - `v0`机型: 没有这种命令。见 `1d 76`。
-  - `0x2e` 重复上一行 `rust:RepeatLineV2V1Tl` [代码](src/command/template/repeat_line.rs)
+  - `0x2e` 重复上一行 `rust:RepeatLineV2V1Tl` [代码](src/command/req_template/repeat_line.rs)
     - `v2`机型: `1f 2e <n:变长>`: `n` 取值 `0~16383`，重复打印 `n + 1` 行。
     - `v1`机型: `1f 2e <n:变长>`: `n` 取值 `0~191`，重复打印 `n + 1` 行。
     - `v0`机型: 没有这种命令。应重发 `1d 76` 命令实现。
@@ -203,7 +203,7 @@
   - `0x42` 打印纸类型 [见这里](#打印纸类型) #TODO 所以到底怎么回事
   - `0x43` 打印浓度 [见这里](#打印浓度)
   - `0x44` 打印速度 [见这里](#打印速度)
-  - `0x45` 打印纸间隔 [见这里](#打印纸间隔) 非连续纸才生效 `v2`机型支持，`v1,v0`机型也许支持。 # TODO 待测试
+  - `0x45` 打印纸间隔 [见这里](#打印纸间隔) 非连续纸才生效 `v2`机型支持，`v1,v0`机型也许支持。 # TODO 待测试 用VarFixed3?
   - `0x46` (X)
   - `0x47` 电机模式
   - `0x48` 自动关机时间(分钟)
