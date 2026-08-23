@@ -2,8 +2,21 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+pub mod run;
+
 use deku::bitvec::BitVec;
 use deku::bitvec::LocalBits;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum RleTransformError {
+    #[error("Data is empty.")]
+    EmptyData,
+    #[error("selector no matches")]
+    SelectorNoMatches,
+    #[error("tokio join error: `{0:?}`")]
+    TokioJoinError(#[from] tokio::task::JoinError),
+}
 
 pub struct BitmapLine {
     data: BitVec,
@@ -24,7 +37,6 @@ pub struct Run {
 #[cfg(test)]
 mod tests {
     use deku::bitvec::bits;
-    use typst::foundations::Fold;
 
     use super::*;
 
@@ -48,7 +60,7 @@ mod tests {
         let v: Vec<Run> = prepend_zero
             .into_iter()
             .chain(bm3.iter_ones())
-            .chain(std::iter::once(len)) // 补充末尾边界 bm.len()
+            .chain(std::iter::once(len))
             .map_windows(|[a, b]| b - a)
             .enumerate()
             .map(|(idx, num)| {
