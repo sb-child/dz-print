@@ -3,12 +3,14 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 pub mod checksum;
-pub mod command;
 pub mod envelope;
 pub mod models;
 pub mod packager;
+pub mod req;
+pub mod req_template;
 pub mod response;
-pub mod template;
+pub mod settings;
+pub mod status;
 pub mod varint;
 
 // --- 以下内容弃用重写

@@ -23,7 +23,7 @@ pub struct FeedLineV2Tl {
 #[der(..CmdTemplate)]
 pub struct FeedLineV1V0Tl {
     #[deku(magic = b"\x1b\x4a")]
-    /// lines = (走纸行数 - 1)。取值 `1..=255`。
+    /// lines = 走纸行数。取值 `1..=255`。
     lines: u8,
     _tail: (),
 }

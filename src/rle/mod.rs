@@ -2,156 +2,111 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-// wip
+use deku::bitvec::BitVec;
+use deku::bitvec::LocalBits;
 
-/// RLE encode processing function
-#[allow(clippy::ptr_arg, clippy::needless_return)]
-pub fn m304a(arr: &mut Vec<i8>, dzint: &mut i32, b: i8, mut i: i32, line_bytes: i32) -> bool {
-    while i >= 63 {
-        if *dzint + 2 > line_bytes {
-            return false;
-        }
-
-        arr[{
-            let x = *dzint;
-            *dzint = x + 1;
-            x as usize
-        }] = -1;
-
-        arr[{
-            let x = *dzint;
-            *dzint = x + 1;
-            x as usize
-        }] = b;
-
-        i -= 63;
-    }
-
-    match i {
-        1 => {
-            if (b as u8) > 192 {
-                if *dzint + 2 <= line_bytes {
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = -63;
-
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = b;
-                } else {
-                    return false;
-                }
-            } else {
-                if *dzint < line_bytes {
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = b;
-                    return true;
-                }
-                return false;
-            }
-        }
-        2 => {
-            if *dzint + 2 <= line_bytes {
-                if (b as u8) > 192 {
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = -62;
-
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = b;
-                } else {
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = b;
-
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = b;
-                }
-                return false;
-            }
-        }
-        _ => {
-            if i > 0 {
-                if *dzint + 2 <= line_bytes {
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = (i | 192) as i8;
-
-                    arr[{
-                        let x = *dzint;
-                        *dzint = x + 1;
-                        x as usize
-                    }] = b;
-                } else {
-                    return false;
-                }
-            }
-            return true;
-        }
-    }
-    false
+pub struct BitmapLine {
+    data: BitVec,
 }
 
-/// RLE encode
-#[allow(clippy::ptr_arg, clippy::needless_return)]
-pub fn m305a(arr: Vec<i8>, i: i32, arr2: &mut Vec<i8>, line_bytes: i32) -> i32 {
-    if i > 0 {
-        let mut dzint = 0;
-        let mut b = arr[0];
-        let mut i2 = 1;
-        for i3 in 1..i {
-            if arr[i3 as usize] == b {
-                i2 += 1;
-            } else {
-                if !m304a(arr2, &mut dzint, b, i2, line_bytes) {
-                    return 0;
-                }
-                b = arr[i3 as usize];
-                i2 = 1;
-            }
-        }
-        if !m304a(arr2, &mut dzint, b, i2, line_bytes) {
-            return 0;
-        }
-        return dzint;
-    } else {
-        return 0;
+impl BitmapLine {
+    pub fn new(data: BitVec) -> Self {
+        Self { data }
     }
 }
 
-/// RLE5 encode
-pub fn m307a() {}
+#[derive(Debug, PartialEq)]
+pub struct Run {
+    pub value: bool,
+    pub count: usize,
+}
 
 #[cfg(test)]
-mod test {
-    use super::m305a;
+mod tests {
+    use deku::bitvec::bits;
+    use typst::foundations::Fold;
+
+    use super::*;
 
     #[test]
-    fn test_rle_m305a() {
-        let arr1: Vec<i8> = vec![0, 111, 1, 2, 2, 2, 2, 3, 4, 4, 5, 5, 5, 6];
-        let arr1_len = arr1.len();
-        let mut arr2: Vec<i8> = Vec::new();
-        arr2.resize(arr1.len(), 0);
-        m305a(arr1, arr1_len as i32, &mut arr2, 32);
-        println!("{arr2:?}");
+    fn test() {
+        let b = bits![u16, LocalBits;
+        1, 1, 1, 1, 1, 0, 0, 0,
+        0, 0, 1, 0, 1, 0, 1, 0,
+        1, 1, 1, 1, 1, 1, 0, 0,
+        0, 0, 0, 0, 1,];
+        let bm = BitVec::from_bitslice(b);
+        let len = bm.len();
+        let first: bool = (*bm.first().unwrap()).into();
+        let mut bm2 = bm.clone();
+        bm2.shift_end(1);
+        let bm3 = bm.clone() ^ bm2.clone();
+        println!("{}", bm);
+        println!("{}", bm2);
+        println!("{}", bm ^ bm2);
+        let prepend_zero = if !first { Some(0) } else { None };
+        let v: Vec<Run> = prepend_zero
+            .into_iter()
+            .chain(bm3.iter_ones())
+            .chain(std::iter::once(len)) // 补充末尾边界 bm.len()
+            .map_windows(|[a, b]| b - a)
+            .enumerate()
+            .map(|(idx, num)| {
+                // println!("{}, {}", idx, num);
+                let bitval = (idx % 2 != 0) ^ first;
+                Run {
+                    value: bitval,
+                    count: num,
+                }
+            })
+            .collect();
+        println!("{:?}", v);
+        let exp = &[
+            Run {
+                value: true,
+                count: 5,
+            },
+            Run {
+                value: false,
+                count: 5,
+            },
+            Run {
+                value: true,
+                count: 1,
+            },
+            Run {
+                value: false,
+                count: 1,
+            },
+            Run {
+                value: true,
+                count: 1,
+            },
+            Run {
+                value: false,
+                count: 1,
+            },
+            Run {
+                value: true,
+                count: 1,
+            },
+            Run {
+                value: false,
+                count: 1,
+            },
+            Run {
+                value: true,
+                count: 6,
+            },
+            Run {
+                value: false,
+                count: 6,
+            },
+            Run {
+                value: true,
+                count: 1,
+            },
+        ];
+        assert_eq!(v, exp);
     }
 }

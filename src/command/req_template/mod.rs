@@ -2,13 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//! 请求命令模板
+
 pub use crate::command::varint;
 pub use derive_aliases::derive as der;
+pub mod darkness;
 pub mod end_page;
 pub mod feed_line;
 pub mod print_line;
 pub mod repeat_line;
+pub mod speed;
 pub mod start_page;
+pub mod start_page_seqs_v0;
 
 #[cfg(test)]
 mod test_toolkits {
