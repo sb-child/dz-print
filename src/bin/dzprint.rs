@@ -8,7 +8,8 @@ use dz_print::{
     backend,
     command::{self, HostCommand},
     image_proc::{
-        Bitmap, DitherMode, cmd_parser::{BitmapParser, PrintCommand}
+        Bitmap, DitherMode,
+        cmd_parser::{BitmapParser, PrintCommand},
     },
 };
 

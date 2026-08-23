@@ -15,7 +15,7 @@ pub struct SpeedV2V1V0Tl {
     /// - v2,v1: speed = 打印速度。取值 `0..=4`。
     /// - v0: speed = 打印速度 + 1。取值 `1..=5`。
     speed: u8,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ pub struct FeedLineV2Tl {
     #[deku(magic = b"\x1f\x22")]
     /// lines = (走纸行数 - 1)。0 代表只走一行。取值 `0..=16383`。
     lines: VarAuto,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 走纸(打印空行): v1,v0机型: `1b 4a`
@@ -25,7 +25,7 @@ pub struct FeedLineV1V0Tl {
     #[deku(magic = b"\x1b\x4a")]
     /// lines = 走纸行数。取值 `1..=255`。
     lines: u8,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

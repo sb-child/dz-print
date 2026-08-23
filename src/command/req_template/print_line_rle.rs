@@ -24,7 +24,7 @@ pub struct PrintLineRleByteV2Tl {
     rle_byte_count: VarAuto,
     /// data = RLE数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行(RLE5X编码): v2机型: `1f 2c`
@@ -35,7 +35,7 @@ pub struct PrintLineRle5xV2Tl {
     rle_runs_count: VarAuto,
     /// data = RLE数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行(RLE5D编码): v2机型: `1f 2d`
@@ -46,7 +46,7 @@ pub struct PrintLineRle5dV2Tl {
     rle_runs_count: VarAuto,
     /// data = RLE 5位位流数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行(RLE4X编码): v2机型: `1f 3a`
@@ -57,7 +57,7 @@ pub struct PrintLineRle4xV2Tl {
     rle_runs_count: VarAuto,
     /// data = RLE 4位位流数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行(RLE4D编码): v2机型: `1f 3b`
@@ -68,7 +68,7 @@ pub struct PrintLineRle4dV2Tl {
     rle_runs_count: VarAuto,
     /// data = RLE 4位位流数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行(RLE6X编码): v2机型: `1f 3c`
@@ -79,7 +79,7 @@ pub struct PrintLineRle6xV2Tl {
     rle_runs_count: VarAuto,
     /// data = RLE 6位位流数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行(RLE6D编码): v2机型: `1f 3d`
@@ -90,7 +90,7 @@ pub struct PrintLineRle6dV2Tl {
     rle_runs_count: VarAuto,
     /// data = RLE 6位位流数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

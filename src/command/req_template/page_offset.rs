@@ -17,7 +17,7 @@ pub struct PageOffsetV0Tl {
     /// - v0机型: DPI写死[300/600/305/180/203]
     /// - v0机型: 纸宽写死384px
     offset: u8,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

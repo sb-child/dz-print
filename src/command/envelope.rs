@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+#[derive(Debug, Clone, Copy)]
 pub enum EnvelopeKind {
     // for `v2`
     AutoPackWithChecksum,
@@ -13,6 +14,7 @@ pub enum EnvelopeKind {
     Raw,
 }
 
+#[derive(Debug, Clone)]
 pub struct Envelope {
     payload: Vec<u8>,
     kind: EnvelopeKind,
@@ -21,5 +23,11 @@ pub struct Envelope {
 impl Envelope {
     pub fn new(payload: Vec<u8>, kind: EnvelopeKind) -> Self {
         Envelope { payload, kind }
+    }
+}
+
+impl Into<Vec<Envelope>> for Envelope {
+    fn into(self) -> Vec<Envelope> {
+        vec![self]
     }
 }

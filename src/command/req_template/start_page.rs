@@ -21,14 +21,14 @@ pub struct StartPageV2Tl {
     /// print_separate_line = 是否打印分隔线，1字节布尔值。
     pub print_separate_line: bool,
     #[deku(magic = b"\x00")]
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 开始页命令: v0机型: `1b 40`
 #[der(..CmdTemplate)]
 pub struct StartPageV0Tl {
     #[deku(magic = b"\x1b\x40")]
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

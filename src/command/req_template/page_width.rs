@@ -16,7 +16,7 @@ pub struct PageWidthV2V1Tl {
     #[deku(magic = b"\x1f\x27")]
     /// bytes = (最终打印宽度dot+7)/8。取值 `0..=191`。
     bytes: VarAuto,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

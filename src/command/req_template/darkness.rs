@@ -15,7 +15,7 @@ pub struct DarknessV2V1V0Tl {
     /// - v2,v1: darkness = 打印浓度。取值 `0..=14`。
     /// - v0: darkness = 打印浓度 + 1。取值 `1..=15`。
     darkness: u8,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

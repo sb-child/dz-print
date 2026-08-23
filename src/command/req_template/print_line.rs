@@ -22,7 +22,7 @@ pub struct PrintLineV2Tl {
     skips: VarAuto,
     /// data = 位图数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行: v1机型: `1f 2a`
@@ -34,7 +34,7 @@ pub struct PrintLineV1Tl {
     dots: u16,
     /// data = 位图数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行: v2,v1机型: `1f 2b`
@@ -47,7 +47,7 @@ pub struct PrintLineV2V1Tl {
     data_len: VarAuto,
     /// data = 位图数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 打印一行: v0机型: `1d 76`
@@ -60,7 +60,7 @@ pub struct PrintLineV0Tl {
     #[deku(magic = b"\x01\x00")]
     /// data = 位图数据。
     data: Vec<u8>,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

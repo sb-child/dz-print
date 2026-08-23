@@ -14,21 +14,21 @@ use super::der;
 #[der(..CmdTemplate)]
 pub struct StartPageSeq1V0Tl {
     #[deku(magic = b"\x1a\x38\x01")]
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 开始页序列2: v0机型: `1a 39`
 #[der(..CmdTemplate)]
 pub struct StartPageSeq2V0Tl {
     #[deku(magic = b"\x1a\x39\x01")]
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 开始页序列3: v0机型: `1a 3a`
 #[der(..CmdTemplate)]
 pub struct StartPageSeq3V0Tl {
     #[deku(magic = b"\x1a\x3a\x02")]
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

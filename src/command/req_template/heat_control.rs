@@ -17,7 +17,7 @@ pub struct HeatControlV2V1V0Tl {
     start_dots: VarFixed2,
     /// - end_dots = 滚动窗口平均黑点数。取值 `0..=16383`。
     end_dots: VarFixed2,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

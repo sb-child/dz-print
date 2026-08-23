@@ -14,21 +14,21 @@ use super::der;
 #[der(..CmdTemplate)]
 pub struct EndPageV2Tl {
     #[deku(magic = b"\x1f\x28")]
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 结束页命令: v1机型: `0c`
 #[der(..CmdTemplate)]
 pub struct EndPageV1Tl {
     #[deku(magic = b"\x0c")]
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 结束页命令: v0机型: `1d 56`
 #[der(..CmdTemplate)]
 pub struct EndPageV0Tl {
     #[deku(magic = b"\x1d\x56\x42\x00")]
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

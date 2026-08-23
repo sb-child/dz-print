@@ -15,7 +15,7 @@ pub struct GapLengthV2Tl {
     #[deku(magic = b"\x1f\x45")]
     /// gap = 纸张间隔(0.01mm)。取值 `50..=4194303`。
     gap: VarAuto,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

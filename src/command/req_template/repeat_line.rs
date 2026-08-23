@@ -18,7 +18,7 @@ pub struct RepeatLineV2V1Tl {
     /// - v2机型取值 `0..=16383`。
     /// - v1机型取值 `0..=191`。
     lines: VarAuto,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ pub struct TotalLinesV2Tl {
     #[deku(magic = b"\x1f\x26")]
     /// lines = 本次打印总行数(含空白行)。取值 `0..=16383`。
     lines: VarAuto,
-    _tail: (),
+    pub _tail: (),
 }
 
 /// 设置总行数: v1机型: `1f 26`
@@ -26,7 +26,7 @@ pub struct TotalLinesV1Tl {
     #[deku(magic = b"\x1f\x26")]
     /// lines = 本次打印总行数(含空白行)。取值 `0..=65535`。
     lines: VarC0Be16,
-    _tail: (),
+    pub _tail: (),
 }
 
 #[cfg(test)]
