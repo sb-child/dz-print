@@ -7,7 +7,6 @@ use deku::DekuContainerWrite as _;
 use crate::command::{
     envelope::{Envelope, EnvelopeKind},
     models::CommandVersion,
-    template::StartPageV0Tl,
 };
 
 pub trait Command {
@@ -32,7 +31,7 @@ impl PageStart {
 impl Command for PageStart {
     fn pack(&self, cv: CommandVersion) -> Vec<Envelope> {
         todo!();
-        StartPageV0Tl::default().to_bytes();
+        // StartPageV0Tl::default().to_bytes();
         match cv {
             CommandVersion::V0 => vec![Envelope::new(vec![], EnvelopeKind::Raw)],
             CommandVersion::V1 => vec![],
