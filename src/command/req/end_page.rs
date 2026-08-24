@@ -6,11 +6,7 @@ use crate::command::{
     envelope::{Envelope, EnvelopeKind},
     models::ModelVersion,
     req::{EncodeSnafu, PackReqError, ReqTrait},
-    req_template::{
-        end_page::{EndPageV0Tl, EndPageV1Tl, EndPageV2Tl},
-        start_page::{StartPageV0Tl, StartPageV2Tl},
-        start_page_seqs_v0::{StartPageSeq1V0Tl, StartPageSeq2V0Tl, StartPageSeq3V0Tl},
-    },
+    req_template::end_page::{EndPageV0Tl, EndPageV1Tl, EndPageV2Tl},
 };
 use deku::DekuContainerWrite as _;
 use snafu::ResultExt;
