@@ -17,7 +17,7 @@ pub struct RepeatLineV2V1Tl {
     /// lines = (重复打印行数 - 1)。0 代表只重复打印一行。
     /// - v2机型取值 `0..=16383`。
     /// - v1机型取值 `0..=191`。
-    lines: VarAuto,
+    pub lines: VarAuto,
     pub _tail: (),
 }
 

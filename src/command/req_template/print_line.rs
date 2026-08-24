@@ -16,12 +16,12 @@ use super::varint::VarAuto;
 #[der(..CmdTemplate)]
 pub struct PrintLineV2Tl {
     #[deku(magic = b"\x1f\x21")]
-    /// repeats = (重复次数 - 1)。0 代表这一行只打印一次。取值 `0..=16383`。
-    repeats: VarAuto,
+    /// repeats = 重复次数。0 代表这一行只打印一次。取值 `0..=16383`。
+    pub repeats: VarAuto,
     /// skips = 向右偏移的字节数。取值 `0..=191`。
-    skips: VarAuto,
+    pub skips: VarAuto,
     /// data = 位图数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -31,9 +31,9 @@ pub struct PrintLineV1Tl {
     #[deku(magic = b"\x1f\x2a")]
     #[deku(endian = "little")]
     /// dots = 位图数据的点数(比特数)，建议值=`data.len()*8`。取值 `0..=未知`。打印机会打印前dots个比特数据(左对齐)。
-    dots: u16,
+    pub dots: u16,
     /// data = 位图数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -42,11 +42,11 @@ pub struct PrintLineV1Tl {
 pub struct PrintLineV2V1Tl {
     #[deku(magic = b"\x1f\x2b")]
     /// skips = 向右偏移的字节数。取值 `0..=191`。
-    skips: VarAuto,
+    pub skips: VarAuto,
     /// data_len = 位图数据字节数。建议值=`data.len()`。取值 `0..=191`。
-    data_len: VarAuto,
+    pub data_len: VarAuto,
     /// data = 位图数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -56,10 +56,10 @@ pub struct PrintLineV0Tl {
     #[deku(magic = b"\x1d\x76\x30\x00")]
     #[deku(endian = "little")]
     /// data_len = 位图数据字节数。建议值=`data.len()`。取值 `0..=65535`。
-    data_len: u16,
+    pub data_len: u16,
     #[deku(magic = b"\x01\x00")]
     /// data = 位图数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 

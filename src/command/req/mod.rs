@@ -2,9 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+pub mod feed_line;
 pub mod start_page;
 pub mod total_lines;
-pub mod feed_line;
+pub mod print_line;
 
 use deku::DekuError;
 use snafu::Snafu;
