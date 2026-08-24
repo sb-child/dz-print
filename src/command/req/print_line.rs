@@ -37,9 +37,11 @@ impl ReqTrait for PrintLine {
             ModelVersion::V1 => EnvelopeKind::AutoPackWithFixedChecksum,
             ModelVersion::V2 => EnvelopeKind::AutoPackWithChecksum,
         };
+        // 位图必须有数据
         if self.data.is_empty() {
             return Err(PackReqError::UnsupportedUsage);
         }
+        // skips_range 范围 0..=191
         skips_range
             .contains(&self.skips)
             .ok_or(PackReqError::ParamOutOfRange {
@@ -50,20 +52,23 @@ impl ReqTrait for PrintLine {
         let mut res = Vec::new();
         match mv {
             ModelVersion::V0 => {
+                // 要打印的数据
                 let mut full_data = Vec::with_capacity(self.skips as usize + self.data.len());
+                // 向右偏移填充
                 full_data.resize(self.skips as usize, 0x00);
+                // 加上传入的数据
                 full_data.extend_from_slice(&self.data);
                 let cmd = PrintLineV0Tl {
                     data_len: full_data.len() as u16,
                     data: full_data,
                     ..Default::default()
-                };
-                let env = Envelope::new(
-                    cmd.to_bytes().context(EncodeSnafu {
-                        cmd_name: "PrintLineV0Tl",
-                    })?,
-                    ek,
-                );
+                }
+                .to_bytes()
+                .context(EncodeSnafu {
+                    cmd_name: "PrintLineV0Tl",
+                })?;
+                let env = Envelope::new(cmd, ek);
+                // 重复次数 + 1 = 打印命令数量
                 let total_times = (self.repeats as usize).saturating_add(1);
                 res.resize(total_times, env);
             }
@@ -94,12 +99,14 @@ impl ReqTrait for PrintLine {
                         ek,
                     ));
                 }
-                if self.repeats > 0 {
-                    append_repeat_lines(&mut res, ek, self.repeats as usize, 191)?;
-                }
+                // 插入 RepeatLineV2V1Tl
+                // 每个命令最大走 191 行纸。命令上限 192 行。
+                append_repeat_lines(&mut res, ek, self.repeats as usize, 191)?;
             }
             ModelVersion::V2 => {
+                // PrintLineV2Tl 最大重复次数
                 let max_v2_repeats = 16383;
+                // 不够再用 RepeatLineV2V1Tl
                 let (first_repeats, remain_repeats) = if (self.repeats as usize) > max_v2_repeats {
                     (max_v2_repeats, (self.repeats as usize) - max_v2_repeats)
                 } else {
@@ -117,9 +124,9 @@ impl ReqTrait for PrintLine {
                     })?,
                     ek,
                 ));
-                if remain_repeats > 0 {
-                    append_repeat_lines(&mut res, ek, remain_repeats, 16383)?;
-                }
+                // 插入 RepeatLineV2V1Tl
+                // 每个命令最大走 16383 行纸。命令上限 16384 行。
+                append_repeat_lines(&mut res, ek, remain_repeats, 16383)?;
             }
         }
         Ok(res)
