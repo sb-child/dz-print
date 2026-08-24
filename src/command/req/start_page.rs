@@ -2,7 +2,10 @@ use crate::command::{
     envelope::{Envelope, EnvelopeKind},
     models::ModelVersion,
     req::{EncodeSnafu, PackReqError, ReqTrait},
-    req_template::start_page::{StartPageV0Tl, StartPageV2Tl},
+    req_template::{
+        start_page::{StartPageV0Tl, StartPageV2Tl},
+        start_page_seqs_v0::{StartPageSeq1V0Tl, StartPageSeq2V0Tl, StartPageSeq3V0Tl},
+    },
 };
 use deku::DekuContainerWrite as _;
 use snafu::ResultExt;
@@ -35,7 +38,26 @@ impl ReqTrait for StartPage {
                 if self.print_sep_line {
                     return Err(PackReqError::UnsupportedUsage);
                 }
-                Some(StartPageV0Tl::default().to_bytes().context(EncodeSnafu)?)
+                Some(vec![
+                    StartPageV0Tl::default().to_bytes().context(EncodeSnafu {
+                        cmd_name: "StartPageV0Tl",
+                    })?,
+                    StartPageSeq1V0Tl::default()
+                        .to_bytes()
+                        .context(EncodeSnafu {
+                            cmd_name: "StartPageSeq1V0Tl",
+                        })?,
+                    StartPageSeq2V0Tl::default()
+                        .to_bytes()
+                        .context(EncodeSnafu {
+                            cmd_name: "StartPageSeq2V0Tl",
+                        })?,
+                    StartPageSeq3V0Tl::default()
+                        .to_bytes()
+                        .context(EncodeSnafu {
+                            cmd_name: "StartPageSeq3V0Tl",
+                        })?,
+                ])
             }
             ModelVersion::V1 => {
                 if self.print_sep_line {
@@ -51,19 +73,21 @@ impl ReqTrait for StartPage {
                         value: self.page_idx.into(),
                         range: (Some(1), Some(65534)),
                     })?;
-                Some(
+                Some(vec![
                     StartPageV2Tl {
                         page_key: self.page_idx,
                         print_separate_line: self.print_sep_line,
                         ..Default::default()
                     }
                     .to_bytes()
-                    .context(EncodeSnafu)?,
-                )
+                    .context(EncodeSnafu {
+                        cmd_name: "StartPageV2Tl",
+                    })?,
+                ])
             }
         };
         if let Some(buf) = buf {
-            return Ok(Envelope::new(buf, ek).into());
+            return Ok(buf.into_iter().map(|p| Envelope::new(p, ek)).collect());
         }
         Ok(Default::default())
     }

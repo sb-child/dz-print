@@ -16,9 +16,10 @@ pub trait ReqTrait {
 #[derive(Debug, Snafu)]
 pub enum PackReqError {
     UnsupportedUsage,
-    #[snafu(display("Could not encode the pack."))]
+    #[snafu(display("Could not encode '{cmd_name}' pack."))]
     Encode {
         source: DekuError,
+        cmd_name: String,
     },
     #[snafu(display(
         "Param out of range: '{param}'={value}, but range is '{}'.",

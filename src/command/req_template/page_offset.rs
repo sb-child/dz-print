@@ -14,7 +14,7 @@ use super::der;
 pub struct PageOffsetV0Tl {
     #[deku(magic = b"\x1a\x37")]
     /// offset = (纸宽px-内容宽px)/2/(dpi/25.4)+150。设置打印向右偏移毫米数，150=不偏移。取值 `150..=255`。
-    /// - v0机型: DPI写死[300/600/305/180/203]
+    /// - v0机型: DPI写死`[300/600/305/180/203]`
     /// - v0机型: 纸宽写死384px
     offset: u8,
     pub _tail: (),
