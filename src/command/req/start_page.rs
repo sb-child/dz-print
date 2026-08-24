@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
 use crate::command::{
     envelope::{Envelope, EnvelopeKind},
     models::ModelVersion,
@@ -26,14 +30,14 @@ pub struct StartPage {
 }
 
 impl ReqTrait for StartPage {
-    fn pack(&self, cv: ModelVersion) -> Result<Vec<Envelope>, PackReqError> {
+    fn pack(&self, mv: ModelVersion) -> Result<Vec<Envelope>, PackReqError> {
         let page_key_range = 1..=65534;
-        let ek = match cv {
+        let ek = match mv {
             ModelVersion::V0 => EnvelopeKind::Raw,
             ModelVersion::V1 => EnvelopeKind::AutoPackWithFixedChecksum,
             ModelVersion::V2 => EnvelopeKind::AutoPackWithChecksum,
         };
-        let buf = match cv {
+        let buf = match mv {
             ModelVersion::V0 => {
                 if self.print_sep_line {
                     return Err(PackReqError::UnsupportedUsage);

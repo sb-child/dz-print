@@ -16,7 +16,7 @@ use super::varint::{VarAuto, VarC0Be16};
 pub struct TotalLinesV2Tl {
     #[deku(magic = b"\x1f\x26")]
     /// lines = 本次打印总行数(含空白行)。取值 `0..=16383`。
-    lines: VarAuto,
+    pub lines: VarAuto,
     pub _tail: (),
 }
 
@@ -25,7 +25,7 @@ pub struct TotalLinesV2Tl {
 pub struct TotalLinesV1Tl {
     #[deku(magic = b"\x1f\x26")]
     /// lines = 本次打印总行数(含空白行)。取值 `0..=65535`。
-    lines: VarC0Be16,
+    pub lines: VarC0Be16,
     pub _tail: (),
 }
 

@@ -15,7 +15,7 @@ use super::varint::VarAuto;
 pub struct FeedLineV2Tl {
     #[deku(magic = b"\x1f\x22")]
     /// lines = (走纸行数 - 1)。0 代表只走一行。取值 `0..=16383`。
-    lines: VarAuto,
+    pub lines: VarAuto,
     pub _tail: (),
 }
 
@@ -24,7 +24,7 @@ pub struct FeedLineV2Tl {
 pub struct FeedLineV1V0Tl {
     #[deku(magic = b"\x1b\x4a")]
     /// lines = 走纸行数。取值 `1..=255`。
-    lines: u8,
+    pub lines: u8,
     pub _tail: (),
 }
 
