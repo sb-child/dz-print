@@ -14,7 +14,7 @@ pub struct SpeedV2V1V0Tl {
     #[deku(magic = b"\x1f\x44")]
     /// - v2,v1: speed = 打印速度。取值 `0..=4`。
     /// - v0: speed = 打印速度 + 1。取值 `1..=5`。
-    speed: u8,
+    pub speed: u8,
     pub _tail: (),
 }
 

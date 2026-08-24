@@ -3,8 +3,6 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //! 请求命令模板
-//!
-//! (只dump，不load)
 
 pub use crate::command::varint;
 pub use derive_aliases::derive as der;

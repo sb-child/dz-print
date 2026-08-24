@@ -21,9 +21,9 @@ use super::varint::VarAuto;
 pub struct PrintLineRleByteV2Tl {
     #[deku(magic = b"\x1f\x29")]
     /// rle_byte_count = RLE数据字节数。建议值=`data.len()`。取值 `0..=未知`。
-    rle_byte_count: VarAuto,
+    pub rle_byte_count: VarAuto,
     /// data = RLE数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -32,9 +32,9 @@ pub struct PrintLineRleByteV2Tl {
 pub struct PrintLineRle5xV2Tl {
     #[deku(magic = b"\x1f\x2c")]
     /// rle_runs_count = data中的RLE符号数量。取值 `0..=未知`。
-    rle_runs_count: VarAuto,
+    pub rle_runs_count: VarAuto,
     /// data = RLE数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -43,9 +43,9 @@ pub struct PrintLineRle5xV2Tl {
 pub struct PrintLineRle5dV2Tl {
     #[deku(magic = b"\x1f\x2d")]
     /// rle_runs_count = data中的RLE符号数量。取值 `0..=未知`。
-    rle_runs_count: VarAuto,
+    pub rle_runs_count: VarAuto,
     /// data = RLE 5位位流数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -54,9 +54,9 @@ pub struct PrintLineRle5dV2Tl {
 pub struct PrintLineRle4xV2Tl {
     #[deku(magic = b"\x1f\x3a")]
     /// rle_runs_count = data中的RLE符号数量。取值 `0..=未知`。
-    rle_runs_count: VarAuto,
+    pub rle_runs_count: VarAuto,
     /// data = RLE 4位位流数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -65,9 +65,9 @@ pub struct PrintLineRle4xV2Tl {
 pub struct PrintLineRle4dV2Tl {
     #[deku(magic = b"\x1f\x3b")]
     /// rle_runs_count = data中的RLE符号数量。取值 `0..=未知`。
-    rle_runs_count: VarAuto,
+    pub rle_runs_count: VarAuto,
     /// data = RLE 4位位流数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -76,9 +76,9 @@ pub struct PrintLineRle4dV2Tl {
 pub struct PrintLineRle6xV2Tl {
     #[deku(magic = b"\x1f\x3c")]
     /// rle_runs_count = data中的RLE符号数量。取值 `0..=未知`。
-    rle_runs_count: VarAuto,
+    pub rle_runs_count: VarAuto,
     /// data = RLE 6位位流数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 
@@ -87,9 +87,9 @@ pub struct PrintLineRle6xV2Tl {
 pub struct PrintLineRle6dV2Tl {
     #[deku(magic = b"\x1f\x3d")]
     /// rle_runs_count = data中的RLE符号数量。取值 `0..=未知`。
-    rle_runs_count: VarAuto,
+    pub rle_runs_count: VarAuto,
     /// data = RLE 6位位流数据。
-    data: Vec<u8>,
+    pub data: Vec<u8>,
     pub _tail: (),
 }
 

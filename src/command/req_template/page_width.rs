@@ -5,7 +5,7 @@
 //! 设置打印宽度
 //!
 //! - `PageWidthV2V1Tl`: v2,v1机型: `1f 27`
-//! - v0机型: 见 `1a 37`（HorizontalOffsetV0Tl）。
+//! - v0机型: 也许你需要 `1a 37` (PageOffsetV0Tl)。
 
 use super::der;
 use super::varint::VarAuto;
@@ -15,7 +15,7 @@ use super::varint::VarAuto;
 pub struct PageWidthV2V1Tl {
     #[deku(magic = b"\x1f\x27")]
     /// bytes = (最终打印宽度dot+7)/8。取值 `0..=191`。
-    bytes: VarAuto,
+    pub bytes: VarAuto,
     pub _tail: (),
 }
 

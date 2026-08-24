@@ -14,7 +14,7 @@ pub struct DarknessV2V1V0Tl {
     #[deku(magic = b"\x1f\x43")]
     /// - v2,v1: darkness = 打印浓度。取值 `0..=14`。
     /// - v0: darkness = 打印浓度 + 1。取值 `1..=15`。
-    darkness: u8,
+    pub darkness: u8,
     pub _tail: (),
 }
 

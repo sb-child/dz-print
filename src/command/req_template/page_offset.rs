@@ -5,7 +5,7 @@
 //! 设置水平偏移
 //!
 //! - `PageOffsetV0Tl`: v0机型: `1a 37`
-//! - v1,v2机型: 没有这种命令。
+//! - v1,v2机型: 也许你需要 `1f 27` (PageWidthV2V1Tl)。
 
 use super::der;
 
@@ -16,7 +16,7 @@ pub struct PageOffsetV0Tl {
     /// offset = (纸宽px-内容宽px)/2/(dpi/25.4)+150。设置打印向右偏移毫米数，150=不偏移。取值 `150..=255`。
     /// - v0机型: DPI写死`[300/600/305/180/203]`
     /// - v0机型: 纸宽写死384px
-    offset: u8,
+    pub offset: u8,
     pub _tail: (),
 }
 

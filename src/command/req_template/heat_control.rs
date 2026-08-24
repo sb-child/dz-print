@@ -14,9 +14,9 @@ use super::varint::VarFixed2;
 pub struct HeatControlV2V1V0Tl {
     #[deku(magic = b"\x1f\x25")]
     /// - start_dots = 单行最大黑点数。取值 `0..=16383`。
-    start_dots: VarFixed2,
+    pub start_dots: VarFixed2,
     /// - end_dots = 滚动窗口平均黑点数。取值 `0..=16383`。
-    end_dots: VarFixed2,
+    pub end_dots: VarFixed2,
     pub _tail: (),
 }
 
