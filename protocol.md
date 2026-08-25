@@ -200,8 +200,8 @@
 - `0x4_` 打印设置 (可读取写入)
   - `0x40` (X)
   - `0x41` (X)
-  - `0x42` 打印纸类型 [见这里](#打印纸类型) `rust:GapTypeV0V1V2Tl`[代码](src/command/req_template/gap_type.rs)
-  - `0x43` 打印浓度 [见这里](#打印浓度) `rust:DarknessV2V1V0Tl`[代码](src/command/req_template/darkness.rs)
+  - `0x42` 打印纸类型 [见这里](#打印纸类型) `rust:GapTypeV0V1V2Tl` [代码](src/command/req_template/gap_type.rs)
+  - `0x43` 打印浓度 [见这里](#打印浓度) `rust:DarknessV2V1V0Tl` [代码](src/command/req_template/darkness.rs)
   - `0x44` 打印速度 [见这里](#打印速度) `rust:SpeedV2V1V0Tl` [代码](src/command/req_template/speed.rs)
   - `0x45` 打印纸间隔 [见这里](#打印纸间隔) `rust:GapLengthV2Tl` [代码](src/command/req_template/gap_length.rs) 非连续纸才生效 `v2`机型支持，`v1,v0`机型也许支持。
   - `0x46` (X)

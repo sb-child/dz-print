@@ -7,11 +7,14 @@ use crate::command::{
     models::ModelVersion,
     req::{EncodeSnafu, PackReqError, ReqTrait},
     req_template::{
+        gap_length::GapLengthV2Tl,
+        gap_type::GapTypeV0V1V2Tl,
         page_offset::PageOffsetV0Tl,
         page_width::PageWidthV2V1Tl,
         start_page::{StartPageV0Tl, StartPageV2Tl},
         start_page_seqs_v0::{StartPageSeq1V0Tl, StartPageSeq2V0Tl, StartPageSeq3V0Tl},
     },
+    settings::GapTypeSetting,
     varint::VarAuto,
 };
 use deku::DekuContainerWrite as _;
@@ -35,12 +38,20 @@ pub struct StartPage {
     /// - v1: 范围`0..=1521`。
     /// - v0: 不支持，此参数不使用。
     pub data_pixel_width: u16,
+    /// 设置纸张间隔类型。
+    /// - v2,v1,v0: 支持。
+    pub printer_gap_type: GapTypeSetting,
+    /// 设置纸张间隔长度。
+    /// - v2: 支持。范围`50..=4194303`。在`printer_gap_type != GapTypeSetting::Continuous`条件下生效。
+    /// - v1,v0: 不支持。
+    pub printer_gap_length: u32,
 }
 
 impl ReqTrait for StartPage {
     fn pack(&self, mv: ModelVersion) -> Result<Vec<Envelope>, PackReqError> {
         let page_key_range = 1..=65534;
         let data_pixel_width_range = 1..=1521;
+        let printer_gap_length_range = 50..=4194303;
         let ek = match mv {
             ModelVersion::V0 => EnvelopeKind::Raw,
             ModelVersion::V1 => EnvelopeKind::AutoPackWithFixedChecksum,
@@ -78,6 +89,14 @@ impl ReqTrait for StartPage {
                     .context(EncodeSnafu {
                         cmd_name: "PageOffsetV0Tl",
                     })?,
+                    GapTypeV0V1V2Tl {
+                        gap_type: self.printer_gap_type as u8,
+                        ..Default::default()
+                    }
+                    .to_bytes()
+                    .context(EncodeSnafu {
+                        cmd_name: "GapTypeV0V1V2Tl",
+                    })?,
                 ]
             }
             ModelVersion::V1 => {
@@ -101,6 +120,14 @@ impl ReqTrait for StartPage {
                     .context(EncodeSnafu {
                         cmd_name: "PageWidthV2V1Tl",
                     })?,
+                    GapTypeV0V1V2Tl {
+                        gap_type: self.printer_gap_type as u8,
+                        ..Default::default()
+                    }
+                    .to_bytes()
+                    .context(EncodeSnafu {
+                        cmd_name: "GapTypeV0V1V2Tl",
+                    })?,
                 ]
             }
             ModelVersion::V2 => {
@@ -119,7 +146,7 @@ impl ReqTrait for StartPage {
                         range: (Some(0), Some(1521)),
                     })?;
                 let data_byte_count = (self.data_pixel_width + 7) / 8;
-                vec![
+                let mut r = vec![
                     StartPageV2Tl {
                         page_key: self.page_idx,
                         print_separate_line: self.print_sep_line,
@@ -137,7 +164,35 @@ impl ReqTrait for StartPage {
                     .context(EncodeSnafu {
                         cmd_name: "PageWidthV2V1Tl",
                     })?,
-                ]
+                    GapTypeV0V1V2Tl {
+                        gap_type: self.printer_gap_type as u8,
+                        ..Default::default()
+                    }
+                    .to_bytes()
+                    .context(EncodeSnafu {
+                        cmd_name: "GapTypeV0V1V2Tl",
+                    })?,
+                ];
+                if !matches!(self.printer_gap_type, GapTypeSetting::Continuous) {
+                    printer_gap_length_range
+                        .contains(&self.printer_gap_length)
+                        .ok_or(PackReqError::ParamOutOfRange {
+                            param: "printer_gap_length".into(),
+                            value: self.printer_gap_length.into(),
+                            range: (Some(50), Some(4194303)),
+                        })?;
+                    r.push(
+                        GapLengthV2Tl {
+                            gap: VarAuto::new(self.printer_gap_length as i32),
+                            ..Default::default()
+                        }
+                        .to_bytes()
+                        .context(EncodeSnafu {
+                            cmd_name: "GapLengthV2Tl",
+                        })?,
+                    );
+                }
+                r
             }
         };
         Ok(buf.into_iter().map(|p| Envelope::new(p, ek)).collect())

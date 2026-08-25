@@ -3,7 +3,7 @@ pub enum PrintSettingError {
     #[error("Invalid value `{0}`")]
     InvalidU8(u8),
     #[error("Invalid value `{0}`")]
-    InvalidU16(u16),
+    InvalidU32(u32),
     #[error("Invalid string `{0}`")]
     InvalidString(String),
 }
@@ -126,50 +126,32 @@ impl TryFrom<&str> for DarknessSetting {
     }
 }
 
+/// 纸张间隔类型
 #[derive(Debug, Clone, Copy, Default)]
-pub enum PaperSetting {
-    /// 小票纸
+pub enum GapTypeSetting {
+    /// 小票纸/连续纸
     #[default]
-    Ticket = 0,
-    /// 不干胶
-    Adhesive = 2,
-    /// 卡纸
-    CardPaper = 3,
+    Continuous = 0,
+    /// 定位孔纸
+    Hole = 1,
+    /// 间隙纸/不干胶纸
+    Gap = 2,
+    /// 黑标纸/卡纸
+    BlackMark = 3,
     /// 透明贴
     Transparent = 4,
 }
 
-impl TryFrom<&str> for PaperSetting {
-    type Error = PrintSettingError;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "ticket" => Ok(Self::Ticket),
-            "adhesive" => Ok(Self::Adhesive),
-            "cardpaper" => Ok(Self::CardPaper),
-            "transparent" => Ok(Self::Transparent),
-            _ => Err(Self::Error::InvalidString(value.to_string())),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct GapSetting(u16);
-
-impl Default for GapSetting {
-    fn default() -> Self {
-        Self(50)
-    }
-}
-
-impl TryFrom<u16> for GapSetting {
-    type Error = PrintSettingError;
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        if value < 50 {
-            Err(Self::Error::InvalidU16(value))
-        } else {
-            Ok(Self(value))
-        }
-    }
-}
+// (先放着)
+// impl TryFrom<&str> for PaperSetting {
+//     type Error = PrintSettingError;
+//     fn try_from(value: &str) -> Result<Self, Self::Error> {
+//         match value {
+//             "ticket" => Ok(Self::Continuous),
+//             "adhesive" => Ok(Self::Hole),
+//             "cardpaper" => Ok(Self::BlackMark),
+//             "transparent" => Ok(Self::Transparent),
+//             _ => Err(Self::Error::InvalidString(value.to_string())),
+//         }
+//     }
+// }

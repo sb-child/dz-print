@@ -31,13 +31,13 @@ pub enum PackReqError {
     ))]
     ParamOutOfRange {
         param: String,
-        value: i32,
+        value: i64,
         /// a..=b
-        range: (Option<i32>, Option<i32>),
+        range: (Option<i64>, Option<i64>),
     },
 }
 
-fn format_range(r: &(Option<i32>, Option<i32>)) -> String {
+fn format_range(r: &(Option<i64>, Option<i64>)) -> String {
     let mut buf = itoa::Buffer::new();
     match r {
         (None, None) => "..".to_owned(),
