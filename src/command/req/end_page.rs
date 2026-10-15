@@ -33,6 +33,6 @@ impl ReqTrait for EndPage {
                 cmd_name: "EndPageV2Tl",
             }),
         }?;
-        return Ok(Envelope::new(buf, ek).into());
+        Ok(Envelope::new(buf, ek).into())
     }
 }

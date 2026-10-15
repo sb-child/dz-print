@@ -17,7 +17,7 @@ impl TryInto<Vec<Run<bool>>> for &BitmapLine {
 
     fn try_into(self) -> Result<Vec<Run<bool>>, Self::Error> {
         let len = self.data.len();
-        let first_bit: bool = (*(self.data.first().ok_or(Self::Error::EmptyData)?)).into();
+        let first_bit: bool = *(self.data.first().ok_or(Self::Error::EmptyData)?);
         let mut shifted = self.data.clone();
         shifted.shift_end(1);
         let xored = self.data.clone() ^ shifted;

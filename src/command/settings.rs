@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 #[derive(thiserror::Error, Debug)]
 pub enum PrintSettingError {
     #[error("Invalid value `{0}`")]
@@ -38,17 +40,17 @@ impl TryFrom<u8> for SpeedSetting {
     }
 }
 
-impl TryFrom<&str> for SpeedSetting {
-    type Error = PrintSettingError;
+impl FromStr for SpeedSetting {
+    type Err = PrintSettingError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "min" | "1" => Ok(Self::Min),
             "2" => Ok(Self::Speed1),
             "normal" | "3" => Ok(Self::Normal),
             "4" => Ok(Self::Speed3),
             "max" | "5" => Ok(Self::Max),
-            _ => Err(Self::Error::InvalidString(value.to_string())),
+            _ => Err(Self::Err::InvalidString(value.to_string())),
         }
     }
 }
@@ -101,10 +103,10 @@ impl TryFrom<u8> for DarknessSetting {
     }
 }
 
-impl TryFrom<&str> for DarknessSetting {
-    type Error = PrintSettingError;
+impl FromStr for DarknessSetting {
+    type Err = PrintSettingError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "min" | "1" => Ok(Self::Min),
             "2" => Ok(Self::Darkness1),
@@ -121,7 +123,7 @@ impl TryFrom<&str> for DarknessSetting {
             "13" => Ok(Self::Darkness12),
             "14" => Ok(Self::Darkness13),
             "max" | "15" => Ok(Self::Max),
-            _ => Err(Self::Error::InvalidString(value.to_string())),
+            _ => Err(Self::Err::InvalidString(value.to_string())),
         }
     }
 }

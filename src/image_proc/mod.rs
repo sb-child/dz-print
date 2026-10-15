@@ -91,7 +91,7 @@ impl Bitmap {
                             gray[i] = (gray[i] as i16 + err * 5 / 16).clamp(0, 255) as u8;
                             if x + 1 < w {
                                 let i = (y + 1) * w + x + 1;
-                                gray[i] = (gray[i] as i16 + err * 1 / 16).clamp(0, 255) as u8;
+                                gray[i] = (gray[i] as i16 + err / 16).clamp(0, 255) as u8;
                             }
                         }
                     }

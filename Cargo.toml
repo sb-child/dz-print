@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 description = "Third-party USB/Bluetooth Driver for Detonger(detonger.com) Printing Machines"
 authors = ["sbchild <sbchild0@gmail.com> <zinu5k7d1k2uzsxa@proton.me>"]
-documentation = "https://github.com/sb-child/dz-print"
 homepage = "https://github.com/sb-child/dz-print"
 license = "MPL-2.0"
 
@@ -17,8 +16,8 @@ num-traits = "0.2"
 num-derive = "0.5"
 strum = { version = "0.28", features = ["derive"] }
 rayon = "1.12.0"
-tokio = { version = "1.53.1", features = ["full"] }
-thiserror = "2.0.20"
+tokio = { version = "1.53.3", features = ["full"] }
+thiserror = "2.0.21"
 anyhow = "1.0.104"
 clap = { version = "4.6", features = ["derive"] }
 typst = "0.15.1"
@@ -34,9 +33,9 @@ typst-render = "0.15.1"
 # spin = "^0.9" <- wasmi v1.1.0 <- typst-library v0.15.1
 spin = "=0.9.9"
 tempfile = "3.27.0"
-ureq = "3.4.0"
+ureq = "3.4.2"
 tar = "0.4.46"
-flate2 = "1.1.9"
+flate2 = "1.1.10"
 deku = "0.20.3"
 derive_aliases = "0.4.7"
 pretty-hex = "0.4.2"

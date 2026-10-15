@@ -26,8 +26,8 @@ impl Envelope {
     }
 }
 
-impl Into<Vec<Envelope>> for Envelope {
-    fn into(self) -> Vec<Envelope> {
-        vec![self]
+impl From<Envelope> for Vec<Envelope> {
+    fn from(val: Envelope) -> Self {
+        vec![val]
     }
 }

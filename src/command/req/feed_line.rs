@@ -63,7 +63,7 @@ impl ReqTrait for FeedLine {
                     cmd_name: "FeedLineV2Tl",
                 }),
                 Seg::V1Seg(n) => FeedLineV1V0Tl {
-                    lines: n as u8,
+                    lines: n,
                     ..Default::default()
                 }
                 .to_bytes()
@@ -72,6 +72,6 @@ impl ReqTrait for FeedLine {
                 }),
             })
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(buf.into_iter().map(|p| Envelope::new(p, ek)).collect());
+        Ok(buf.into_iter().map(|p| Envelope::new(p, ek)).collect())
     }
 }

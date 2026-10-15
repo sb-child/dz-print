@@ -110,7 +110,7 @@ impl ReqTrait for StartPage {
                         value: self.data_pixel_width.into(),
                         range: (Some(0), Some(1521)),
                     })?;
-                let data_byte_count = (self.data_pixel_width + 7) / 8;
+                let data_byte_count = self.data_pixel_width.div_ceil(8);
                 vec![
                     PageWidthV2V1Tl {
                         bytes: VarAuto::new(data_byte_count as i32),
@@ -145,7 +145,7 @@ impl ReqTrait for StartPage {
                         value: self.data_pixel_width.into(),
                         range: (Some(0), Some(1521)),
                     })?;
-                let data_byte_count = (self.data_pixel_width + 7) / 8;
+                let data_byte_count = self.data_pixel_width.div_ceil(8);
                 let mut r = vec![
                     StartPageV2Tl {
                         page_key: self.page_idx,
