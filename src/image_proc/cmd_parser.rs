@@ -62,13 +62,18 @@ impl PrintCommand {
                 Some(vec![c])
             }
             PrintCommand::SkipPrintLine(mw, skip, dots) => {
-                if *mw > 1528 || skip > mw {
-                    return Self::FeedLines(1).parse();
-                }
-                let w = (mw - skip).min(dots.len() as u32);
+                let w = mw.saturating_sub(*skip).min(dots.len() as u32);
                 let snaped_skip_bytes = skip / 8;
                 let snaped_skip_offset = skip % 8;
-                let bytes_to_print = 1 + w.div_ceil(8);
+                // 这一行真正覆盖的点数是 `snaped_skip_offset + w` (前面的 offset 位补 0),
+                // 字节数必须正好等于它的向上取整。原来写成 `1 + w.div_ceil(8)`,
+                // 在 `snaped_skip_offset + w <= 8` 时会多发一个全 0 字节。
+                let bytes_to_print = (snaped_skip_offset + w).div_ceil(8);
+                // 0x2b 的 m / n 都是单字节, 协议要求 <= 191。超出时退回 0x2a 整行打印,
+                // 而不是像以前那样退化成 `FeedLines(1)` —— 那会把这一行的内容整行丢掉。
+                if *skip > *mw || snaped_skip_bytes > 191 || bytes_to_print > 191 {
+                    return Self::PrintLine(*mw, dots.clone()).parse();
+                }
                 let mut offset_dots = Vec::with_capacity(8 * bytes_to_print as usize);
                 offset_dots.extend(std::iter::repeat_n(false, snaped_skip_offset as usize));
                 offset_dots.extend(dots);
@@ -357,15 +362,43 @@ mod test {
         let x = PrintCommand::ResetPrinter.parse().unwrap();
         assert_eq!(x, vec![vec![0x1b, 0x40]], "unexcepted result: {:02x?}", x);
 
+        // 5 点前导空白 + 2 点数据 = 7 bit -> 1 字节 (以前会多发一个 0x00 字节)
         let x = PrintCommand::SkipPrintLine(10, 5, vec![false, true])
             .parse()
             .unwrap();
         assert_eq!(
             x,
-            vec![vec![0x1f, 0x2b, 0x00, 0x02, 0x02, 0x00]],
+            vec![vec![0x1f, 0x2b, 0x00, 0x01, 0x02]],
             "unexcepted result: {:02x?}",
             x
         );
+
+        // 恰好 8 bit 时也只需要 1 字节
+        let x = PrintCommand::SkipPrintLine(16, 8, vec![false; 8])
+            .parse()
+            .unwrap();
+        assert_eq!(x, vec![vec![0x1f, 0x2b, 0x01, 0x01, 0x00]], "{:02x?}", x);
+
+        // 一行超过 191 字节 (1528 点) 时 0x2b 表达不了, 必须退回 0x2a 整行打印,
+        // 绝不能丢掉这一行
+        let dots = vec![true; 1530];
+        let skipped = PrintCommand::SkipPrintLine(1600, 0, dots.clone()).parse();
+        let printed = PrintCommand::PrintLine(1600, dots).parse();
+        assert_eq!(
+            skipped, printed,
+            "a row wider than 191 bytes must fall back to PrintLine"
+        );
+
+        // 前导空白超过 191 字节 (1528 点) 同样要退回 0x2a
+        let dots = vec![true; 4];
+        let skipped = PrintCommand::SkipPrintLine(1600, 1536, dots.clone()).parse();
+        let printed = PrintCommand::PrintLine(1600, dots).parse();
+        assert_eq!(skipped, printed, "skip > 191 bytes must fall back to PrintLine");
+
+        // skip > mw 属于非法输入, 同样退回 0x2a, 不丢行
+        let dots = vec![true, true];
+        let skipped = PrintCommand::SkipPrintLine(10, 20, dots.clone()).parse();
+        assert_eq!(skipped, PrintCommand::PrintLine(10, dots).parse());
 
         let x = PrintCommand::RepeatLine(0).parse().unwrap();
         assert_eq!(x, Vec::<Vec<u8>>::new(), "unexcepted result: {:02x?}", x);
