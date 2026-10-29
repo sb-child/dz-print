@@ -151,7 +151,37 @@ impl Bitmap {
     /// returns [start..end] of a line
     pub fn line_loc_unchecked(&self, h: u32) -> (usize, usize) {
         let start = self.pixel_loc_unchecked(0, h);
-        let end = self.pixel_loc_unchecked(self.w - 1, h);
-        (start, end)
+        // 返回的是排他上界, 必须包含整行 w 个像素。原来用 `w - 1` 当上界,
+        // 会把每一行最后一个像素静默丢掉 (右边缘 1 个点永远打印不出来)。
+        (start, start + self.w as usize)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{Bitmap, DitherMode};
+    use image::{GrayImage, Luma};
+
+    /// 每一行都必须覆盖完整的 w 个像素
+    #[test]
+    fn test_bitmap_line_covers_whole_width() {
+        // 8x3, 每行只有最后一个像素是黑的
+        let img: GrayImage = GrayImage::from_fn(8, 3, |x, _| {
+            if x == 7 {
+                Luma([0u8])
+            } else {
+                Luma([255u8])
+            }
+        });
+        let bitmap = Bitmap::from_gray_image(&img, DitherMode::Threshold);
+        assert_eq!(bitmap.width(), 8);
+        for y in 0..bitmap.height() {
+            let line = bitmap.get_line(y);
+            assert_eq!(line.len(), 8, "row {y} must be 8 pixels wide");
+            assert!(
+                *line.last().unwrap(),
+                "row {y} lost its right-most pixel to line_loc_unchecked"
+            );
+        }
     }
 }
