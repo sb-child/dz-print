@@ -71,6 +71,10 @@
     - 如果未启用校验, 则为 `0x88`
     - 否则使用[这个](src/command/checksum.rs)函数计算 `命令[1..命令长度]` 的校验和
 
+---
+
+[查看简洁版进度](./cmd-impl-status.md)
+
 ## 命令列表 - 裸命令
 
 - `0x0c` 结束页命令(结束一页)。`0c`。无参数。仅`v1`机型。`rust:EndPageV1Tl` [代码](src/command/req_template/end_page.rs)
@@ -287,7 +291,7 @@
     - 返回: `<Manufacturer:string>`
       - `Manufacturer`: 制造商名称。字符串。
   - `0x76` (X)
-  - `0x77` 流控数据 # TODO 到底怎么用
+  - `0x77` 缓冲容量查询（流控核心），见 [flow-control.md](flow-control.md)
   - `0x78` 时间同步 (可读取写入) # TODO 到底怎么用
     - 无参数调用: 查询某设备信息？
     - 调用: `1f 78 [TimeZone:2bBE] [Year:u16BE] [Month] [Day] [Week] [Hour] [Minute] [Second]` 设置时间。# TODO: 为什么BLE连接要加100分钟?
@@ -301,7 +305,7 @@
       - `DeviceName`: 设备名，格式 `型号-序列号`
   - `0x7a` 硬件版本
     - 返回: `0x26, 0x01, 0x04, 0x01, 0x04` = 硬件版本 2.6 (`"0x26"` -> `2.6`)
-  - `0x7b` 缓冲数据 # TODO 到底怎么用
+  - `0x7b` 缓冲容量查询 2，见 [flow-control.md](flow-control.md)
   - `0x7c` 软件版本 # TODO
   - `0x7d` 蓝牙mac地址
     - 返回: `10 <BtMacAddr:6bytes> 14 <BtMacAddr:6bytes>`

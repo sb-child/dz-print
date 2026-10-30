@@ -8,6 +8,7 @@ pub mod models;
 pub mod packager;
 pub mod req;
 pub mod req_template;
+pub mod resp_template;
 pub mod response;
 pub mod settings;
 pub mod status;
