@@ -15,8 +15,6 @@
 //!
 //! `0xC0|xxx` 指的是两个字节取或。
 
-use std::ops::Range;
-
 use deku::{DekuError, DekuReader, DekuWriter, ctx::Order, no_std_io, reader::Reader};
 
 macro_rules! impl_var_int {
@@ -60,15 +58,32 @@ macro_rules! impl_var_int {
                 where
                     Self: Sized,
                 {
-                    let mut b0 = [0u8; 1];
-                    reader.read_bytes(1, &mut b0, Order::Msb0)?;
-                    if b0[0] & 0xC0 == 0xC0 {
-                        let mut b1 = [0u8; 1];
-                        reader.read_bytes(1, &mut b1, Order::Msb0)?;
-                        Ok(Self { v: (((b0[0] & 0x3F) as i32) << 8) | b1[0] as i32 })
-                    } else {
-                        Ok(Self { v: b0[0] as i32 })
+                    let mode = $mode;
+                    let mut buf = [0u8; 3];
+
+                    reader.read_bytes(1, &mut buf[..1], Order::Msb0)?;
+                    // 按模式决定整段编码的长度；Auto 的首字节没有 0xC0 标志时是单字节。
+                    let len = match mode {
+                        VarintMode::Auto if buf[0] & 0xC0 != 0xC0 => 1,
+                        VarintMode::Auto | VarintMode::Fixed2 => 2,
+                        VarintMode::Fixed3 | VarintMode::C0Be16 => 3,
+                    };
+                    if len > 1 {
+                        reader.read_bytes(len - 1, &mut buf[1..len], Order::Msb0)?;
                     }
+
+                    let (v, used) = mode.decode(&buf[..len]).ok_or_else(|| {
+                        DekuError::Parse(
+                            format!(
+                                "Failed to decode {mode:?} from {len} byte(s): {:02X?}",
+                                &buf[..len]
+                            )
+                            .into(),
+                        )
+                    })?;
+                    debug_assert_eq!(used, len);
+
+                    Ok(Self { v })
                 }
             }
 
@@ -398,6 +413,53 @@ mod test {
         assert_eq!(VarintMode::Auto.decode(&[0xC0]), None);
         assert_eq!(VarintMode::Fixed3.decode(&[0xC0, 0x40]), None);
         assert_eq!(VarintMode::C0Be16.decode(&[0xC0]), None);
+    }
+
+    /// `#[deku]` 字段读取必须按类型（模式）走，不能全用 Auto 逻辑。
+    #[test]
+    fn deku_reader_uses_mode() {
+        use super::{VarAuto, VarC0Be16, VarFixed2, VarFixed3};
+        use deku::{DekuReader, reader::Reader};
+        use std::io::Cursor;
+
+        // Fixed3: 3 字节，不能只读 2 字节
+        let mut cursor = Cursor::new([0xC0, 0x4E, 0x20]);
+        let mut reader = Reader::new(&mut cursor);
+        let v = VarFixed3::from_reader_with_ctx(&mut reader, ()).unwrap();
+        assert_eq!(v.get(), 20_000);
+        assert!(reader.end());
+
+        // C0Be16: `0xC0` 是独立标志，后两个字节才是值
+        let mut cursor = Cursor::new([0xC0, 0x12, 0x34]);
+        let mut reader = Reader::new(&mut cursor);
+        let v = VarC0Be16::from_reader_with_ctx(&mut reader, ()).unwrap();
+        assert_eq!(v.get(), 0x1234);
+        assert!(reader.end());
+
+        // Fixed2: 固定 2 字节
+        let mut cursor = Cursor::new([0xC0, 0x4E]);
+        let mut reader = Reader::new(&mut cursor);
+        let v = VarFixed2::from_reader_with_ctx(&mut reader, ()).unwrap();
+        assert_eq!(v.get(), 0x4E);
+        assert!(reader.end());
+
+        // Fixed2 不接受 1 字节
+        let mut cursor = Cursor::new([0x4E]);
+        let mut reader = Reader::new(&mut cursor);
+        assert!(VarFixed2::from_reader_with_ctx(&mut reader, ()).is_err());
+
+        // Auto: 保持 1/2 字节自动识别
+        let mut cursor = Cursor::new([0x4E]);
+        let mut reader = Reader::new(&mut cursor);
+        let v = VarAuto::from_reader_with_ctx(&mut reader, ()).unwrap();
+        assert_eq!(v.get(), 0x4E);
+        assert!(reader.end());
+
+        let mut cursor = Cursor::new([0xC0, 0x4E]);
+        let mut reader = Reader::new(&mut cursor);
+        let v = VarAuto::from_reader_with_ctx(&mut reader, ()).unwrap();
+        assert_eq!(v.get(), 0x4E);
+        assert!(reader.end());
     }
 
     #[test]

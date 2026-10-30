@@ -27,6 +27,7 @@ Motherboard produced by DothanTech(dothantech.com)
 - [点击查看](protocol.md)当前分析出的打印机协议和命令
 - [点击查看](print-status.md)当前已知的打印机状态类型
 - [点击查看](flow-control.md)buffer 容量感知的分块发送流控机制
+- [点击查看](TODO.md)当前开发进度和 resp 层实现计划
 
 或者直接看[源码](src/command/req_template)（`new-standard` 分支的命令模板）
 
