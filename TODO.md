@@ -12,6 +12,14 @@
   - 新增 `deku_reader_uses_mode` 测试；`cargo test --lib`: 77 passed
   - 顺手删了未使用的 `use std::ops::Range;`
 
+- [x] `settings.rs` 的取值空间统一（未提交）
+  - `SpeedSetting` / `DarknessSetting` 显式 `Min = 0`，discriminant = `v2`/`v1` 线上值
+  - `TryFrom<u8>` 改成线上值（`0..=4` / `0..=14`）
+  - 新增 `user_value` / `from_user`（用户面 `1..=5` / `1..=15`）
+  - 新增 `to_wire(mv)` / `from_wire(v, mv)` 处理 `v0` 的 `+1`
+  - `FromStr` 继续按用户面解析；加 `PartialEq, Eq`
+  - 5 个用例；`cargo test --lib`: 82 passed
+
 ## resp 层约定
 
 - `payload` = `命令组 + 命令类型 + 数据`，不含长度字段和校验和，与 `Envelope.payload` 对称
@@ -20,6 +28,7 @@
 - 模板只解析**一条**响应；多条响应由帧层按长度字段切分
 - 长度不固定的尾部用 `#[deku(read_all)] _tail: Vec<u8>`
 - `0x45` 这类 1/2/3 字节变长字段按 `payload.len()` 用 `VarintMode::decode` 选解码器，不用 `VarFixed3` 字段
+- 设置类枚举的 discriminant = `v2`/`v1` 线上值；用户面值走 `user_value`/`from_user`，跨版本走 `to_wire`/`from_wire`
 - 中央 `Resp` enum 暂不做；调用方静态指定响应类型
 
 ## 阶段
@@ -32,7 +41,7 @@
   - `ParseRespError`（`Decode` / `TrailingBytes` / `InvalidValue` / `BadLength`）
   - `decode_resp`
 - [ ] `resp_template/mod.rs` 加 `test_toolkits`（`hexdec` / `eq` / `dec_tl`）
-- [ ] `settings.rs`：统一 `DarknessSetting` / `SpeedSetting` 的 `u8` 语义（建议 `Min = 1`，让 `as u8` 和 `TryFrom<u8>` 一致）
+- [x] `settings.rs`：`Min = 0`，discriminant = `v2`/`v1` 线上值，补 `user_value` / `from_user` / `to_wire` / `from_wire`
 
 ### P1 darkness 样板
 
