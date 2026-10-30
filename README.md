@@ -27,13 +27,13 @@ Motherboard produced by DothanTech(dothantech.com)
 - [点击查看](protocol.md)当前分析出的打印机协议和命令
 - [点击查看](print-status.md)当前已知的打印机状态类型
 
-或者直接看[源码](src/command/mod.rs)
+或者直接看[源码](src/command/req_template)（`new-standard` 分支的命令模板）
 
 ## Development and Usage / 开发和使用
 
 - 依赖 `dbus-devel`，记得安装
 - 记得设置并重载 udev 规则，类似 `SUBSYSTEM=="usb", ATTRS{idVendor}=="3533", ATTRS{idProduct}=="5c15", MODE="0666"`
-- 源代码里有很多未使用的垃圾，是逆向初期的残留，请参考示例以避免用错
+- 源代码里有很多未使用的垃圾，是逆向初期的残留，哪些是新的、哪些是旧的见下面的代码结构
 
 ```bash
 # 打印一张图片的示例代码
@@ -45,28 +45,51 @@ cargo run --bin dzprint_typst
 # TODO: 更完善的 CLI
 cargo run --bin dzcli
 ```
+
 ## Code Layout / 代码结构
 
+> `new-standard` 分支正在重写命令层，所以 `src/` 里新老两套代码并存：
+> **`[新]`** 是重写后的实现，**`[旧]`** 是 `master` 留下来的逆向初期代码，
+> 基本没有接入（有的连模块声明都被注释了），看代码时注意别用错。
+
 `src/`
-- `asset/` 资源文件，目前被示例代码使用
-- `backend/` 底层通讯实现
-- `bin/` 可执行的示例代码
-  - 看上面
+
+- `asset/` 字体等资源文件，供示例代码使用
+- `bin/` 可执行的示例
+  - `dzprint` 打印图片、`dzprint_typst` 打印 Typst 文档：`[旧]` 实现整体被注释，目前 `main` 是空的
+  - `dzcli` CLI 雏形（只有 `clap` 参数骨架，功能还没接）
+- `bitmap.rs` `[新]` 以 bit 为单位的位图行类型，供 RLE 和命令层使用
+- `rle/` `[新]` 位图行的行程编码（RLE）
+  - `run.rs` 把一行切成 run，分按位 / 按字节两种
+  - `lut.rs` RLE4X / RLE5X / RLE6X 的码表
 - `command/` 通讯协议
-  - `checksum.rs` 校验码计算
-  - `mod.rs` 命令列表和单命令编解码
-  - `packager.rs` 命令打包
-  - `variable_bytes.rs` 某种妙妙编解码
-- `image_proc/` 图像处理相关
-  - `mod.rs` 位图类型和转换
-  - `cmd_parser.rs` 打印命令生成
+  - `mod.rs` 模块入口；文件下半部分是被注释掉的初版 `Command` / `Commands` 实现
+  - `checksum.rs` 校验码计算（目前还没接进新流程）
+  - `envelope.rs` `[新]` 命令载荷的封包类型：自动校验和 / 固定 `0x88` / 手动打包 / 裸字节
+  - `models.rs` `[新]` 机型版本 `V0` / `V1` / `V2`
+  - `req/` `[新]` 打印命令的请求对象：实现 `ReqTrait`，按机型编码成一组 `Envelope`
+    - `start_page.rs`、`print_line.rs`、`feed_line.rs`、`total_lines.rs`、`end_page.rs`
+  - `req_template/` `[新]` 每个命令的字节布局模板（deku），同一命令的不同机型写法各一个模板
+  - `varint.rs` `[新]` 协议里的 4 种变长整数编解码
+  - `settings.rs` `[新]` 打印设置（速度、浓度、纸类型等）枚举和字符串解析
+  - `status.rs` `[新]` 打印机错误码
+  - `response.rs` `[新]` 设备回包解析（占位，还是空文件）
+  - `packager.rs` `[旧]` USB 封包 / 解包，已整体注释
+- `derive_alias.rs` `[新]` deku derive 的别名 `CmdTemplate`
+- `backend/` `[旧]` `rusb` 底层通讯实现，`lib.rs` 里已注释掉
+- `image_proc/` `[旧]` 图像处理
+  - `mod.rs` 位图类型和灰度 / 抖动转换
+  - `cmd_parser.rs` 直接把位图拼成打印字节命令
+- `info.rs`、`param.rs` `[旧]` 照抄官方 SDK 的设备信息和参数结构体
+- `frontend/`、`planner/` 新架构预留，目前是空文件
+- `scheduler/` 打印任务和设置类型的占位（`Job`、`Scheduler` 都还是空的）
 
 ## TODO
 
 - 优化流控，精确控制命令打包和发送过程
-- dzcli, CLI 和 Web 界面，集成查改设置，打印位图和 Typst 功能
+- dzcli, CLI 和 Web 界面，集成查改设置，~~打印位图和 Typst 功能~~
 - handle 多设备，设备断连和故障处理
-- 蓝牙！
+- 蓝牙！https://github.com/sb-child/dz-print/issues/3
 
 ## License / 许可证
 
