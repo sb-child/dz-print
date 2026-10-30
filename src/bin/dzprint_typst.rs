@@ -2,759 +2,761 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::{
-    collections::HashMap,
-    env,
-    path::{Path, PathBuf},
-};
+// use std::{
+//     collections::HashMap,
+//     env,
+//     path::{Path, PathBuf},
+// };
 
-use chrono::Local;
-use dz_print::{
-    backend,
-    command::{self, HostCommand},
-    image_proc::{
-        Bitmap, DitherMode,
-        cmd_parser::{BitmapParser, PrintCommand},
-    },
-};
-use tempfile::{TempDir, tempdir};
-use tiny_skia::Pixmap;
-use typst::{
-    Library, LibraryExt, World,
-    diag::{FileError, FileResult},
-    foundations::{Bytes, Datetime, Duration, NativeFunc, NativeFuncData},
-    introspection::Introspector as _,
-    syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot, package::PackageSpec},
-    text::{Font, FontBook, FontInfo},
-    utils::{LazyHash, PicoStr},
-};
-use typst_layout::PagedDocument;
-use typst_render::RenderOptions;
+// use chrono::Local;
+// use dz_print::{
+//     backend,
+//     command::{self, HostCommand},
+//     image_proc::{
+//         Bitmap, DitherMode,
+//         cmd_parser::{BitmapParser, PrintCommand},
+//     },
+// };
+// use tempfile::{TempDir, tempdir};
+// use tiny_skia::Pixmap;
+// use typst::{
+//     Library, LibraryExt, World,
+//     diag::{FileError, FileResult},
+//     foundations::{Bytes, Datetime, Duration, NativeFunc, NativeFuncData},
+//     introspection::Introspector as _,
+//     syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot, package::PackageSpec},
+//     text::{Font, FontBook, FontInfo},
+//     utils::{LazyHash, PicoStr},
+// };
+// use typst_layout::PagedDocument;
+// use typst_render::RenderOptions;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-    main_fn().await
-}
+// #[tokio::main]
+// async fn main() -> anyhow::Result<()> {
+//     tracing_subscriber::fmt::init();
+//     main_fn().await
+// }
 
-async fn main_fn() -> anyhow::Result<()> {
-    println!("dz-print for typst");
-    let file_name = env::args()
-        .nth(1)
-        .ok_or(anyhow::anyhow!("please specify a filename"))?;
-    let file_path = std::path::PathBuf::from(&file_name);
-    println!("reading file");
-    let file_content = tokio::fs::read_to_string(file_name).await?;
-    println!("creating world");
-    let package_cache_dir = tempdir()?;
-    let world = Minecraft::new(&file_path, file_content, package_cache_dir);
-    println!("compiling document");
-    let doc = typst::compile::<PagedDocument>(&world);
-    for w in doc.warnings {
-        println!("warning: {w:?}");
-    }
-    let doc = doc
-        .output
-        .map_err(|e| anyhow::anyhow!("compile error: {e:?}"))?;
+// async fn main_fn() -> anyhow::Result<()> {
+//     println!("dz-print for typst");
+//     let file_name = env::args()
+//         .nth(1)
+//         .ok_or(anyhow::anyhow!("please specify a filename"))?;
+//     let file_path = std::path::PathBuf::from(&file_name);
+//     println!("reading file");
+//     let file_content = tokio::fs::read_to_string(file_name).await?;
+//     println!("creating world");
+//     let package_cache_dir = tempdir()?;
+//     let world = Minecraft::new(&file_path, file_content, package_cache_dir);
+//     println!("compiling document");
+//     let doc = typst::compile::<PagedDocument>(&world);
+//     for w in doc.warnings {
+//         println!("warning: {w:?}");
+//     }
+//     let doc = doc
+//         .output
+//         .map_err(|e| anyhow::anyhow!("compile error: {e:?}"))?;
 
-    let mut page_settings_map: HashMap<usize, PrintSettings> = HashMap::new();
-    let page_settings_selector = typst::foundations::Selector::Label(
-        typst::foundations::Label::new(PicoStr::intern("print-settings")).unwrap(),
-    );
+//     let mut page_settings_map: HashMap<usize, PrintSettings> = HashMap::new();
+//     let page_settings_selector = typst::foundations::Selector::Label(
+//         typst::foundations::Label::new(PicoStr::intern("print-settings")).unwrap(),
+//     );
 
-    println!("load page settings");
-    for content in doc.introspector().query(&page_settings_selector) {
-        if let Some(location) = content.location() {
-            let page_num = doc
-                .introspector()
-                .page(location)
-                .expect("idk the page")
-                .get();
-            println!("parsing page setting {page_num}");
-            let values = content
-                .get_by_name("value")
-                .map_err(|e| anyhow::anyhow!("parse page setting: {e:?}"))?;
-            let typst::foundations::Value::Dict(v) = values else {
-                continue;
-            };
-            let paper = match v.get("paper").ok() {
-                Some(typst::foundations::Value::Str(x)) => PaperSetting::try_from(x.as_str())
-                    .map_err(|e| anyhow::anyhow!("parse paper setting: {e:?}"))?,
-                Some(e) => return Err(anyhow::anyhow!("parse paper setting: Invalid Type {e:?}")),
-                None => PaperSetting::default(),
-            };
-            macro_rules! parse_numeric_setting {
-                ($field_name:expr, $setting_type:ty, $cast_type:ty) => {
-                    match v.get($field_name).ok() {
-                        Some(typst::foundations::Value::Int(x)) => {
-                            <$setting_type>::try_from(*x as $cast_type).map_err(|e| {
-                                anyhow::anyhow!("parse {} setting: {e:?}", $field_name)
-                            })?
-                        }
-                        Some(typst::foundations::Value::Str(x)) => {
-                            <$setting_type>::try_from(x.as_str()).map_err(|e| {
-                                anyhow::anyhow!("parse {} setting: {e:?}", $field_name)
-                            })?
-                        }
-                        Some(_) => {
-                            return Err(anyhow::anyhow!(
-                                "parse {} setting: InvalidType",
-                                $field_name
-                            ))
-                        }
-                        None => <$setting_type>::default(),
-                    }
-                };
-            }
-            let darkness = parse_numeric_setting!("darkness", DarknessSetting, u8);
-            let speed = parse_numeric_setting!("speed", SpeedSetting, u8);
-            let gap = parse_numeric_setting!("gap", GapSetting, u16);
-            let ps = PrintSettings {
-                paper,
-                darkness,
-                speed,
-                gap,
-            };
-            page_settings_map.insert(page_num, ps);
-        }
-    }
+//     println!("load page settings");
+//     for content in doc.introspector().query(&page_settings_selector) {
+//         if let Some(location) = content.location() {
+//             let page_num = doc
+//                 .introspector()
+//                 .page(location)
+//                 .expect("idk the page")
+//                 .get();
+//             println!("parsing page setting {page_num}");
+//             let values = content
+//                 .get_by_name("value")
+//                 .map_err(|e| anyhow::anyhow!("parse page setting: {e:?}"))?;
+//             let typst::foundations::Value::Dict(v) = values else {
+//                 continue;
+//             };
+//             let paper = match v.get("paper").ok() {
+//                 Some(typst::foundations::Value::Str(x)) => PaperSetting::try_from(x.as_str())
+//                     .map_err(|e| anyhow::anyhow!("parse paper setting: {e:?}"))?,
+//                 Some(e) => return Err(anyhow::anyhow!("parse paper setting: Invalid Type {e:?}")),
+//                 None => PaperSetting::default(),
+//             };
+//             macro_rules! parse_numeric_setting {
+//                 ($field_name:expr, $setting_type:ty, $cast_type:ty) => {
+//                     match v.get($field_name).ok() {
+//                         Some(typst::foundations::Value::Int(x)) => {
+//                             <$setting_type>::try_from(*x as $cast_type).map_err(|e| {
+//                                 anyhow::anyhow!("parse {} setting: {e:?}", $field_name)
+//                             })?
+//                         }
+//                         Some(typst::foundations::Value::Str(x)) => {
+//                             <$setting_type>::try_from(x.as_str()).map_err(|e| {
+//                                 anyhow::anyhow!("parse {} setting: {e:?}", $field_name)
+//                             })?
+//                         }
+//                         Some(_) => {
+//                             return Err(anyhow::anyhow!(
+//                                 "parse {} setting: InvalidType",
+//                                 $field_name
+//                             ))
+//                         }
+//                         None => <$setting_type>::default(),
+//                     }
+//                 };
+//             }
+//             let darkness = parse_numeric_setting!("darkness", DarknessSetting, u8);
+//             let speed = parse_numeric_setting!("speed", SpeedSetting, u8);
+//             let gap = parse_numeric_setting!("gap", GapSetting, u16);
+//             let ps = PrintSettings {
+//                 paper,
+//                 darkness,
+//                 speed,
+//                 gap,
+//             };
+//             page_settings_map.insert(page_num, ps);
+//         }
+//     }
 
-    println!("connecting to printer");
-    let b = backend::USBBackend::new(backend::USBSelector::DeviceSerial(
-        "DP27P-Y4094C023".to_string(),
-    ))
-    .await?;
-    for p in doc.pages() {
-        println!("rendering page {}", p.number);
-        // 576px = 48mm
-        let opts = RenderOptions {
-            pixel_per_pt: (576.0 / (2.834_645_7 * 48.0)).into(),
-            ..Default::default()
-        };
-        let r = typst_render::render(&p, &opts);
-        let ps = page_settings_map
-            .get(&(p.number as usize))
-            .cloned()
-            .unwrap_or_default();
-        println!("printing page {}: {:?}, bp {}", p.number, ps, ps.bp());
-        print_page(&b, r, ps).await?;
-    }
-    Ok(())
-}
+//     println!("connecting to printer");
+//     let b = backend::USBBackend::new(backend::USBSelector::DeviceSerial(
+//         "DP27P-Y4094C023".to_string(),
+//     ))
+//     .await?;
+//     for p in doc.pages() {
+//         println!("rendering page {}", p.number);
+//         // 576px = 48mm
+//         let opts = RenderOptions {
+//             pixel_per_pt: (576.0 / (2.834_645_7 * 48.0)).into(),
+//             ..Default::default()
+//         };
+//         let r = typst_render::render(&p, &opts);
+//         let ps = page_settings_map
+//             .get(&(p.number as usize))
+//             .cloned()
+//             .unwrap_or_default();
+//         println!("printing page {}: {:?}, bp {}", p.number, ps, ps.bp());
+//         print_page(&b, r, ps).await?;
+//     }
+//     Ok(())
+// }
 
-async fn print_page(b: &backend::USBBackend, pm: Pixmap, ps: PrintSettings) -> anyhow::Result<()> {
-    assert_eq!(
-        pm.width(),
-        576,
-        "please ensure your page width is 576px or 48mm"
-    );
-    println!("converting to bitmap");
-    let bitmap = Bitmap::from_pixmap(&pm, DitherMode::FloydSteinberg);
-    // 这个 bp 参数其实是 magic number，以下是建议值
-    // 最慢 50 | 较慢 75 | 正常 100 | 较快 110 | 最快 120
-    // 可能受打印浓度影响
-    let parser = BitmapParser::new(bitmap, ps.bp());
-    println!("set paper type");
-    let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintPaperType)
-            .package(ps.paper_vec(), false),
-    );
-    b.push(cmd).await?;
-    chan.await?;
-    println!("set darkness");
-    let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintDarkness)
-            .package(ps.darkness_vec(), false),
-    );
-    b.push(cmd).await?;
-    chan.await?;
-    println!("set speed");
-    let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintSpeed).package(ps.speed_vec(), false),
-    );
-    b.push(cmd).await?;
-    chan.await?;
-    println!("set gap");
-    let (cmd, chan) = backend::Command::without_response(
-        command::Command::new_host(HostCommand::GetSetPrintPaperGap).package(ps.gap_vec(), false),
-    );
-    b.push(cmd).await?;
-    chan.await?;
-    println!("get status");
-    let (cmd, chan) = backend::Command::with_response(
-        command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
-    );
-    b.push(cmd).await.ok();
-    let resp = chan.await?.ok_or(anyhow::anyhow!("get status error"))?;
-    println!("status: {:?}", resp.await?.get_command());
-    println!("enable high command");
-    let (cmd, chan) = backend::Command::with_response(
-        command::Command::new_host(HostCommand::EnableHighCommand).package(vec![0x7f], false),
-    );
-    b.push(cmd).await?;
-    let resp = chan
-        .await?
-        .ok_or(anyhow::anyhow!("enable high command error"))?;
-    println!("enable high command: {:?}", resp.await?.get_command());
-    println!("reset printer");
-    let (cmd, chan) = backend::Command::without_response(
-        PrintCommand::ResetPrinter
-            .parse()
-            .unwrap()
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>(),
-    );
-    b.push(cmd).await?;
-    chan.await?;
-    println!("printing");
-    let mut errored = false;
-    for c in parser {
-        if let Some(c) = c.parse() {
-            for c in c {
-                let (cmd, _ch) = backend::Command::without_response(c);
-                b.push(cmd).await?;
-                // 这是相当保守且恐怖的，我下次应该等待整个buffer变空? 我不知道
-                // ch.await?;
-            }
-        } else {
-            let (cmd1, chan1) = backend::Command::with_response(
-                command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
-            );
-            b.push(cmd1).await.ok();
-            let chan = chan1.await?;
-            if let Some(chan) = chan {
-                let resp = chan.await;
-                let resp = if let Ok(resp) = resp {
-                    resp
-                } else {
-                    // 如果收不到东西，那一定是打印机 buffer 炸了
-                    // 这是打印机固件写的烂，我没什么好办法
-                    println!("receive error");
-                    errored = true;
-                    break;
-                };
-                let stat = resp.get_payload()[0];
-                println!("status: {:?}", stat);
-                if stat == 35 {
-                    println!("no paper");
-                    errored = true;
-                    break;
-                }
-            } else {
-                println!("print failed");
-                errored = true;
-                break;
-            }
-        }
-    }
-    if errored {
-        println!("reset device...");
-        let (cmd, chan) = backend::Command::reset();
-        b.push(cmd).await?;
-        chan.await?;
-        let (cmd1, chan1) = backend::Command::with_response(
-            command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
-        );
-        b.push(cmd1).await?;
-        let chan = chan1.await?;
-        if let Some(chan) = chan {
-            let resp = chan.await;
-            let resp = if let Ok(resp) = resp {
-                resp
-            } else {
-                unreachable!("炸了炸了，但我不知道怎么修")
-            };
-            let stat = resp.get_payload()[0];
-            println!("status: {:?}", stat);
-            if stat == 35 {
-                println!("no paper");
-            }
-        } else {
-            println!("print failed");
-        }
-        panic!("print errored");
-    }
-    // println!("feed 2 lines");
-    // let (cmd, _) = backend::Command::without_response(
-    //     PrintCommand::FeedLines(2)
-    //         .parse()
-    //         .unwrap()
-    //         .into_iter()
-    //         .flatten()
-    //         .collect::<Vec<_>>(),
-    // );
-    // b.push(cmd).await?;
-    println!("next paper");
-    let (cmd, _) = backend::Command::without_response(
-        PrintCommand::NextPaper
-            .parse()
-            .unwrap()
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>(),
-    );
-    b.push(cmd).await?;
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    Ok(())
-}
+// async fn print_page(b: &backend::USBBackend, pm: Pixmap, ps: PrintSettings) -> anyhow::Result<()> {
+//     assert_eq!(
+//         pm.width(),
+//         576,
+//         "please ensure your page width is 576px or 48mm"
+//     );
+//     println!("converting to bitmap");
+//     let bitmap = Bitmap::from_pixmap(&pm, DitherMode::FloydSteinberg);
+//     // 这个 bp 参数其实是 magic number，以下是建议值
+//     // 最慢 50 | 较慢 75 | 正常 100 | 较快 110 | 最快 120
+//     // 可能受打印浓度影响
+//     let parser = BitmapParser::new(bitmap, ps.bp());
+//     println!("set paper type");
+//     let (cmd, chan) = backend::Command::without_response(
+//         command::Command::new_host(HostCommand::GetSetPrintPaperType)
+//             .package(ps.paper_vec(), false),
+//     );
+//     b.push(cmd).await?;
+//     chan.await?;
+//     println!("set darkness");
+//     let (cmd, chan) = backend::Command::without_response(
+//         command::Command::new_host(HostCommand::GetSetPrintDarkness)
+//             .package(ps.darkness_vec(), false),
+//     );
+//     b.push(cmd).await?;
+//     chan.await?;
+//     println!("set speed");
+//     let (cmd, chan) = backend::Command::without_response(
+//         command::Command::new_host(HostCommand::GetSetPrintSpeed).package(ps.speed_vec(), false),
+//     );
+//     b.push(cmd).await?;
+//     chan.await?;
+//     println!("set gap");
+//     let (cmd, chan) = backend::Command::without_response(
+//         command::Command::new_host(HostCommand::GetSetPrintPaperGap).package(ps.gap_vec(), false),
+//     );
+//     b.push(cmd).await?;
+//     chan.await?;
+//     println!("get status");
+//     let (cmd, chan) = backend::Command::with_response(
+//         command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
+//     );
+//     b.push(cmd).await.ok();
+//     let resp = chan.await?.ok_or(anyhow::anyhow!("get status error"))?;
+//     println!("status: {:?}", resp.await?.get_command());
+//     println!("enable high command");
+//     let (cmd, chan) = backend::Command::with_response(
+//         command::Command::new_host(HostCommand::EnableHighCommand).package(vec![0x7f], false),
+//     );
+//     b.push(cmd).await?;
+//     let resp = chan
+//         .await?
+//         .ok_or(anyhow::anyhow!("enable high command error"))?;
+//     println!("enable high command: {:?}", resp.await?.get_command());
+//     println!("reset printer");
+//     let (cmd, chan) = backend::Command::without_response(
+//         PrintCommand::ResetPrinter
+//             .parse()
+//             .unwrap()
+//             .into_iter()
+//             .flatten()
+//             .collect::<Vec<_>>(),
+//     );
+//     b.push(cmd).await?;
+//     chan.await?;
+//     println!("printing");
+//     let mut errored = false;
+//     for c in parser {
+//         if let Some(c) = c.parse() {
+//             for c in c {
+//                 let (cmd, _ch) = backend::Command::without_response(c);
+//                 b.push(cmd).await?;
+//                 // 这是相当保守且恐怖的，我下次应该等待整个buffer变空? 我不知道
+//                 // ch.await?;
+//             }
+//         } else {
+//             let (cmd1, chan1) = backend::Command::with_response(
+//                 command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
+//             );
+//             b.push(cmd1).await.ok();
+//             let chan = chan1.await?;
+//             if let Some(chan) = chan {
+//                 let resp = chan.await;
+//                 let resp = if let Ok(resp) = resp {
+//                     resp
+//                 } else {
+//                     // 如果收不到东西，那一定是打印机 buffer 炸了
+//                     // 这是打印机固件写的烂，我没什么好办法
+//                     println!("receive error");
+//                     errored = true;
+//                     break;
+//                 };
+//                 let stat = resp.get_payload()[0];
+//                 println!("status: {:?}", stat);
+//                 if stat == 35 {
+//                     println!("no paper");
+//                     errored = true;
+//                     break;
+//                 }
+//             } else {
+//                 println!("print failed");
+//                 errored = true;
+//                 break;
+//             }
+//         }
+//     }
+//     if errored {
+//         println!("reset device...");
+//         let (cmd, chan) = backend::Command::reset();
+//         b.push(cmd).await?;
+//         chan.await?;
+//         let (cmd1, chan1) = backend::Command::with_response(
+//             command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
+//         );
+//         b.push(cmd1).await?;
+//         let chan = chan1.await?;
+//         if let Some(chan) = chan {
+//             let resp = chan.await;
+//             let resp = if let Ok(resp) = resp {
+//                 resp
+//             } else {
+//                 unreachable!("炸了炸了，但我不知道怎么修")
+//             };
+//             let stat = resp.get_payload()[0];
+//             println!("status: {:?}", stat);
+//             if stat == 35 {
+//                 println!("no paper");
+//             }
+//         } else {
+//             println!("print failed");
+//         }
+//         panic!("print errored");
+//     }
+//     // println!("feed 2 lines");
+//     // let (cmd, _) = backend::Command::without_response(
+//     //     PrintCommand::FeedLines(2)
+//     //         .parse()
+//     //         .unwrap()
+//     //         .into_iter()
+//     //         .flatten()
+//     //         .collect::<Vec<_>>(),
+//     // );
+//     // b.push(cmd).await?;
+//     println!("next paper");
+//     let (cmd, _) = backend::Command::without_response(
+//         PrintCommand::NextPaper
+//             .parse()
+//             .unwrap()
+//             .into_iter()
+//             .flatten()
+//             .collect::<Vec<_>>(),
+//     );
+//     b.push(cmd).await?;
+//     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+//     Ok(())
+// }
 
-fn load_builtin_fonts() -> (Vec<Font>, FontBook) {
-    let mut fonts = Vec::new();
-    let mut book = FontBook::new();
+// fn load_builtin_fonts() -> (Vec<Font>, FontBook) {
+//     let mut fonts = Vec::new();
+//     let mut book = FontBook::new();
 
-    let font_sources: &[(&[u8], &str)] = &[
-        (include_bytes!("../asset/unifont-16.0.04.ttf"), "Unifont"),
-        (
-            include_bytes!("../asset/UnifontExMono.ttf"),
-            "UnifontExMono",
-        ),
-    ];
-    for (bytes, family_override) in font_sources {
-        let typst_bytes = Bytes::new(bytes);
-        if let Some(font) = Font::new(typst_bytes, 0) {
-            let mut info = font.info().clone();
-            info.family = family_override.to_string();
+//     let font_sources: &[(&[u8], &str)] = &[
+//         (include_bytes!("../asset/unifont-16.0.04.ttf"), "Unifont"),
+//         (
+//             include_bytes!("../asset/UnifontExMono.ttf"),
+//             "UnifontExMono",
+//         ),
+//     ];
+//     for (bytes, family_override) in font_sources {
+//         let typst_bytes = Bytes::new(bytes);
+//         if let Some(font) = Font::new(typst_bytes, 0) {
+//             let mut info = font.info().clone();
+//             info.family = family_override.to_string();
 
-            book.push(info);
-            fonts.push(font);
-        }
-    }
-    (fonts, book)
-}
+//             book.push(info);
+//             fonts.push(font);
+//         }
+//     }
+//     (fonts, book)
+// }
 
-fn prepare_package(pkg: &PackageSpec, cache_dir: &Path) -> FileResult<PathBuf> {
-    let package_dir = cache_dir.join(format!(
-        "{}__{}__{}",
-        pkg.namespace.as_str(),
-        pkg.name.as_str(),
-        pkg.version.to_string(),
-    ));
-    if package_dir.exists() {
-        return Ok(package_dir);
-    }
-    if pkg.namespace == "preview" {
-        let url = format!(
-            "https://packages.typst.org/preview/{}-{}.tar.gz",
-            pkg.name, pkg.version
-        );
-        println!("Downloading package: {url} to {}", package_dir.display());
-        let response = ureq::get(&url).call().map_err(|e| {
-            FileError::Other(Some(format!("Failed to download package: {e}").into()))
-        })?;
-        let mut body = response.into_body();
-        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(body.as_reader()));
-        let dld_dir = cache_dir.with_extension("_downloading");
-        if dld_dir.exists() {
-            let _ = std::fs::remove_dir_all(&dld_dir);
-        }
-        std::fs::create_dir_all(&dld_dir).map_err(|e| FileError::from_io(e, &dld_dir))?;
-        archive
-            .unpack(&dld_dir)
-            .map_err(|e| FileError::Other(Some(format!("Failed to unpack package: {e}").into())))?;
-        std::fs::rename(&dld_dir, &package_dir).map_err(|e| FileError::from_io(e, &package_dir))?;
-        Ok(package_dir)
-    } else {
-        Err(FileError::NotFound(PathBuf::from(format!(
-            "@{}/{} version {}",
-            pkg.namespace, pkg.name, pkg.version
-        ))))
-    }
-}
+// fn prepare_package(pkg: &PackageSpec, cache_dir: &Path) -> FileResult<PathBuf> {
+//     let package_dir = cache_dir.join(format!(
+//         "{}__{}__{}",
+//         pkg.namespace.as_str(),
+//         pkg.name.as_str(),
+//         pkg.version.to_string(),
+//     ));
+//     if package_dir.exists() {
+//         return Ok(package_dir);
+//     }
+//     if pkg.namespace == "preview" {
+//         let url = format!(
+//             "https://packages.typst.org/preview/{}-{}.tar.gz",
+//             pkg.name, pkg.version
+//         );
+//         println!("Downloading package: {url} to {}", package_dir.display());
+//         let response = ureq::get(&url).call().map_err(|e| {
+//             FileError::Other(Some(format!("Failed to download package: {e}").into()))
+//         })?;
+//         let mut body = response.into_body();
+//         let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(body.as_reader()));
+//         let dld_dir = cache_dir.with_extension("_downloading");
+//         if dld_dir.exists() {
+//             let _ = std::fs::remove_dir_all(&dld_dir);
+//         }
+//         std::fs::create_dir_all(&dld_dir).map_err(|e| FileError::from_io(e, &dld_dir))?;
+//         archive
+//             .unpack(&dld_dir)
+//             .map_err(|e| FileError::Other(Some(format!("Failed to unpack package: {e}").into())))?;
+//         std::fs::rename(&dld_dir, &package_dir).map_err(|e| FileError::from_io(e, &package_dir))?;
+//         Ok(package_dir)
+//     } else {
+//         Err(FileError::NotFound(PathBuf::from(format!(
+//             "@{}/{} version {}",
+//             pkg.namespace, pkg.name, pkg.version
+//         ))))
+//     }
+// }
 
-/// 我的[世界](typst::World)
-struct Minecraft {
-    fontbook: LazyHash<FontBook>,
-    library: LazyHash<Library>,
-    main_fileid: FileId,
-    main_content: String,
-    root_path: PathBuf,
-    fonts: Vec<Font>,
-    package_cache_dir: TempDir,
-}
+// /// 我的[世界](typst::World)
+// struct Minecraft {
+//     fontbook: LazyHash<FontBook>,
+//     library: LazyHash<Library>,
+//     main_fileid: FileId,
+//     main_content: String,
+//     root_path: PathBuf,
+//     fonts: Vec<Font>,
+//     package_cache_dir: TempDir,
+// }
 
-impl Minecraft {
-    fn new(main_file_path: &Path, main_content: String, package_cache_dir: TempDir) -> Self {
-        let (fonts, fontbook) = load_builtin_fonts();
-        let fontbook = LazyHash::new(fontbook);
-        let library = LazyHash::new(make_library());
-        let root_path = main_file_path
-            .parent()
-            .unwrap_or(Path::new(""))
-            .to_path_buf();
-        let root_path = root_path.canonicalize().unwrap_or(root_path);
-        let main_filename = main_file_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        let vpath = VirtualPath::new(format!("/{}", main_filename)).expect("no way");
-        let p = RootedPath::new(VirtualRoot::Project, vpath);
-        let main_fileid = FileId::unique(p);
-        Self {
-            fontbook,
-            library,
-            main_fileid,
-            main_content,
-            root_path,
-            fonts,
-            package_cache_dir,
-        }
-    }
+// impl Minecraft {
+//     fn new(main_file_path: &Path, main_content: String, package_cache_dir: TempDir) -> Self {
+//         let (fonts, fontbook) = load_builtin_fonts();
+//         let fontbook = LazyHash::new(fontbook);
+//         let library = LazyHash::new(make_library());
+//         let root_path = main_file_path
+//             .parent()
+//             .unwrap_or(Path::new(""))
+//             .to_path_buf();
+//         let root_path = root_path.canonicalize().unwrap_or(root_path);
+//         let main_filename = main_file_path
+//             .file_name()
+//             .unwrap_or_default()
+//             .to_string_lossy();
+//         let vpath = VirtualPath::new(format!("/{}", main_filename)).expect("no way");
+//         let p = RootedPath::new(VirtualRoot::Project, vpath);
+//         let main_fileid = FileId::unique(p);
+//         Self {
+//             fontbook,
+//             library,
+//             main_fileid,
+//             main_content,
+//             root_path,
+//             fonts,
+//             package_cache_dir,
+//         }
+//     }
 
-    fn resolve_id(&self, id: FileId) -> FileResult<PathBuf> {
-        if id == self.main_fileid {
-            return Err(FileError::Other(Some("Main file is virtual".into())));
-        }
-        match id.root() {
-            VirtualRoot::Project => {
-                let path = id
-                    .vpath()
-                    .realize(&self.root_path)
-                    .map_err(FileError::Realize)?;
+//     fn resolve_id(&self, id: FileId) -> FileResult<PathBuf> {
+//         if id == self.main_fileid {
+//             return Err(FileError::Other(Some("Main file is virtual".into())));
+//         }
+//         match id.root() {
+//             VirtualRoot::Project => {
+//                 let path = id
+//                     .vpath()
+//                     .realize(&self.root_path)
+//                     .map_err(FileError::Realize)?;
 
-                if !path.starts_with(&self.root_path) {
-                    return Err(FileError::AccessDenied);
-                }
-                Ok(path)
-            }
-            VirtualRoot::Package(package_spec) => {
-                let pkg_dir = prepare_package(package_spec, self.package_cache_dir.path())?;
-                id.vpath().realize(&pkg_dir).map_err(FileError::Realize)
-            }
-        }
-    }
-}
+//                 if !path.starts_with(&self.root_path) {
+//                     return Err(FileError::AccessDenied);
+//                 }
+//                 Ok(path)
+//             }
+//             VirtualRoot::Package(package_spec) => {
+//                 let pkg_dir = prepare_package(package_spec, self.package_cache_dir.path())?;
+//                 id.vpath().realize(&pkg_dir).map_err(FileError::Realize)
+//             }
+//         }
+//     }
+// }
 
-impl World for Minecraft {
-    fn library(&self) -> &LazyHash<Library> {
-        &self.library
-    }
+// impl World for Minecraft {
+//     fn library(&self) -> &LazyHash<Library> {
+//         &self.library
+//     }
 
-    fn book(&self) -> &LazyHash<FontBook> {
-        &self.fontbook
-    }
+//     fn book(&self) -> &LazyHash<FontBook> {
+//         &self.fontbook
+//     }
 
-    fn main(&self) -> FileId {
-        self.main_fileid
-    }
+//     fn main(&self) -> FileId {
+//         self.main_fileid
+//     }
 
-    fn source(&self, id: FileId) -> FileResult<Source> {
-        if id == self.main_fileid {
-            return Ok(Source::new(id, self.main_content.clone()));
-        }
-        let path = self.resolve_id(id)?;
-        let content = std::fs::read_to_string(&path).map_err(|e| FileError::from_io(e, &path))?;
-        Ok(Source::new(id, content))
-    }
+//     fn source(&self, id: FileId) -> FileResult<Source> {
+//         if id == self.main_fileid {
+//             return Ok(Source::new(id, self.main_content.clone()));
+//         }
+//         let path = self.resolve_id(id)?;
+//         let content = std::fs::read_to_string(&path).map_err(|e| FileError::from_io(e, &path))?;
+//         Ok(Source::new(id, content))
+//     }
 
-    fn file(&self, id: FileId) -> FileResult<Bytes> {
-        let path = self.resolve_id(id)?;
-        let content = std::fs::read(&path).map_err(|e| FileError::from_io(e, &path))?;
-        Ok(Bytes::new(content))
-    }
+//     fn file(&self, id: FileId) -> FileResult<Bytes> {
+//         let path = self.resolve_id(id)?;
+//         let content = std::fs::read(&path).map_err(|e| FileError::from_io(e, &path))?;
+//         Ok(Bytes::new(content))
+//     }
 
-    fn font(&self, index: usize) -> Option<Font> {
-        self.fonts.get(index).cloned()
-    }
+//     fn font(&self, index: usize) -> Option<Font> {
+//         self.fonts.get(index).cloned()
+//     }
 
-    fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
-        let _now = Local::now();
-        // todo
-        None
-    }
-}
+//     fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
+//         let _now = Local::now();
+//         // todo
+//         None
+//     }
+// }
 
-#[derive(thiserror::Error, Debug)]
-enum PrintSettingError {
-    #[error("Invalid value `{0}`")]
-    InvalidU8(u8),
-    #[error("Invalid value `{0}`")]
-    InvalidU16(u16),
-    #[error("Invalid string `{0}`")]
-    InvalidString(String),
-}
+// #[derive(thiserror::Error, Debug)]
+// enum PrintSettingError {
+//     #[error("Invalid value `{0}`")]
+//     InvalidU8(u8),
+//     #[error("Invalid value `{0}`")]
+//     InvalidU16(u16),
+//     #[error("Invalid string `{0}`")]
+//     InvalidString(String),
+// }
 
-#[derive(Debug, Clone, Copy, Default)]
-enum SpeedSetting {
-    /// 最慢(1)
-    Min,
-    /// 稍慢(2)
-    Speed1,
-    /// 正常(3)
-    #[default]
-    Normal,
-    /// 稍快(4)
-    Speed3,
-    /// 最快(5)
-    Max,
-}
+// #[derive(Debug, Clone, Copy, Default)]
+// enum SpeedSetting {
+//     /// 最慢(1)
+//     Min,
+//     /// 稍慢(2)
+//     Speed1,
+//     /// 正常(3)
+//     #[default]
+//     Normal,
+//     /// 稍快(4)
+//     Speed3,
+//     /// 最快(5)
+//     Max,
+// }
 
-impl TryFrom<u8> for SpeedSetting {
-    type Error = PrintSettingError;
+// impl TryFrom<u8> for SpeedSetting {
+//     type Error = PrintSettingError;
 
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::Min),
-            2 => Ok(Self::Speed1),
-            3 => Ok(Self::Normal),
-            4 => Ok(Self::Speed3),
-            5 => Ok(Self::Max),
-            _ => Err(Self::Error::InvalidU8(value)),
-        }
-    }
-}
+//     fn try_from(value: u8) -> Result<Self, Self::Error> {
+//         match value {
+//             1 => Ok(Self::Min),
+//             2 => Ok(Self::Speed1),
+//             3 => Ok(Self::Normal),
+//             4 => Ok(Self::Speed3),
+//             5 => Ok(Self::Max),
+//             _ => Err(Self::Error::InvalidU8(value)),
+//         }
+//     }
+// }
 
-impl TryFrom<&str> for SpeedSetting {
-    type Error = PrintSettingError;
+// impl TryFrom<&str> for SpeedSetting {
+//     type Error = PrintSettingError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "min" | "1" => Ok(Self::Min),
-            "2" => Ok(Self::Speed1),
-            "normal" | "3" => Ok(Self::Normal),
-            "4" => Ok(Self::Speed3),
-            "max" | "5" => Ok(Self::Max),
-            _ => Err(Self::Error::InvalidString(value.to_string())),
-        }
-    }
-}
+//     fn try_from(value: &str) -> Result<Self, Self::Error> {
+//         match value {
+//             "min" | "1" => Ok(Self::Min),
+//             "2" => Ok(Self::Speed1),
+//             "normal" | "3" => Ok(Self::Normal),
+//             "4" => Ok(Self::Speed3),
+//             "max" | "5" => Ok(Self::Max),
+//             _ => Err(Self::Error::InvalidString(value.to_string())),
+//         }
+//     }
+// }
 
-#[derive(Debug, Clone, Copy, Default)]
-enum DarknessSetting {
-    /// 最浅(1)
-    Min,
-    Darkness1,
-    Darkness2,
-    Darkness3,
-    Darkness4,
-    /// 正常(6)
-    #[default]
-    Normal,
-    Darkness6,
-    Darkness7,
-    Darkness8,
-    Darkness9,
-    Darkness10,
-    Darkness11,
-    Darkness12,
-    Darkness13,
-    /// 最深(15)
-    Max,
-}
+// #[derive(Debug, Clone, Copy, Default)]
+// enum DarknessSetting {
+//     /// 最浅(1)
+//     Min,
+//     Darkness1,
+//     Darkness2,
+//     Darkness3,
+//     Darkness4,
+//     /// 正常(6)
+//     #[default]
+//     Normal,
+//     Darkness6,
+//     Darkness7,
+//     Darkness8,
+//     Darkness9,
+//     Darkness10,
+//     Darkness11,
+//     Darkness12,
+//     Darkness13,
+//     /// 最深(15)
+//     Max,
+// }
 
-impl TryFrom<u8> for DarknessSetting {
-    type Error = PrintSettingError;
+// impl TryFrom<u8> for DarknessSetting {
+//     type Error = PrintSettingError;
 
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::Min),
-            2 => Ok(Self::Darkness1),
-            3 => Ok(Self::Darkness2),
-            4 => Ok(Self::Darkness3),
-            5 => Ok(Self::Darkness4),
-            6 => Ok(Self::Normal),
-            7 => Ok(Self::Darkness6),
-            8 => Ok(Self::Darkness7),
-            9 => Ok(Self::Darkness8),
-            10 => Ok(Self::Darkness9),
-            11 => Ok(Self::Darkness10),
-            12 => Ok(Self::Darkness11),
-            13 => Ok(Self::Darkness12),
-            14 => Ok(Self::Darkness13),
-            15 => Ok(Self::Max),
-            _ => Err(Self::Error::InvalidU8(value)),
-        }
-    }
-}
+//     fn try_from(value: u8) -> Result<Self, Self::Error> {
+//         match value {
+//             1 => Ok(Self::Min),
+//             2 => Ok(Self::Darkness1),
+//             3 => Ok(Self::Darkness2),
+//             4 => Ok(Self::Darkness3),
+//             5 => Ok(Self::Darkness4),
+//             6 => Ok(Self::Normal),
+//             7 => Ok(Self::Darkness6),
+//             8 => Ok(Self::Darkness7),
+//             9 => Ok(Self::Darkness8),
+//             10 => Ok(Self::Darkness9),
+//             11 => Ok(Self::Darkness10),
+//             12 => Ok(Self::Darkness11),
+//             13 => Ok(Self::Darkness12),
+//             14 => Ok(Self::Darkness13),
+//             15 => Ok(Self::Max),
+//             _ => Err(Self::Error::InvalidU8(value)),
+//         }
+//     }
+// }
 
-impl TryFrom<&str> for DarknessSetting {
-    type Error = PrintSettingError;
+// impl TryFrom<&str> for DarknessSetting {
+//     type Error = PrintSettingError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "min" | "1" => Ok(Self::Min),
-            "2" => Ok(Self::Darkness1),
-            "3" => Ok(Self::Darkness2),
-            "4" => Ok(Self::Darkness3),
-            "5" => Ok(Self::Darkness4),
-            "normal" | "6" => Ok(Self::Normal),
-            "7" => Ok(Self::Darkness6),
-            "8" => Ok(Self::Darkness7),
-            "9" => Ok(Self::Darkness8),
-            "10" => Ok(Self::Darkness9),
-            "11" => Ok(Self::Darkness10),
-            "12" => Ok(Self::Darkness11),
-            "13" => Ok(Self::Darkness12),
-            "14" => Ok(Self::Darkness13),
-            "max" | "15" => Ok(Self::Max),
-            _ => Err(Self::Error::InvalidString(value.to_string())),
-        }
-    }
-}
+//     fn try_from(value: &str) -> Result<Self, Self::Error> {
+//         match value {
+//             "min" | "1" => Ok(Self::Min),
+//             "2" => Ok(Self::Darkness1),
+//             "3" => Ok(Self::Darkness2),
+//             "4" => Ok(Self::Darkness3),
+//             "5" => Ok(Self::Darkness4),
+//             "normal" | "6" => Ok(Self::Normal),
+//             "7" => Ok(Self::Darkness6),
+//             "8" => Ok(Self::Darkness7),
+//             "9" => Ok(Self::Darkness8),
+//             "10" => Ok(Self::Darkness9),
+//             "11" => Ok(Self::Darkness10),
+//             "12" => Ok(Self::Darkness11),
+//             "13" => Ok(Self::Darkness12),
+//             "14" => Ok(Self::Darkness13),
+//             "max" | "15" => Ok(Self::Max),
+//             _ => Err(Self::Error::InvalidString(value.to_string())),
+//         }
+//     }
+// }
 
-#[derive(Debug, Clone, Copy, Default)]
-enum PaperSetting {
-    /// 小票纸
-    #[default]
-    Ticket = 0,
-    /// 不干胶
-    Adhesive = 2,
-    /// 卡纸
-    CardPaper = 3,
-    /// 透明贴
-    Transparent = 4,
-}
+// #[derive(Debug, Clone, Copy, Default)]
+// enum PaperSetting {
+//     /// 小票纸
+//     #[default]
+//     Ticket = 0,
+//     /// 不干胶
+//     Adhesive = 2,
+//     /// 卡纸
+//     CardPaper = 3,
+//     /// 透明贴
+//     Transparent = 4,
+// }
 
-impl TryFrom<&str> for PaperSetting {
-    type Error = PrintSettingError;
+// impl TryFrom<&str> for PaperSetting {
+//     type Error = PrintSettingError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "ticket" => Ok(Self::Ticket),
-            "adhesive" => Ok(Self::Adhesive),
-            "cardpaper" => Ok(Self::CardPaper),
-            "transparent" => Ok(Self::Transparent),
-            _ => Err(Self::Error::InvalidString(value.to_string())),
-        }
-    }
-}
+//     fn try_from(value: &str) -> Result<Self, Self::Error> {
+//         match value {
+//             "ticket" => Ok(Self::Ticket),
+//             "adhesive" => Ok(Self::Adhesive),
+//             "cardpaper" => Ok(Self::CardPaper),
+//             "transparent" => Ok(Self::Transparent),
+//             _ => Err(Self::Error::InvalidString(value.to_string())),
+//         }
+//     }
+// }
 
-#[derive(Debug, Clone, Copy)]
-struct GapSetting(u16);
+// #[derive(Debug, Clone, Copy)]
+// struct GapSetting(u16);
 
-impl Default for GapSetting {
-    fn default() -> Self {
-        Self(50)
-    }
-}
+// impl Default for GapSetting {
+//     fn default() -> Self {
+//         Self(50)
+//     }
+// }
 
-impl TryFrom<u16> for GapSetting {
-    type Error = PrintSettingError;
+// impl TryFrom<u16> for GapSetting {
+//     type Error = PrintSettingError;
 
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        if value < 50 {
-            Err(Self::Error::InvalidU16(value))
-        } else {
-            Ok(Self(value))
-        }
-    }
-}
+//     fn try_from(value: u16) -> Result<Self, Self::Error> {
+//         if value < 50 {
+//             Err(Self::Error::InvalidU16(value))
+//         } else {
+//             Ok(Self(value))
+//         }
+//     }
+// }
 
-impl TryFrom<&str> for GapSetting {
-    type Error = PrintSettingError;
+// impl TryFrom<&str> for GapSetting {
+//     type Error = PrintSettingError;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let lower = value.trim().to_lowercase();
-        let num_str = lower.strip_suffix("mm").unwrap_or(&lower).trim();
-        let val_f: f64 = num_str
-            .parse()
-            .map_err(|_| PrintSettingError::InvalidString(value.to_string()))?;
-        let val_rounded = (val_f * 100.0).round();
-        if val_rounded < 0.0 || val_rounded > u16::MAX as f64 {
-            return Err(PrintSettingError::InvalidU16(val_rounded as u16));
-        }
-        let val_u16 = val_rounded as u16;
-        Self::try_from(val_u16)
-    }
-}
+//     fn try_from(value: &str) -> Result<Self, Self::Error> {
+//         let lower = value.trim().to_lowercase();
+//         let num_str = lower.strip_suffix("mm").unwrap_or(&lower).trim();
+//         let val_f: f64 = num_str
+//             .parse()
+//             .map_err(|_| PrintSettingError::InvalidString(value.to_string()))?;
+//         let val_rounded = (val_f * 100.0).round();
+//         if val_rounded < 0.0 || val_rounded > u16::MAX as f64 {
+//             return Err(PrintSettingError::InvalidU16(val_rounded as u16));
+//         }
+//         let val_u16 = val_rounded as u16;
+//         Self::try_from(val_u16)
+//     }
+// }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct PrintSettings {
-    paper: PaperSetting,
-    darkness: DarknessSetting,
-    speed: SpeedSetting,
-    gap: GapSetting,
-}
+// #[derive(Debug, Clone, Copy, Default)]
+// struct PrintSettings {
+//     paper: PaperSetting,
+//     darkness: DarknessSetting,
+//     speed: SpeedSetting,
+//     gap: GapSetting,
+// }
 
-impl PrintSettings {
-    fn bp(&self) -> u32 {
-        let basic_bp = match self.speed {
-            SpeedSetting::Min => 50,
-            SpeedSetting::Speed1 => 75,
-            SpeedSetting::Normal => 100,
-            SpeedSetting::Speed3 => 110,
-            SpeedSetting::Max => 120,
-        };
-        let normal_darkness = 5;
-        let step = 3;
-        let adjustment = (normal_darkness - self.darkness as i32) * step;
-        let final_bp = basic_bp as i32 + adjustment;
-        final_bp.max(0) as u32
-    }
+// impl PrintSettings {
+//     fn bp(&self) -> u32 {
+//         let basic_bp = match self.speed {
+//             SpeedSetting::Min => 50,
+//             SpeedSetting::Speed1 => 75,
+//             SpeedSetting::Normal => 100,
+//             SpeedSetting::Speed3 => 110,
+//             SpeedSetting::Max => 120,
+//         };
+//         let normal_darkness = 5;
+//         let step = 3;
+//         let adjustment = (normal_darkness - self.darkness as i32) * step;
+//         let final_bp = basic_bp as i32 + adjustment;
+//         final_bp.max(0) as u32
+//     }
 
-    fn paper_vec(&self) -> Vec<u8> {
-        let v = self.paper as u8;
-        v.to_be_bytes().to_vec()
-    }
+//     fn paper_vec(&self) -> Vec<u8> {
+//         let v = self.paper as u8;
+//         v.to_be_bytes().to_vec()
+//     }
 
-    fn speed_vec(&self) -> Vec<u8> {
-        let v = self.speed as u8;
-        v.to_be_bytes().to_vec()
-    }
+//     fn speed_vec(&self) -> Vec<u8> {
+//         let v = self.speed as u8;
+//         v.to_be_bytes().to_vec()
+//     }
 
-    fn darkness_vec(&self) -> Vec<u8> {
-        let v = self.darkness as u8;
-        v.to_be_bytes().to_vec()
-    }
+//     fn darkness_vec(&self) -> Vec<u8> {
+//         let v = self.darkness as u8;
+//         v.to_be_bytes().to_vec()
+//     }
 
-    fn gap_vec(&self) -> Vec<u8> {
-        let v = self.gap.0;
-        v.to_be_bytes().to_vec()
-    }
-}
+//     fn gap_vec(&self) -> Vec<u8> {
+//         let v = self.gap.0;
+//         v.to_be_bytes().to_vec()
+//     }
+// }
 
-fn make_library() -> Library {
-    let mut library = Library::builder().build();
-    #[allow(unused_variables)]
-    let scope = library.global.scope_mut();
-    // scope.define_func::<QrCodeFunc>();
-    library
-}
+// fn make_library() -> Library {
+//     let mut library = Library::builder().build();
+//     #[allow(unused_variables)]
+//     let scope = library.global.scope_mut();
+//     // scope.define_func::<QrCodeFunc>();
+//     library
+// }
 
-pub struct QrCodeFunc {}
+// pub struct QrCodeFunc {}
 
-impl NativeFunc for QrCodeFunc {
-    #[allow(unreachable_code, unused_variables)]
-    fn data() -> &'static NativeFuncData {
-        let data = NativeFuncData {
-            function: typst_library::foundations::NativeFuncPtr(&Self::f),
-            name: "qrcode",
-            title: todo!(),
-            docs: todo!(),
-            keywords: todo!(),
-            contextual: todo!(),
-            scope: todo!(),
-            params: todo!(),
-            returns: todo!(),
-            def_site: None,
-        };
-        todo!();
-        // &data
-    }
-}
+// impl NativeFunc for QrCodeFunc {
+//     #[allow(unreachable_code, unused_variables)]
+//     fn data() -> &'static NativeFuncData {
+//         let data = NativeFuncData {
+//             function: typst_library::foundations::NativeFuncPtr(&Self::f),
+//             name: "qrcode",
+//             title: todo!(),
+//             docs: todo!(),
+//             keywords: todo!(),
+//             contextual: todo!(),
+//             scope: todo!(),
+//             params: todo!(),
+//             returns: todo!(),
+//             def_site: None,
+//         };
+//         todo!();
+//         // &data
+//     }
+// }
 
-// Fn(&mut Engine, Tracked<Context>, &mut Args) -> SourceResult<Value> + Send + Sync;
+// // Fn(&mut Engine, Tracked<Context>, &mut Args) -> SourceResult<Value> + Send + Sync;
 
-impl QrCodeFunc {
-    #[allow(unreachable_code, unused_variables)]
-    pub fn f(
-        engine: &mut typst_library::engine::Engine,
-        context: typst::comemo::Tracked<typst_library::foundations::Context>,
-        args: &mut typst_library::foundations::Args,
-    ) -> typst_library::diag::SourceResult<typst_library::foundations::Value> {
-        todo!()
-    }
-}
+// impl QrCodeFunc {
+//     #[allow(unreachable_code, unused_variables)]
+//     pub fn f(
+//         engine: &mut typst_library::engine::Engine,
+//         context: typst::comemo::Tracked<typst_library::foundations::Context>,
+//         args: &mut typst_library::foundations::Args,
+//     ) -> typst_library::diag::SourceResult<typst_library::foundations::Value> {
+//         todo!()
+//     }
+// }
 
-fn make_fontbook() -> FontBook {
-    let mut fb = FontBook::new();
-    let font_unifont_bin = include_bytes!("../asset/unifont-16.0.04.ttf");
-    let mut font_unifont_info = FontInfo::new(font_unifont_bin, 0).unwrap();
-    font_unifont_info.family = "Unifont".to_string();
-    fb.push(font_unifont_info);
-    let font_unifontex_bin = include_bytes!("../asset/UnifontExMono.ttf");
-    let mut font_unifontex_info = FontInfo::new(font_unifontex_bin, 0).unwrap();
-    font_unifontex_info.family = "UnifontExMono".to_string();
-    fb.push(font_unifontex_info);
-    fb
-}
+// fn make_fontbook() -> FontBook {
+//     let mut fb = FontBook::new();
+//     let font_unifont_bin = include_bytes!("../asset/unifont-16.0.04.ttf");
+//     let mut font_unifont_info = FontInfo::new(font_unifont_bin, 0).unwrap();
+//     font_unifont_info.family = "Unifont".to_string();
+//     fb.push(font_unifont_info);
+//     let font_unifontex_bin = include_bytes!("../asset/UnifontExMono.ttf");
+//     let mut font_unifontex_info = FontInfo::new(font_unifontex_bin, 0).unwrap();
+//     font_unifontex_info.family = "UnifontExMono".to_string();
+//     fb.push(font_unifontex_info);
+//     fb
+// }
+
+fn main() {}

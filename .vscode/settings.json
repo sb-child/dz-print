@@ -1,4 +1,7 @@
 {
     "tinymist.fontPaths": ["${workspaceFolder}/src/asset"],
-    "tinymist.systemFonts": false
+    "tinymist.systemFonts": false,
+    "[toml]": {
+        "editor.defaultFormatter": "tamasfe.even-better-toml"
+    }
 }

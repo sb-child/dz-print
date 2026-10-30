@@ -280,8 +280,9 @@ impl USBBackend {
                         debug!("OUT thread: writing {} bytes...", buf.len());
                         raw_packet_len -= buf.len();
                         buf.resize(max_out_size, 0);
-                        let buf = packager::package_usb(buf); // + 2 bytes
-                                                              // println!("writing...");
+                        let buf = [0u8; 0]; // + 2 bytes
+                        // let buf = packager::package_usb(buf); // + 2 bytes
+                        // println!("writing...");
                         let res = h1.write_interrupt(out_ep.address, &buf, in_timeout);
                         // println!("write done");
                         match res {
