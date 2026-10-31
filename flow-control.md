@@ -420,7 +420,7 @@ async fn pump(link: &mut Link, mut data: &[u8]) -> Result<()> {
 | -------------------------- | ---------------------------------------------------------------- |
 | `src/scheduler/mod.rs`     | `Job` / `Scheduler` 还是空结构体，只有设置枚举                   |
 | `src/planner/assembler.rs` | `Assembler`：命令区编码 / 切帧解码，含校验和                     |
-| `src/planner/usb.rs`       | USB 外层 `1e <长度>` 封包 / 解包，按 64 字节 HID 报告切片         |
+| `src/planner/usb.rs`       | USB 外层 `1e <长度>` 封包 / 解包，按 64 字节 HID 报告切片        |
 | `src/backend/mod.rs`       | `rusb` 实现，OUT 线程按"攒满 62 字节或 100 ms"发送，**没有节流** |
 | `src/command/req/`         | 命令请求对象，只负责编码，不负责节奏                             |
 
