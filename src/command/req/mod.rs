@@ -15,6 +15,7 @@ pub mod gap_type;
 pub mod high_command;
 pub mod manufacturer;
 pub mod print_line;
+pub mod print_line_rle;
 pub mod print_width;
 pub mod software_version;
 pub mod speed;

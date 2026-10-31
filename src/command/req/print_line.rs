@@ -133,7 +133,7 @@ impl ReqTrait for PrintLine {
     }
 }
 
-fn append_repeat_lines(
+pub(crate) fn append_repeat_lines(
     res: &mut Vec<Envelope>,
     ek: EnvelopeKind,
     mut remaining_lines: usize,

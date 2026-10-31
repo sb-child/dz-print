@@ -9,7 +9,7 @@
 //!
 //! - [`PrintCommand::Line`] → [crate::command::req::print_line::PrintLine]
 //! - [`PrintCommand::Feed`] → [crate::command::req::feed_line::FeedLine]
-//! - `PrintCommand::Rle*` → [crate::command::req_template::print_line_rle] 里对应的模板
+//! - `PrintCommand::Rle*` → [crate::command::req::print_line_rle::PrintLineRle]
 //!
 //! 页面边界（`StartPage` / `EndPage`）、分页、重试和流控都由上层负责。
 //!
@@ -48,83 +48,56 @@ pub enum RleMode {
 /// 一条打印命令，只带调用命令层需要的参数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrintCommand {
-    /// 打印一行，对应 [crate::command::req::print_line::PrintLine]。
+    /// 打印一行。[crate::command::req::print_line::PrintLine]
     Line {
-        /// 向右偏移的字节数，范围 `0..=191`。
         skips: u8,
-        /// 重复次数，`0` 表示这一行只打印一次。
         repeats: u16,
-        /// 位图数据，MSB-first，最后一个字节超出位宽的低位为 `0`。
         data: Vec<u8>,
     },
-    /// 字节级 RLE，`1f 29`。
+    /// 字节级 RLE。[crate::command::req::print_line_rle::PrintLineRle]
     RleByte {
-        /// 重复次数，`0` 表示这一行只打印一次。
         repeats: u16,
-        /// RLE 数据字节数。
         rle_byte_count: u32,
-        /// RLE 数据。
         data: Vec<u8>,
     },
-    /// 5 位符号 RLE(X)，`1f 2c`。
+    /// 5 位符号 RLE(X)。[crate::command::req::print_line_rle::PrintLineRle]
     Rle5x {
-        /// 重复次数，`0` 表示这一行只打印一次。
         repeats: u16,
-        /// RLE 符号数量。
         rle_runs_count: u32,
-        /// 5 位位流。
         data: Vec<u8>,
     },
-    /// 5 位符号 RLE(D)，`1f 2d`。
+    /// 5 位符号 RLE(D)。[crate::command::req::print_line_rle::PrintLineRle]
     Rle5d {
-        /// 重复次数，`0` 表示这一行只打印一次。
         repeats: u16,
-        /// RLE 符号数量。
         rle_runs_count: u32,
-        /// 5 位位流。
         data: Vec<u8>,
     },
-    /// 4 位符号 RLE(X)，`1f 3a`。
+    /// 4 位符号 RLE(X)。[crate::command::req::print_line_rle::PrintLineRle]
     Rle4x {
-        /// 重复次数，`0` 表示这一行只打印一次。
         repeats: u16,
-        /// RLE 符号数量。
         rle_runs_count: u32,
-        /// 4 位位流。
         data: Vec<u8>,
     },
-    /// 4 位符号 RLE(D)，`1f 3b`。
+    /// 4 位符号 RLE(D)。[crate::command::req::feed_line::FeedLine]
     Rle4d {
-        /// 重复次数，`0` 表示这一行只打印一次。
         repeats: u16,
-        /// RLE 符号数量。
         rle_runs_count: u32,
-        /// 4 位位流。
         data: Vec<u8>,
     },
-    /// 6 位符号 RLE(X)，`1f 3c`。
+    /// 6 位符号 RLE(X)。[crate::command::req::feed_line::FeedLine]
     Rle6x {
-        /// 重复次数，`0` 表示这一行只打印一次。
         repeats: u16,
-        /// RLE 符号数量。
         rle_runs_count: u32,
-        /// 6 位位流。
         data: Vec<u8>,
     },
-    /// 6 位符号 RLE(D)，`1f 3d`。
+    /// 6 位符号 RLE(D)。[crate::command::req::feed_line::FeedLine]
     Rle6d {
-        /// 重复次数，`0` 表示这一行只打印一次。
         repeats: u16,
-        /// RLE 符号数量。
         rle_runs_count: u32,
-        /// 6 位位流。
         data: Vec<u8>,
     },
-    /// 走纸(打印空行)，对应 [crate::command::req::feed_line::FeedLine]。
-    Feed {
-        /// 走纸行数，`0` 表示什么都不做。
-        lines: u32,
-    },
+    /// 走纸(打印空行)。[crate::command::req::feed_line::FeedLine]
+    Feed { lines: u32 },
 }
 
 /// 打印计划错误。
@@ -146,6 +119,7 @@ pub enum PrintError {
 /// - 连续相同的行合并成一条命令，用 `repeats` 表达。
 /// - 其余行去掉左侧整字节空白放进 `skips`，去掉右侧空白后作为 `data`。
 /// - `rle` 不为 [`RleMode::Off`] 时尝试 RLE 编码，只有比普通行更小才采用。
+///   RLE 只有 `v2` 机型支持，`v1` / `v0` 请传 [`RleMode::Off`]。
 pub fn print_bitmap(bm: &Bitmap, rle: RleMode) -> Result<Vec<PrintCommand>, PrintError> {
     if bm.width() > MAX_DOTS_PER_LINE {
         return Err(PrintError::LineTooWide {

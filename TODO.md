@@ -71,6 +71,13 @@
   - `protocol.md` / `print-status.md`：补 PageKey 位置和响应模板链接
   - 9 个用例；`cargo test --lib`: 129 passed
 
+- [x] RLE 编码 + req 层
+  - `rle.rs`：`RleBitStream`（4/5/6 位，X/D）和 `RleByteStream`（`0x29`），尾部白色游程不编码
+  - 游程拆分用 DP 求最少符号；长游程先取最大码本值再查表
+  - `planner/print.rs`：`RleMode` 非 `Off` 时编码，X/D 取小，必须比普通行小才采用，否则回退 `Line`
+  - `req/print_line_rle.rs`：`PrintLineRle` + `RleKind`，只在 `v2` 发送，`repeats` 用 `0x2e` 展开；`v1` / `v0` 返回 `UnsupportedUsage`
+  - 新增编码器 roundtrip 测试；`cargo test --lib`: 300 passed
+
 ## 规划：frontend / 设备线程 / transport
 
 目标：把「命令怎么编码」和「字节怎么送到设备」拆开。调用方只面对 `frontend`，
@@ -238,6 +245,7 @@ transport（USB HID / BLE 串口透传）
 
 ## 待确认 / 风险
 
+- [ ] RLE 编码（`0x29` / `0x2c` / `0x2d` / `0x3a` ~ `0x3d`）还没在 DP27P 上验证；「尾部白色不编码、解码端补白」和「D 模式保留上一行」两个假设需要实测确认
 - [ ] `cmd-impl-status.md` 的 `0x9e` resp 列现在是「无」，需要修正
 - [ ] `0x70` / `0x72` 响应长度随固件变化，只从头部取固定字段，其余放 tail
 - [ ] `0x77` 的 2 字节变长在 SDK 读取侧是反的，那是 SDK bug，统一按写入侧约定
