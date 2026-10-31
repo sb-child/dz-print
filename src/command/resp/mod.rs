@@ -13,7 +13,7 @@
 //! [`Envelope::payload`](crate::command::envelope::Envelope) 对称）。多条响应叠加时由帧层按长度字段
 //! 切分，模板只解析一条。
 
-use crate::command::models::ModelVersion;
+use crate::command::ModelVersion;
 use deku::{DekuContainerRead, DekuError};
 use snafu::{ResultExt, Snafu};
 

@@ -3,7 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use crate::command::{
-    models::ModelVersion,
+    ModelVersion,
     resp::{ParseRespError, RespTrait, decode_resp},
     resp_template::gap_type::GapTypeV0V1V2Tl,
     settings::GapTypeSetting,

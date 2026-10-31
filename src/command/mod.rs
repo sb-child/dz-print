@@ -4,16 +4,24 @@
 
 pub mod checksum;
 pub mod envelope;
-pub mod models;
 pub mod packager;
 pub mod req;
 pub mod req_template;
 pub mod resp;
 pub mod resp_template;
-pub mod response;
 pub mod settings;
 pub mod status;
 pub mod varint;
+
+#[derive(Debug, Clone, Copy)]
+pub enum ModelVersion {
+    /// `h=303`
+    V0,
+    /// `h=16`
+    V1,
+    /// `h=0`
+    V2,
+}
 
 // --- 以下内容弃用重写
 

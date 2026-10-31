@@ -16,7 +16,7 @@ pub mod total_lines;
 use deku::DekuError;
 use snafu::Snafu;
 
-use crate::command::{envelope::Envelope, models::ModelVersion};
+use crate::command::{ModelVersion, envelope::Envelope};
 
 pub trait ReqTrait {
     fn pack(&self, cv: ModelVersion) -> Result<Vec<Envelope>, PackReqError>;
@@ -39,6 +39,15 @@ pub enum PackReqError {
         value: i64,
         /// a..=b
         range: (Option<i64>, Option<i64>),
+    },
+    #[snafu(display("Envelope payload too short: {len} byte(s), need at least 2 (group + type)."))]
+    EnvelopeTooShort {
+        len: usize,
+    },
+    #[snafu(display("Envelope data too long: {len} byte(s), max {max}."))]
+    PayloadTooLong {
+        len: usize,
+        max: usize,
     },
 }
 

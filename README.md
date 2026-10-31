@@ -63,10 +63,9 @@ cargo run --bin dzcli
   - `run.rs` 把一行切成 run，分按位 / 按字节两种
   - `lut.rs` RLE4X / RLE5X / RLE6X 的码表
 - `command/` 通讯协议
-  - `mod.rs` 模块入口；文件下半部分是被注释掉的初版 `Command` / `Commands` 实现
+  - `mod.rs` 模块入口；机型版本 `ModelVersion`（`V0` / `V1` / `V2`）；文件下半部分是被注释掉的初版 `Command` / `Commands` 实现
   - `checksum.rs` 校验码计算（目前还没接进新流程）
   - `envelope.rs` `[新]` 命令载荷的封包类型：自动校验和 / 固定 `0x88` / 手动打包 / 裸字节
-  - `models.rs` `[新]` 机型版本 `V0` / `V1` / `V2`
   - `req/` `[新]` 请求对象：实现 `ReqTrait`，按机型编码成一组 `Envelope`
   - `req_template/` `[新]` 每个请求的字节布局模板（deku），同一命令的不同机型写法各一个模板
   - `resp/` `[新]` 响应对象：实现 `RespTrait`，把模板解析结果按机型归一化
@@ -74,7 +73,6 @@ cargo run --bin dzcli
   - `varint.rs` `[新]` 协议里的 4 种变长整数编解码
   - `settings.rs` `[新]` 打印设置（速度、浓度、纸张间隔类型）枚举和字符串解析
   - `status.rs` `[新]` `0x70` 打印机状态码 `PrinterStatus`（25 个线上值）
-  - `response.rs` `[新]` 帧层解析入口（占位，P5 实现）
   - `packager.rs` `[旧]` USB 封包 / 解包，已整体注释
 - `derive_alias.rs` `[新]` deku derive 的别名 `CmdTemplate` / `RespTemplate`
 - `backend/` `[旧]` `rusb` 底层通讯实现，`lib.rs` 里已注释掉
@@ -82,7 +80,9 @@ cargo run --bin dzcli
   - `mod.rs` 位图类型和灰度 / 抖动转换
   - `cmd_parser.rs` 直接把位图拼成打印字节命令
 - `info.rs`、`param.rs` `[旧]` 照抄官方 SDK 的设备信息和参数结构体
-- `frontend/`、`planner/` 新架构预留，目前是空文件
+- `planner/` `[新]` 命令组装
+  - `assembler.rs`：`Assembler`，按机型把一组 `ReqTrait` 编码成命令区，再切帧解码成 `RespTrait`
+- `frontend/` 新架构预留，目前是空文件
 - `scheduler/` 打印任务和设置类型的占位（`Job`、`Scheduler` 都还是空的）
 
 ## TODO

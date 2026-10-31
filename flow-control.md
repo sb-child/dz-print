@@ -377,12 +377,12 @@ async fn pump(link: &mut Link, mut data: &[u8]) -> Result<()> {
 
 现状（`new-standard` @ `7f8acde`）：
 
-| 位置                      | 状态                                                             |
-| ------------------------- | ---------------------------------------------------------------- |
-| `src/scheduler/mod.rs`    | `Job` / `Scheduler` 还是空结构体，只有设置枚举                   |
-| `src/command/response.rs` | 空文件                                                           |
-| `src/backend/mod.rs`      | `rusb` 实现，OUT 线程按"攒满 62 字节或 100 ms"发送，**没有节流** |
-| `src/command/req/`        | 命令请求对象，只负责编码，不负责节奏                             |
+| 位置                       | 状态                                                             |
+| -------------------------- | ---------------------------------------------------------------- |
+| `src/scheduler/mod.rs`     | `Job` / `Scheduler` 还是空结构体，只有设置枚举                   |
+| `src/planner/assembler.rs` | `Assembler`：命令区编码 / 切帧解码，含校验和                     |
+| `src/backend/mod.rs`       | `rusb` 实现，OUT 线程按"攒满 62 字节或 100 ms"发送，**没有节流** |
+| `src/command/req/`         | 命令请求对象，只负责编码，不负责节奏                             |
 
 分层建议：
 

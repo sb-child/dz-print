@@ -142,10 +142,10 @@
 
 ### P5 帧层
 
-- [ ] `src/command/response.rs`：`FrameParse::{Complete, Incomplete, Invalid}`
-- [ ] `parse_resp_frame(buf) -> FrameParse`：命令头 → 变长长度 → data → 校验和
-- [ ] USB `1e <len>` / BLE `1f ... <checksum>` 入口
-- [ ] 用例：两条拼接、半条、坏校验、2 字节长度字段
+- [x] `src/planner/assembler.rs`：`Assembler::encode` / `decode_one`（命令头 → 变长长度 → data → 校验和）
+- [x] `decode_one(buf) -> Option<(resp, consumed)>`：尾部半条返回 `None`，调用方保留缓冲区
+- [x] 用例：两条拼接、半条、坏校验、`0x88` 固定校验、2 字节长度字段
+- [ ] USB `1e <len>` 入口（命令区已支持，外层规则见 `protocol.md`）
 
 ### P6 读请求补齐
 
@@ -156,7 +156,7 @@
 ### P7 后端集成
 
 - [ ] `lib.rs` 恢复 `pub mod backend;`
-- [ ] IN 线程用 `parse_resp_frame` 替换旧的 `Command::parse_device_command`
+- [ ] IN 线程用 `Assembler::decode_one` 替换旧的 `Command::parse_device_command`
 - [ ] 队列里放单条 raw payload，调用方用 `RespTrait::parse` 解码
 - [ ] 请求/响应 1:1 FIFO 配对
 - [ ] 端到端：连接 → 读 DPI / 宽度 → 打印

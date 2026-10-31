@@ -3,8 +3,8 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use crate::command::{
+    ModelVersion,
     envelope::{Envelope, EnvelopeKind},
-    models::ModelVersion,
     req::{EncodeSnafu, PackReqError, ReqTrait},
     req_template::feed_line::{FeedLineV1V0Tl, FeedLineV2Tl},
     varint::VarAuto,

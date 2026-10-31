@@ -24,6 +24,16 @@ impl Envelope {
     pub fn new(payload: Vec<u8>, kind: EnvelopeKind) -> Self {
         Envelope { payload, kind }
     }
+
+    /// `payload` = 命令组 + 命令类型 + 数据，不含长度字段和校验和
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// 打包方式
+    pub fn kind(&self) -> EnvelopeKind {
+        self.kind
+    }
 }
 
 impl From<Envelope> for Vec<Envelope> {

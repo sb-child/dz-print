@@ -1,6 +1,5 @@
+use crate::command::ModelVersion;
 use std::str::FromStr;
-
-use crate::command::models::ModelVersion;
 
 #[derive(thiserror::Error, Debug)]
 pub enum PrintSettingError {
