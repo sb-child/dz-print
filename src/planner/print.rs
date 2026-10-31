@@ -78,19 +78,19 @@ pub enum PrintCommand {
         rle_runs_count: u32,
         data: Vec<u8>,
     },
-    /// 4 位符号 RLE(D)。[crate::command::req::feed_line::FeedLine]
+    /// 4 位符号 RLE(D)。[crate::command::req::print_line_rle::PrintLineRle]
     Rle4d {
         repeats: u16,
         rle_runs_count: u32,
         data: Vec<u8>,
     },
-    /// 6 位符号 RLE(X)。[crate::command::req::feed_line::FeedLine]
+    /// 6 位符号 RLE(X)。[crate::command::req::print_line_rle::PrintLineRle]
     Rle6x {
         repeats: u16,
         rle_runs_count: u32,
         data: Vec<u8>,
     },
-    /// 6 位符号 RLE(D)。[crate::command::req::feed_line::FeedLine]
+    /// 6 位符号 RLE(D)。[crate::command::req::print_line_rle::PrintLineRle]
     Rle6d {
         repeats: u16,
         rle_runs_count: u32,
@@ -156,7 +156,9 @@ pub fn print_bitmap(bm: &Bitmap, rle: RleMode) -> Result<Vec<PrintCommand>, Prin
         }
         let repeats = repeats as u16;
 
-        if let Some(cmd) = select_rle(bm, y, &line, raw_len, repeats, rle)? {
+        // D 模式需要上一行的解码结果；第一行按全白处理。
+        let prev = if y == 0 { None } else { Some(bm.line(y - 1)?) };
+        if let Some(cmd) = select_rle(&line, prev, raw_len, repeats, rle)? {
             out.push(cmd);
             y += 1 + repeats as usize;
             continue;
@@ -179,11 +181,11 @@ pub fn print_bitmap(bm: &Bitmap, rle: RleMode) -> Result<Vec<PrintCommand>, Prin
 /// 选择并生成 RLE 行命令。
 ///
 /// 只有编码后比普通行（`raw_len` 字节）更小才返回 `Some`，否则返回 `None`
-/// 让调用方发 [`PrintCommand::Line`]。位级模式会同时算 X 和 D，取较小的那个。
+/// 让调用方发 [`PrintCommand::Line`]。位级模式会同时算 X 和 D，取较小的那个；
+/// `prev` 为 `None`（第一行）时只算 X。
 fn select_rle(
-    bm: &Bitmap,
-    y: usize,
     line: &BitmapLine<'_>,
+    prev: Option<BitmapLine<'_>>,
     raw_len: usize,
     repeats: u16,
     rle: RleMode,
@@ -207,11 +209,9 @@ fn select_rle(
     };
 
     let x = RleBitStream::encode(*line, None, bits)?;
-    let d = if y == 0 {
-        None
-    } else {
-        let prev = bm.line(y - 1)?;
-        Some(RleBitStream::encode(*line, Some(prev), bits)?)
+    let d = match prev {
+        Some(prev) => Some(RleBitStream::encode(*line, Some(prev), bits)?),
+        None => None,
     };
     let (is_d, stream) = match d {
         Some(d) if d.data.len() < x.data.len() => (true, d),

@@ -10,10 +10,8 @@ pub mod bitmap;
 pub mod command;
 pub mod derive_alias;
 pub mod frontend;
-pub mod image_proc;
-pub mod info;
-pub mod param;
 pub mod planner;
+pub mod raster;
 pub mod rle;
 pub mod scheduler;
 
