@@ -11,7 +11,8 @@
 //! - [`PrintCommand::Feed`] → [crate::command::req::feed_line::FeedLine]
 //! - `PrintCommand::Rle*` → [crate::command::req::print_line_rle::PrintLineRle]
 //!
-//! 页面边界（`StartPage` / `EndPage`）、分页、重试和流控都由上层负责。
+//! 页面边界（`StartPage` / `EndPage`）、分页、重试由上层负责；发送时的预算和
+//! 分块见 [`crate::planner::flow`]。
 //!
 //! 位级 D 模式假定设备保留上一行（包括普通 [`PrintCommand::Line`]）的解码结果，
 //! 第一行按全白处理。

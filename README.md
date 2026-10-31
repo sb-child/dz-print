@@ -62,7 +62,7 @@ cargo run --bin test_usb -- DP27P-Y4094C023
 - `bin/` 可执行的示例
   - `dzprint` 打印图片、`dzprint_typst` 打印 Typst 文档：`[旧]` 实现整体被注释，目前 `main` 是空的
   - `dzcli` CLI 雏形（只有 `clap` 参数骨架，功能还没接）
-  - `test_usb` `[新]` 真机 USB 测试平台：按设备名选择、HID 报告收发、命令区切帧、响应队列，覆盖查询 / 流控 / `0x80` 激活 / `0x7f` 探测
+  - `test_usb` `[新]` 真机 USB 测试平台：按设备名选择、`backend::usb::UsbTransport` 收发、命令区切帧、响应队列，覆盖查询 / 流控 / `0x80` 激活 / `0x7f` 探测；`TEST_USB_PRINT=1` 时用 `FlowPlanner` 打一张测试图
 - `bitmap.rs` `[新]` 以 bit 为单位的位图行类型，供 RLE 和命令层使用
 - `rle.rs` `[新]` 位图行的行程编码（RLE）：RLE4 / RLE5 / RLE6 码表，位级 X/D 与字节级编码器
 - `command/` 通讯协议
@@ -77,13 +77,15 @@ cargo run --bin test_usb -- DP27P-Y4094C023
   - `settings.rs` `[新]` 打印设置（速度、浓度、纸张间隔类型）枚举和字符串解析
   - `status.rs` `[新]` `0x70` 打印机状态码 `PrinterStatus`（25 个线上值）
 - `derive_alias.rs` `[新]` deku derive 的别名 `CmdTemplate` / `RespTemplate`
-- `backend/` `[旧]` `rusb` 底层通讯实现，`lib.rs` 里已注释掉
+- `backend/` `[新]` 传输层
+  - `mod.rs`：`Transport` trait（`write` / `read_chunk` / `reset`），只搬字节，不解析命令
+  - `usb.rs`：`UsbTransport` / `UsbSelector`，`rusb` 中断端点读写，按 `planner::usb` 切 HID 报告
 - `raster.rs` `[新]` 图像 → 位图的抖动转换：灰度图 / `tiny-skia` 画布 → `bitmap::Bitmap`
 - `planner/` `[新]` 命令组装和传输层封包
   - `assembler.rs`：`Assembler`，按机型把一组 `ReqTrait` 编码成命令区，再切帧解码成 `RespTrait`
+  - `flow.rs`：`FlowPlanner`，`0x77` 预算感知的分块发送计划（9000 字节分块、50 ms 间隔、超时退化），不做 IO
   - `usb.rs`：USB 外层 `1e <长度>` 的打包 / 解包，以及按 64 字节 HID 报告切片
 - `frontend/` 新架构预留，目前是空文件（接口规划见 `TODO.md` 的「frontend / 设备线程 / transport」）
-- `scheduler/` 打印任务和设置类型的占位（`Job`、`Scheduler` 都还是空的）
 
 ## TODO
 

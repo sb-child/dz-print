@@ -6,6 +6,7 @@
 #![feature(iter_map_windows)]
 
 // pub mod backend;
+pub mod backend;
 pub mod bitmap;
 pub mod command;
 pub mod derive_alias;
@@ -13,7 +14,6 @@ pub mod frontend;
 pub mod planner;
 pub mod raster;
 pub mod rle;
-pub mod scheduler;
 
 #[cfg(test)]
 mod tests {

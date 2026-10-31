@@ -78,6 +78,19 @@
   - `req/print_line_rle.rs`：`PrintLineRle` + `RleKind`，只在 `v2` 发送，`repeats` 用 `0x2e` 展开；`v1` / `v0` 返回 `UnsupportedUsage`
   - 新增编码器 roundtrip 测试；`cargo test --lib`: 300 passed
 
+- [x] Transport trait + USB 实现
+  - `backend/mod.rs`：`Transport`（`write` / `read_chunk` / `reset`）、`WriteOutcome`、`ReadStatus`、`TransportError`
+  - `write` 允许返回 `Blocked`，给 BLE 的 `ff03` 信用留口子，传输层不阻塞等读
+  - `backend/usb.rs`：`UsbTransport` / `UsbSelector`（设备名 / VID+PID / Auto），端点发现、声明接口、复用 `planner::usb` 报告切片
+  - `reset` 后等 1 秒重新枚举
+  - 对象安全用例；`cargo test --lib`: 313 passed
+
+- [x] `test_usb` 换用 `UsbTransport` + `FlowPlanner`
+  - 删除自己维护的 `USBSelector` / 端点发现 / `write_cmd_area`，改用 `backend::usb::UsbTransport`
+  - 新增 `TestFrontend::print_bitmap_page`：`StartPage` + `TotalLines` + 按预算分块 + `EndPage`
+  - `TEST_USB_PRINT=1` 时打一张 384x64 测试图，默认跳过避免误走纸
+  - `cargo check --bin test_usb` / clippy 干净
+
 ## 规划：frontend / 设备线程 / transport
 
 目标：把「命令怎么编码」和「字节怎么送到设备」拆开。调用方只面对 `frontend`，
@@ -106,7 +119,7 @@ transport（USB HID / BLE 串口透传）
   - 需要响应的请求进 FIFO，每项带一个 `oneshot` 和响应解码器
   - 响应按到达顺序交给队首；半条帧留在缓冲区，等下次数据继续解析
   - 写失败 / 读线程退出：清空 FIFO，所有等待者收到 `DeviceUnavailable`
-  - 不做业务判断，重试 / 流控策略放在 scheduler
+  - 不做业务判断；流控计划用 `planner::flow`，重试策略放上层
 - `transport`
   - 只负责字节读写，不解析命令
   - USB：HID Interrupt + `planner::usb::encode_reports` / `decode_report`
@@ -121,14 +134,11 @@ transport（USB HID / BLE 串口透传）
     `T::parse`。这样不用把 `RespTrait` 擦成 `Any`，也避免跨线程传泛型闭包。
   - 为此需要给 `Assembler` 暴露一个返回 `(Vec<u8>, consumed)` 的公开切帧接口。
 
-> 旧 `backend/mod.rs` 已经有 OUT/IN 线程、命令队列和 `response_buf` 的雏形，
-> 但它绑死旧的 `command::Command` / `Device`，只能参考结构，不能直接复用。
-
-- [ ] 定义 `Transport` trait（write / read / reset）
-- [ ] `Assembler` 暴露切帧接口：`decode_frame -> Option<(Vec<u8>, consumed)>`
+- [x] 定义 `Transport` trait（write / read / reset）
+- [x] `Assembler` 暴露切帧接口：`decode_frame -> Option<(Vec<u8>, consumed)>`
+- [x] USB transport 接 `planner::usb`
 - [ ] 定义 `frontend::Device` 对外接口和错误类型
 - [ ] 设备 worker 线程 + 请求 FIFO + 响应配对
-- [ ] USB transport 接 `planner::usb`
 - [ ] BLE transport（`btleplug` + `ff03` 信用）
 - [ ] 断连 / 写失败时让所有 pending 请求返回错误
 - [ ] 示例：连接 → 读 DPI / 宽度 → 打印一张图
@@ -223,7 +233,7 @@ transport（USB HID / BLE 串口透传）
 
 > 具体接口拆分见上面「规划：frontend / 设备线程 / transport」。
 
-- [ ] `lib.rs` 恢复 `pub mod backend;`
+- [x] `lib.rs` 恢复 `pub mod backend;`
 - [ ] IN 线程用 `Assembler::decode_one` 替换旧的 `Command::parse_device_command`
 - [ ] 队列里放单条 raw payload，调用方用 `RespTrait::parse` 解码
 - [ ] 请求/响应 1:1 FIFO 配对

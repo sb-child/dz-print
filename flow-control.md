@@ -430,18 +430,18 @@ async fn pump(link: &mut Link, mut data: &[u8]) -> Result<()> {
 
 | 位置                       | 状态                                                             |
 | -------------------------- | ---------------------------------------------------------------- |
-| `src/scheduler/mod.rs`     | `Job` / `Scheduler` 还是空结构体，只有设置枚举                   |
+| `src/planner/flow.rs`      | `FlowPlanner`：预算 / 分块 / 间隔 / 超时退化，纯计划不做 IO     |
 | `src/planner/assembler.rs` | `Assembler`：命令区编码 / 切帧解码，含校验和                     |
 | `src/planner/usb.rs`       | USB 外层 `1e <长度>` 封包 / 解包，按 64 字节 HID 报告切片        |
-| `src/backend/mod.rs`       | `rusb` 实现，OUT 线程按"攒满 62 字节或 100 ms"发送，**没有节流** |
+| `src/backend/mod.rs`       | `Transport` trait：只搬字节，不做节流；USB 实现在 `backend/usb.rs` |
 | `src/command/req/`         | 命令请求对象，只负责编码，不负责节奏                             |
 
 分层建议：
 
-- **backend**：只保证"字节按顺序写出去"和"读回包"，提供 `write(&[u8])` 与
-  `wait_response(cmd, timeout)`。不要在这里做业务判断。
-- **scheduler**：预算、分块、超时、重试都在这里。`Job` 持有一个 `Budget`，
-  每页开始前重置。
+- **backend**：只保证"字节按顺序写出去"和"读回包"，提供 `Transport::write` 与
+  `Transport::read_chunk`。请求/响应配对在设备 worker 的 FIFO 里，不要在这里做业务判断。
+- **planner::flow**：预算、分块、超时都在这里，`FlowPlanner` 是纯状态机，
+  不做 IO；每页开始前新建一个。重试仍放在上层。
 - **command**：`0x77` / `0x7b` / `0x70` / `0x73` 增加请求对象和响应解析
   （`0x77` 的变长解码直接复用 `varint.rs` 的 `VarAuto`）。
 

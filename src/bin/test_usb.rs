@@ -19,53 +19,36 @@
 use std::{collections::VecDeque, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
-use rusb::{Direction, TransferType, UsbContext};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tracing::{debug, error, info, trace, warn};
 
 use dz_print::{
+    backend::{
+        ReadStatus, Transport, WriteOutcome,
+        usb::{UsbSelector, UsbTransport},
+    },
+    bitmap::Bitmap,
     command::{
         ModelVersion,
         envelope::{Envelope, EnvelopeKind},
         high_command::HighCommandMode,
         req::{self, PackReqError, ReqTrait},
         resp::{self, ParseRespError, RespTrait},
+        settings::GapTypeSetting,
     },
-    planner::{Assembler, usb},
+    planner::{
+        Assembler,
+        flow::{ChunkDecision, FlowPlanner, FlowReport},
+        print::{PrintCommand, RleMode, print_bitmap},
+    },
 };
 
-/// 德佟 USB 设备的 VID。
-const DETONGER_VID: u16 = 0x3533;
-/// 读中断端点超时。超时只代表这段时间没数据，不代表设备断开。
-const READ_TIMEOUT: Duration = Duration::from_millis(100);
-/// 写中断端点超时。
-const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// 前台等响应的超时。
 const RECV_TIMEOUT: Duration = Duration::from_secs(3);
 /// 单条探测命令等响应的超时。
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// 被动监听 `0x7b` 的时间。
 const PUSH_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// 设备选择方式。
-#[derive(Debug, Clone)]
-pub enum USBSelector {
-    /// 按 USB 设备名（`型号-序列号`）匹配，例如 `DP305P-Y60870279`。
-    DeviceName(String),
-    /// 不匹配名称，取第一台带中断端点对的德佟设备（VID `0x3533`）。
-    Auto,
-}
-
-/// 一对中断端点及其所在接口。
-#[derive(Debug, Clone, Copy)]
-struct UsbEndpoints {
-    in_iface: u8,
-    in_setting: u8,
-    ep_in: u8,
-    out_iface: u8,
-    out_setting: u8,
-    ep_out: u8,
-}
 
 /// 后台线程收到的写任务。
 struct OutJob {
@@ -162,16 +145,16 @@ pub struct TestFrontend {
 impl TestFrontend {
     /// 连接第一台德佟设备，按 `v2` 机型处理。
     pub fn new() -> Self {
-        Self::new_with(USBSelector::Auto, ModelVersion::V2)
+        Self::new_with(UsbSelector::Auto, ModelVersion::V2)
     }
 
     /// 按 USB 设备名（`型号-序列号`）连接，按 `v2` 机型处理。
     pub fn new_by_name(name: impl Into<String>) -> Self {
-        Self::new_with(USBSelector::DeviceName(name.into()), ModelVersion::V2)
+        Self::new_with(UsbSelector::DeviceName(name.into()), ModelVersion::V2)
     }
 
     /// 指定设备选择和机型版本。
-    pub fn new_with(selector: USBSelector, mv: ModelVersion) -> Self {
+    pub fn new_with(selector: UsbSelector, mv: ModelVersion) -> Self {
         let (out_tx, out_rx) = mpsc::channel(8);
         let (recv_tx, recv_rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = watch::channel(ReadyStatus::Pending);
@@ -213,8 +196,8 @@ impl TestFrontend {
 
     /// 批量发送命令。
     ///
-    /// 所有命令会被 [`Assembler::encode`] 拼成一段命令区，再按 62 字节切片成
-    /// HID 报告发出；写失败会立即返回错误。
+    /// 所有命令会被 [`Assembler::encode`] 拼成一段命令区，再交给设备线程按
+    /// `Transport::write` 发出；写失败会立即返回错误。
     pub async fn try_send_batch(&self, cmds: &[&dyn ReqTrait]) -> Result<()> {
         let cmd_area = self
             .assembler
@@ -226,6 +209,11 @@ impl TestFrontend {
             "encoded command area: {:02X?}",
             cmd_area
         );
+        self.send_cmd_area(cmd_area).await
+    }
+
+    /// 直接发送一段已编码的命令区。
+    pub async fn send_cmd_area(&self, cmd_area: Vec<u8>) -> Result<()> {
         if cmd_area.is_empty() {
             return Ok(());
         }
@@ -243,6 +231,86 @@ impl TestFrontend {
             .context("device thread dropped the write job")?;
         result.map_err(|e| anyhow!(e))?;
         Ok(())
+    }
+
+    /// 用 [`FlowPlanner`] 打印一整页位图。
+    ///
+    /// 会真的驱动打印头：先发 `StartPage` + `TotalLines`，再按预算分块发送
+    /// 位图行，最后 `EndPage`。预算不足时发 `0x70` + `0x77`，`0x77` 超时
+    /// 退化到固定 8 KiB。
+    pub async fn print_bitmap_page(&self, bm: &Bitmap, rle: RleMode) -> Result<FlowReport> {
+        let commands = print_bitmap(bm, rle)?;
+        let reqs = print_commands_to_reqs(&commands);
+
+        let width = u16::try_from(bm.width()).context("bitmap too wide")?;
+        let lines = u16::try_from(bm.height()).context("bitmap too tall")?;
+
+        self.try_send_batch(&[
+            &req::start_page::StartPage {
+                page_idx: 1,
+                print_sep_line: false,
+                data_pixel_width: width,
+                printer_gap_type: GapTypeSetting::Continuous,
+                printer_gap_length: 0,
+            },
+            &req::total_lines::TotalLines { lines },
+        ])
+        .await?;
+
+        let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|c| c.as_ref()).collect();
+        let mut flow = FlowPlanner::default();
+        flow.push_commands(&self.assembler, &refs)?;
+
+        loop {
+            match flow.step() {
+                ChunkDecision::Send(chunk) => {
+                    self.send_cmd_area(chunk).await?;
+                    if flow.needs_gap() {
+                        tokio::time::sleep(flow.config().chunk_gap).await;
+                    }
+                    flow.check_deadline()?;
+                }
+                ChunkDecision::QueryBudget => {
+                    tokio::time::sleep(flow.config().chunk_gap).await;
+                    self.try_send_batch(&[
+                        &req::status::Status {},
+                        &req::buffer_size::BufferSize {},
+                    ])
+                    .await?;
+                    // 先 0x70 后 0x77，按顺序取。
+                    let _ = self
+                        .try_recv_one_timeout::<resp::status::Status>(flow.config().budget_timeout)
+                        .await;
+                    match self
+                        .try_recv_one_timeout::<resp::buffer_size::BufferSize>(
+                            flow.config().budget_timeout,
+                        )
+                        .await
+                    {
+                        Ok(bs) => {
+                            debug!(
+                                size = bs.size,
+                                budget = bs.budget(),
+                                status = bs.status,
+                                "buffer size"
+                            );
+                            flow.on_buffer_size(&bs);
+                        }
+                        Err(e) => {
+                            warn!("buffer size timeout, fall back to 8 KiB: {e}");
+                            flow.on_budget_timeout();
+                        }
+                    }
+                }
+                ChunkDecision::Wait => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                ChunkDecision::Done => break,
+            }
+        }
+
+        self.try_send_batch(&[&req::end_page::EndPage {}]).await?;
+        Ok(flow.report())
     }
 
     /// 接收指定类型的回复。
@@ -305,237 +373,6 @@ impl Default for TestFrontend {
     }
 }
 
-/// 在设备上找一对中断端点。
-///
-/// 优先选同一个接口上同时具备 IN/OUT 的接口；没有这种接口时，退回到
-/// 「任意接口的 IN + 任意接口的 OUT」。DP27P / DP305P 都走第一种。
-fn find_endpoints(device: &rusb::Device<rusb::Context>) -> Result<Option<UsbEndpoints>> {
-    let config = device
-        .config_descriptor(0)
-        .context("read config descriptor")?;
-
-    // 第一遍：同一个接口内的端点对。
-    for iface in config.interfaces() {
-        for desc in iface.descriptors() {
-            let mut ep_in = None;
-            let mut ep_out = None;
-            for ep in desc.endpoint_descriptors() {
-                if ep.transfer_type() != TransferType::Interrupt {
-                    continue;
-                }
-                match ep.direction() {
-                    Direction::In => ep_in = Some(ep.address()),
-                    Direction::Out => ep_out = Some(ep.address()),
-                }
-            }
-            if let (Some(ep_in), Some(ep_out)) = (ep_in, ep_out) {
-                let iface = desc.interface_number();
-                let setting = desc.setting_number();
-                return Ok(Some(UsbEndpoints {
-                    in_iface: iface,
-                    in_setting: setting,
-                    ep_in,
-                    out_iface: iface,
-                    out_setting: setting,
-                    ep_out,
-                }));
-            }
-        }
-    }
-
-    // 第二遍：跨接口凑一对。
-    let mut ep_in = None;
-    let mut ep_out = None;
-    for iface in config.interfaces() {
-        for desc in iface.descriptors() {
-            for ep in desc.endpoint_descriptors() {
-                if ep.transfer_type() != TransferType::Interrupt {
-                    continue;
-                }
-                match ep.direction() {
-                    Direction::In if ep_in.is_none() => {
-                        ep_in =
-                            Some((ep.address(), desc.interface_number(), desc.setting_number()));
-                    }
-                    Direction::Out if ep_out.is_none() => {
-                        ep_out =
-                            Some((ep.address(), desc.interface_number(), desc.setting_number()));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    Ok(match (ep_in, ep_out) {
-        (Some((ep_in, in_iface, in_setting)), Some((ep_out, out_iface, out_setting))) => {
-            Some(UsbEndpoints {
-                in_iface,
-                in_setting,
-                ep_in,
-                out_iface,
-                out_setting,
-                ep_out,
-            })
-        }
-        _ => None,
-    })
-}
-
-/// 从设备读取所有可用的 USB 字符串：产品名 + 各接口字符串。
-fn read_device_names(
-    handle: &rusb::DeviceHandle<rusb::Context>,
-    device: &rusb::Device<rusb::Context>,
-    desc: &rusb::DeviceDescriptor,
-) -> Vec<String> {
-    let timeout = Duration::from_secs(1);
-    let mut names = Vec::new();
-
-    let Ok(langs) = handle.read_languages(timeout) else {
-        return names;
-    };
-    let Some(lang) = langs.into_iter().next() else {
-        return names;
-    };
-
-    if let Ok(name) = handle.read_product_string(lang, desc, timeout) {
-        names.push(name);
-    }
-
-    if let Ok(config) = device.config_descriptor(0) {
-        for iface in config.interfaces() {
-            for idesc in iface.descriptors() {
-                if let Ok(name) = handle.read_interface_string(lang, &idesc, timeout) {
-                    names.push(name);
-                }
-            }
-        }
-    }
-
-    names
-}
-
-/// USB 字符串是否就是目标设备名。
-///
-/// 部分机型的接口字符串是 `xxx @ 型号-序列号`，所以除完全相等外也接受后缀匹配。
-fn usb_name_matches(candidate: &str, expected: &str) -> bool {
-    let candidate = candidate.trim();
-    candidate == expected || candidate.ends_with(expected)
-}
-
-/// 打开设备并声明接口。
-fn open_device(
-    selector: &USBSelector,
-) -> Result<(rusb::DeviceHandle<rusb::Context>, UsbEndpoints)> {
-    let ctx = rusb::Context::new().context("create rusb context")?;
-    let devices = ctx.devices().context("enumerate USB devices")?;
-
-    for device in devices.iter() {
-        let desc = match device.device_descriptor() {
-            Ok(desc) => desc,
-            Err(e) => {
-                debug!("skip device: read descriptor failed: {e:?}");
-                continue;
-            }
-        };
-
-        let vid = format!("{:#06x}", desc.vendor_id());
-        let pid = format!("{:#06x}", desc.product_id());
-
-        // 按名称选择时不预先按 VID 过滤，最终以字符串匹配为准。
-        match selector {
-            USBSelector::DeviceName(_) => {}
-            USBSelector::Auto => {
-                if desc.vendor_id() != DETONGER_VID {
-                    continue;
-                }
-            }
-        }
-
-        let handle = match device.open() {
-            Ok(handle) => handle,
-            Err(e) => {
-                debug!(vid, pid, "skip device: open failed: {e:?}");
-                continue;
-            }
-        };
-
-        if let USBSelector::DeviceName(expected) = selector {
-            let names = read_device_names(&handle, &device, &desc);
-            if !names.iter().any(|name| usb_name_matches(name, expected)) {
-                debug!(vid, pid, names = ?names, "skip device: name mismatch");
-                continue;
-            }
-            info!(vid, pid, name = expected, "matched USB device name");
-        }
-
-        let Some(endpoints) = find_endpoints(&device)? else {
-            debug!(vid, pid, "skip device: no interrupt endpoint pair");
-            continue;
-        };
-
-        info!(
-            vid,
-            pid,
-            bus = device.bus_number(),
-            address = device.address(),
-            in_iface = endpoints.in_iface,
-            ep_in = format!("{:#04x}", endpoints.ep_in),
-            out_iface = endpoints.out_iface,
-            ep_out = format!("{:#04x}", endpoints.ep_out),
-            "found USB printer"
-        );
-
-        // 同一个接口只声明一次；跨接口时两个都要声明。
-        let mut claimed: Vec<(u8, u8)> = Vec::new();
-        for (iface, setting) in [
-            (endpoints.out_iface, endpoints.out_setting),
-            (endpoints.in_iface, endpoints.in_setting),
-        ] {
-            if claimed.contains(&(iface, setting)) {
-                continue;
-            }
-            if handle.kernel_driver_active(iface).unwrap_or(false) {
-                handle
-                    .detach_kernel_driver(iface)
-                    .context("detach kernel driver")?;
-            }
-            handle
-                .claim_interface(iface)
-                .context("claim USB interface")?;
-            handle
-                .set_alternate_setting(iface, setting)
-                .context("set alternate setting")?;
-            claimed.push((iface, setting));
-        }
-
-        return Ok((handle, endpoints));
-    }
-
-    bail!("no matching USB printer found")
-}
-
-/// 把一段命令区按 HID 报告写出去。
-fn write_cmd_area(
-    handle: &rusb::DeviceHandle<rusb::Context>,
-    endpoints: &UsbEndpoints,
-    cmd_area: &[u8],
-) -> Result<(), String> {
-    let reports = usb::encode_reports(cmd_area).map_err(|e| e.to_string())?;
-    for report in reports {
-        let written = handle
-            .write_interrupt(endpoints.ep_out, &report, WRITE_TIMEOUT)
-            .map_err(|e| format!("write interrupt failed: {e:?}"))?;
-        if written != report.len() {
-            return Err(format!(
-                "short write: {written} of {} byte(s)",
-                report.len()
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// 从接收缓冲区里切出所有完整响应，回传给前台。
 ///
 /// 返回 `false` 表示前台已经消失，后台线程该退出了。
@@ -566,16 +403,16 @@ fn drain_frames(
 
 /// 后台线程：USB 读写 + 命令区切帧。
 fn bg(
-    selector: USBSelector,
+    selector: UsbSelector,
     mv: ModelVersion,
     mut out_rx: mpsc::Receiver<OutJob>,
     recv_tx: mpsc::UnboundedSender<Vec<u8>>,
     ready_tx: watch::Sender<ReadyStatus>,
 ) {
-    let (handle, endpoints) = match open_device(&selector) {
-        Ok(v) => {
+    let mut transport = match UsbTransport::open(&selector) {
+        Ok(transport) => {
             ready_tx.send_replace(ReadyStatus::Ready);
-            v
+            transport
         }
         Err(e) => {
             error!("open device failed: {e:?}");
@@ -586,14 +423,20 @@ fn bg(
 
     let assembler = Assembler::new(mv);
     let mut received = Vec::new();
-    let mut report = vec![0u8; usb::REPORT_SIZE];
 
     loop {
         // 先处理所有待写任务。
         loop {
             match out_rx.try_recv() {
                 Ok(job) => {
-                    let result = write_cmd_area(&handle, &endpoints, &job.cmd_area);
+                    let result = match transport.write(&job.cmd_area) {
+                        Ok(WriteOutcome::Written) => Ok(()),
+                        // USB 不会返回 Blocked；真出现就先报错，避免静默丢包。
+                        Ok(WriteOutcome::Blocked) => {
+                            Err("USB transport unexpectedly blocked".to_string())
+                        }
+                        Err(e) => Err(e.to_string()),
+                    };
                     if let Err(e) = &result {
                         error!("write failed: {e}");
                     }
@@ -607,20 +450,20 @@ fn bg(
             }
         }
 
-        match handle.read_interrupt(endpoints.ep_in, &mut report, READ_TIMEOUT) {
-            Ok(n) => match usb::decode_report(&report[..n]) {
-                Ok(chunk) => {
-                    received.extend_from_slice(chunk);
-                    if !drain_frames(&assembler, &mut received, &recv_tx) {
-                        debug!("frontend closed, device thread exits");
-                        return;
-                    }
+        match transport.read_chunk(&mut received) {
+            Ok(ReadStatus::Data) => {
+                if !drain_frames(&assembler, &mut received, &recv_tx) {
+                    debug!("frontend closed, device thread exits");
+                    return;
                 }
-                Err(e) => warn!("invalid USB report: {e:?}"),
-            },
-            Err(rusb::Error::Timeout) => {}
+            }
+            Ok(ReadStatus::Timeout) => {}
+            Ok(ReadStatus::Closed) => {
+                error!("device closed");
+                return;
+            }
             Err(e) => {
-                error!("read interrupt failed: {e:?}");
+                error!("read failed: {e:?}");
                 return;
             }
         }
@@ -649,14 +492,147 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn app(tf: &TestFrontend) -> anyhow::Result<()> {
-    phase_single(tf).await?;
-    phase_device_info(tf).await?;
-    phase_flow_control(tf).await?;
+    // phase_single(tf).await?;
+    // phase_device_info(tf).await?;
+    // phase_flow_control(tf).await?;
     phase_high_command(tf).await?;
-    phase_device_info_probe(tf).await?;
-    phase_settings(tf).await?;
-    phase_raw_probes(tf).await?;
-    phase_push_listen(tf).await?;
+    // phase_device_info_probe(tf).await?;
+    // phase_settings(tf).await?;
+    // phase_raw_probes(tf).await?;
+    // phase_push_listen(tf).await?;
+    phase_print(tf).await?;
+    Ok(())
+}
+
+/// 打印计划 → 命令层请求对象。
+fn print_commands_to_reqs(commands: &[PrintCommand]) -> Vec<Box<dyn ReqTrait>> {
+    commands
+        .iter()
+        .map(|cmd| -> Box<dyn ReqTrait> {
+            match cmd {
+                PrintCommand::Line {
+                    repeats,
+                    skips,
+                    data,
+                } => Box::new(req::print_line::PrintLine {
+                    repeats: *repeats,
+                    skips: *skips,
+                    data: data.clone(),
+                }),
+                PrintCommand::Feed { lines } => {
+                    Box::new(req::feed_line::FeedLine { lines: *lines })
+                }
+                PrintCommand::RleByte {
+                    repeats,
+                    rle_byte_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Byte,
+                    count: *rle_byte_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle4x {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits4x,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle4d {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits4d,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle5x {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits5x,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle5d {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits5d,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle6x {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits6x,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle6d {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits6d,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+            }
+        })
+        .collect()
+}
+
+/// 一张 384x64 的测试图：外框 + 每 8 行一条横线。
+fn test_bitmap() -> Bitmap {
+    let mut bm = Bitmap::new(384, 64).unwrap();
+    let width = bm.width();
+    for y in 0..bm.height() {
+        let mut line = bm.line_mut(y).unwrap();
+        line.set(0, true);
+        line.set(width - 1, true);
+        if y % 8 == 0 {
+            for x in 0..width {
+                line.set(x, true);
+            }
+        }
+        line.set((y * 6) % width, true);
+    }
+    bm
+}
+
+/// 用 `FlowPlanner` 打印一张测试图。**会真的走纸。**
+async fn phase_print(tf: &TestFrontend) -> anyhow::Result<()> {
+    if std::env::var_os("TEST_USB_PRINT").is_none() {
+        info!("[8] 打印测试页已跳过；设置 TEST_USB_PRINT=1 启用（会真的走纸）");
+        return Ok(());
+    }
+
+    info!("[8] 打印测试页（Transport + FlowPlanner）");
+
+    let bm = test_bitmap();
+    let report = tf.print_bitmap_page(&bm, RleMode::Byte).await?;
+    info!(
+        chunks = report.chunks,
+        bytes = report.bytes,
+        budget_queries = report.budget_queries,
+        degraded = report.degraded,
+        "print finished"
+    );
     Ok(())
 }
 
