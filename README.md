@@ -44,6 +44,10 @@ cargo run --bin dzprint_typst
 
 # TODO: 更完善的 CLI
 cargo run --bin dzcli
+
+# 真机 USB 测试平台（需要连接德佟打印机，可传 `型号-序列号` 选择设备）
+cargo run --bin test_usb
+cargo run --bin test_usb -- DP27P-Y4094C023
 ```
 
 ## Code Layout / 代码结构
@@ -58,13 +62,13 @@ cargo run --bin dzcli
 - `bin/` 可执行的示例
   - `dzprint` 打印图片、`dzprint_typst` 打印 Typst 文档：`[旧]` 实现整体被注释，目前 `main` 是空的
   - `dzcli` CLI 雏形（只有 `clap` 参数骨架，功能还没接）
+  - `test_usb` `[新]` 真机 USB 测试平台：按设备名选择、HID 报告收发、命令区切帧、响应队列，覆盖查询 / 流控 / `0x80` 激活 / `0x7f` 探测
 - `bitmap.rs` `[新]` 以 bit 为单位的位图行类型，供 RLE 和命令层使用
-- `rle/` `[新]` 位图行的行程编码（RLE）和 RLE4X / RLE5X / RLE6X 的码表
-  - `mod.rs` RLE 码表和 `BitmapLine` 占位类型
-  - `run.rs` 把一行切成 run，分按位 / 按字节两种
+- `rle.rs` `[新]` 位图行的行程编码（RLE）：RLE4X / RLE5X / RLE6X 码表、`Run` 类型，以及按位 / 按字节两种切 run 方式
 - `command/` 通讯协议
   - `mod.rs` 模块入口；机型版本 `ModelVersion`（`V0` / `V1` / `V2`）；校验码计算 `calculate_checksum`
   - `envelope.rs` `[新]` 命令载荷的封包类型：自动校验和 / 固定 `0x88` / 手动打包 / 裸字节
+  - `high_command.rs` `[新]` `0x80` 的激活模式 `HighCommandMode`（`Enable` / `Disable` / `EnableAlt` / `Disabled`）
   - `req/` `[新]` 请求对象：实现 `ReqTrait`，按机型编码成一组 `Envelope`
   - `req_template/` `[新]` 每个请求的字节布局模板（deku），同一命令的不同机型写法各一个模板
   - `resp/` `[新]` 响应对象：实现 `RespTrait`，把模板解析结果按机型归一化
