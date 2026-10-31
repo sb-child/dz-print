@@ -301,9 +301,10 @@
       - `NullLines`: 其中走过的空行数。
       - `PrintPages`: 打印过的总页数。
   - `0x74` (X)
-  - `0x75` 制造商
-    - 返回: `<Manufacturer:string>`
-      - `Manufacturer`: 制造商名称。字符串。
+  - `0x75` 制造商 `rust:ManufacturerV2V1V0Tl` [代码](src/command/req_template/manufacturer.rs)
+    - 返回: `<Manufacturer:string>`，GBK/GB2312 编码，`0x00` 结尾
+      - `Manufacturer`: 制造商名称。
+      - 解析: `resp_template` 保留原始字节，`resp::Manufacturer` 用 `encoding_rs` 解码为 `Box<str>`。
   - `0x76` (X)
   - `0x77` 缓冲容量查询（流控核心），见 [flow-control.md](flow-control.md)
   - `0x78` 时间同步 (可读取写入) # TODO 到底怎么用
@@ -314,16 +315,21 @@
       - `Week`: 星期(周日=7)。
       - `Hour` `Minute` `Second`: 时，分，秒。
     - 返回 # TODO 不明确，但必须接收返回值。
-  - `0x79` 设备名
+  - `0x79` 设备名 `rust:DeviceNameV2V1V0Tl` [代码](src/command/req_template/device_name.rs)
     - 返回: `<DeviceName:string>`
-      - `DeviceName`: 设备名，格式 `型号-序列号`
+      - `DeviceName`: 设备名，格式 `型号-序列号`，`0x00` 结尾。
+      - 解析: `resp::DeviceName` 解码为 `Box<str>`。
   - `0x7a` 硬件版本
     - 返回: `0x26, 0x01, 0x04, 0x01, 0x04` = 硬件版本 2.6 (`"0x26"` -> `2.6`)
   - `0x7b` 缓冲容量查询 2，见 [flow-control.md](flow-control.md)
-  - `0x7c` 软件版本 # TODO
-  - `0x7d` 蓝牙mac地址
+  - `0x7c` 软件版本 `rust:SoftwareVersionV2V1V0Tl` [代码](src/command/req_template/software_version.rs)
+    - 返回: `<SoftwareVersion:string>`
+      - `SoftwareVersion`: 软件版本，格式 `x.y yyyymmdd` / `x.y.yyyymmdd`，`0x00` 结尾。
+      - 解析: `resp::SoftwareVersion` 解码为 `Box<str>`。
+  - `0x7d` 蓝牙mac地址 `rust:BluetoothMacV2V1V0Tl` [代码](src/command/req_template/bluetooth_mac.rs)
     - 返回: `10 <BtMacAddr:6bytes> 14 <BtMacAddr:6bytes>`
       - `BtMacAddr`: 蓝牙mac地址，示例 `60 6e 41 37 c4 37`=`60:6e:41:37:c4:37`。不知道为什么会重复两次，可能是经典蓝牙地址 + BLE 地址标识。
+      - 解析: 两个标签分别校验为 `0x10` / `0x14`，`resp::BluetoothMac` 输出 `classic` / `ble` 两个 `[u8; 6]`。
   - `0x7e` # TODO 打印机会重启
   - `0x7f` # TODO
 - `0x8_`
@@ -772,11 +778,11 @@ svc 0000180a-…  Device Information
 
 ### 带宽与画质
 
-| 指标             | 实测                         |
-| ---------------- | ---------------------------- |
-| ATT MTU          | 515（单次可写 512 字节）     |
-| 主机侧发送       | ~18 KiB/s                    |
-| 打印机侧有效消费 | **~4.9 KB/s**                |
+| 指标             | 实测                     |
+| ---------------- | ------------------------ |
+| ATT MTU          | 515（单次可写 512 字节） |
+| 主机侧发送       | ~18 KiB/s                |
+| 打印机侧有效消费 | **~4.9 KB/s**            |
 
 打印耗时几乎恒定，与速度档位无关，瓶颈在「BLE 模块 → 打印机串口」。
 后果是走纸变慢、加热不连续，大面积黑块不均匀、细竖线发虚。

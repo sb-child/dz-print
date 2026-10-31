@@ -182,11 +182,11 @@ transport（USB HID / BLE 串口透传）
 
 - [x] `0x70` 打印机状态（状态码 1B + `PageKey` u16BE + tail）
 - [x] `0x72` 打印宽度 / 纸宽（u16BE ×2 + tail）
-- [ ] `0x75` 制造商（NUL 结尾字符串，GBK）
-- [ ] `0x79` 设备名（NUL 结尾字符串）
-- [ ] `0x7c` 软件版本（NUL 结尾字符串）
-- [ ] `0x7d` 蓝牙 MAC（`0x10 <6B>` + `0x14 <6B>`）
-- [ ] 决定 GBK 方案：加 `encoding_rs`，还是先返回 `Vec<u8>`
+- [x] `0x75` 制造商（NUL 结尾字符串，GBK → `Box<str>`）
+- [x] `0x79` 设备名（NUL 结尾字符串 → `Box<str>`）
+- [x] `0x7c` 软件版本（NUL 结尾字符串 → `Box<str>`）
+- [x] `0x7d` 蓝牙 MAC（`0x10 <6B>` + `0x14 <6B>`）
+- [x] GBK 方案：`encoding_rs`；`resp_template` 保留 `Vec<u8>`，`resp` 输出 `Box<str>`
 - [x] `status.rs` 重写为 `PrinterStatus`（25 个线上值 + `TryFrom` / `to_wire` / `from_wire` / `is_printable` / `is_error`）
 
 ### P4 流控（2）

@@ -17,13 +17,18 @@ use crate::command::ModelVersion;
 use deku::{DekuContainerRead, DekuError};
 use snafu::{ResultExt, Snafu};
 
+pub mod bluetooth_mac;
 pub mod darkness;
+pub mod device_name;
 pub mod dpi;
 pub mod gap_length;
 pub mod gap_type;
+pub mod manufacturer;
 pub mod print_width;
+pub mod software_version;
 pub mod speed;
 pub mod status;
+pub mod string;
 
 /// 单条响应的 domain 类型。
 ///
@@ -54,6 +59,8 @@ pub enum ParseRespError {
         expected: &'static str,
         actual: usize,
     },
+    #[snafu(display("Invalid string in response."))]
+    InvalidString,
 }
 
 /// 用一个 `resp_template` 解析 payload，并要求模板把 payload 完整消费。

@@ -6,19 +6,23 @@
 
 pub use crate::command::varint;
 pub use derive_aliases::derive as der;
+pub mod bluetooth_mac;
 pub mod darkness;
+pub mod device_name;
 pub mod dpi;
 pub mod end_page;
 pub mod feed_line;
 pub mod gap_length;
 pub mod gap_type;
 pub mod heat_control;
+pub mod manufacturer;
 pub mod page_offset;
 pub mod page_width;
 pub mod print_line;
 pub mod print_line_rle;
 pub mod print_width;
 pub mod repeat_line;
+pub mod software_version;
 pub mod speed;
 pub mod start_page;
 pub mod start_page_seqs_v0;

@@ -5,11 +5,15 @@
 //! 响应命令模板
 
 pub use derive_aliases::derive as der;
+pub mod bluetooth_mac;
 pub mod darkness;
+pub mod device_name;
 pub mod dpi;
 pub mod gap_length;
 pub mod gap_type;
+pub mod manufacturer;
 pub mod print_width;
+pub mod software_version;
 pub mod speed;
 pub mod status;
 

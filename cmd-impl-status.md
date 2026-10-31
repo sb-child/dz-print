@@ -101,14 +101,14 @@
 | `0x71` | `DpiV2V1V0Tl`                        | `DpiV2V1V0Tl` | ?        |
 | `0x72` | `PrintWidthV2V1V0Tl`                 | `PrintWidthV2V1V0Tl` | ?        |
 | `0x73` | todo                                 | todo     | ?        |
-| `0x75` | todo                                 | todo     | ?        |
+| `0x75` | `ManufacturerV2V1V0Tl`               | `ManufacturerV2V1V0Tl` | ?        |
 | `0x77` | todo                                 | todo     | ?        |
 | `0x78` | todo                                 | todo     | ?        |
-| `0x79` | todo                                 | todo     | ?        |
+| `0x79` | `DeviceNameV2V1V0Tl`                 | `DeviceNameV2V1V0Tl` | ?        |
 | `0x7a` | todo                                 | todo     | ?        |
 | `0x7b` | todo                                 | todo     | ?        |
-| `0x7c` | todo                                 | todo     | ?        |
-| `0x7d` | todo                                 | todo     | ?        |
+| `0x7c` | `SoftwareVersionV2V1V0Tl`            | `SoftwareVersionV2V1V0Tl` | ?        |
+| `0x7d` | `BluetoothMacV2V1V0Tl`               | `BluetoothMacV2V1V0Tl` | ?        |
 | `0x7e` | todo                                 | ?        | ?        |
 | `0x7f` | todo                                 | ?        | ?        |
 | `0x80` | todo                                 | todo     | ?        |
@@ -130,6 +130,10 @@
 - [page_width.rs](src/command/req_template/page_width.rs)
 - [dpi.rs](src/command/req_template/dpi.rs)
 - [print_width.rs](src/command/req_template/print_width.rs)
+- [manufacturer.rs](src/command/req_template/manufacturer.rs)
+- [device_name.rs](src/command/req_template/device_name.rs)
+- [software_version.rs](src/command/req_template/software_version.rs)
+- [bluetooth_mac.rs](src/command/req_template/bluetooth_mac.rs)
 - [end_page.rs](src/command/req_template/end_page.rs)
 - [print_line_rle.rs](src/command/req_template/print_line_rle.rs)
 - [repeat_line.rs](src/command/req_template/repeat_line.rs)
