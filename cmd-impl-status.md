@@ -110,8 +110,8 @@
 | `0x7c` | `SoftwareVersionV2V1V0Tl`            | `SoftwareVersionV2V1V0Tl` | ?        |
 | `0x7d` | `BluetoothMacV2V1V0Tl`               | `BluetoothMacV2V1V0Tl`    | ?        |
 | `0x7e` | todo                                 | ?                         | ?        |
-| `0x7f` | `DeviceInfoV2V1V0Tl`                 | `DeviceInfoV2V1V0Tl` | ?        |
-| `0x80` | `HighCommandV2V1V0Tl`                | `HighCommandV2V1V0Tl` | ?        |
+| `0x7f` | `DeviceInfoV2V1V0Tl`                 | `DeviceInfoV2V1V0Tl`      | ?        |
+| `0x80` | `HighCommandV2V1V0Tl`                | `HighCommandV2V1V0Tl`     | ?        |
 | `0x84` | todo                                 | todo                      | ?        |
 | `0x88` | todo                                 | todo                      | ?        |
 | `0x9e` | todo                                 | 无                        | ?        |
