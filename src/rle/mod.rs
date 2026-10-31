@@ -2,11 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-pub mod lut;
 pub mod run;
 
 use deku::bitvec::BitVec;
 use thiserror::Error;
+
+pub const RLE4_INDEX_LUT: [usize; 8] = [1, 2, 3, 4, 9, 14, 29, 88];
+pub const RLE5_INDEX_LUT: [usize; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 36, 48, 120];
+pub const RLE6_INDEX_LUT: [usize; 32] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 41, 62, 83, 104, 125,
+    146, 167, 188, 209, 230, 461, 923,
+];
 
 #[derive(Error, Debug)]
 pub enum RleTransformError {

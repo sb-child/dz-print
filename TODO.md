@@ -145,7 +145,7 @@
 - [x] `src/planner/assembler.rs`：`Assembler::encode` / `decode_one`（命令头 → 变长长度 → data → 校验和）
 - [x] `decode_one(buf) -> Option<(resp, consumed)>`：尾部半条返回 `None`，调用方保留缓冲区
 - [x] 用例：两条拼接、半条、坏校验、`0x88` 固定校验、2 字节长度字段
-- [ ] USB `1e <len>` 入口（命令区已支持，外层规则见 `protocol.md`）
+- [x] USB `1e <len>` 入口：`src/planner/usb.rs`（封包 / 解包 / 64 字节 HID 报告切片）
 
 ### P6 读请求补齐
 
@@ -159,6 +159,7 @@
 - [ ] IN 线程用 `Assembler::decode_one` 替换旧的 `Command::parse_device_command`
 - [ ] 队列里放单条 raw payload，调用方用 `RespTrait::parse` 解码
 - [ ] 请求/响应 1:1 FIFO 配对
+- [ ] BLE 后端：`ff02` 写入、`ff01` 响应、`ff03` 的 `01 01` 信用流控（见 [issue #3](https://github.com/sb-child/dz-print/issues/3)）
 - [ ] 端到端：连接 → 读 DPI / 宽度 → 打印
 
 ### P8 待抓包
@@ -179,6 +180,7 @@
 - [ ] `0x70` / `0x72` 响应长度随固件变化，只从头部取固定字段，其余放 tail
 - [ ] `0x77` 的 2 字节变长在 SDK 读取侧是反的，那是 SDK bug，统一按写入侧约定
 - [ ] `0x70` 请求的 `01` 参数（SDK `n1(true)` 分支）尚未确认用途，当前只发空载荷
+- [ ] USB 报告的 `1e <长度>` 按旧 `packager` 实现为「本片命令区长度」，不是整段长度；切片的长度语义需要真机确认
 - [ ] 每完成一个阶段，同步更新 `cmd-impl-status.md` 的 resp 列；确认过的格式补到 `protocol.md`
 - [x] 新增 `resp/` 后补 `README.md` 的代码结构说明
 

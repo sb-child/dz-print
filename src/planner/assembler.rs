@@ -4,7 +4,7 @@
 
 //! 命令组装器。
 //!
-//! [`Assembler`] 把一组请求编码成连续的命令区，也把陆续读到的字节切成完整响应。它只处理命令区（BLE 帧格式），USB 的 `1e <长度>` 外层由传输层负责。
+//! [`Assembler`] 把一组请求编码成连续的命令区，也把陆续读到的字节切成完整响应。它只处理命令区（BLE 帧格式），USB 的 `1e <长度>` 外层由 [`usb`](super::usb) 负责。
 //!
 //! - 编码：[`Assembler::encode`] 调用 [`ReqTrait::pack`]，再按 [`EnvelopeKind`] 补长度字段和校验和。
 //! - 解码：[`Assembler::decode_one`] 每次解出缓冲区头部的一条响应，返回响应和已消费字节数。
@@ -12,8 +12,7 @@
 use snafu::{ResultExt, Snafu};
 
 use crate::command::{
-    ModelVersion,
-    checksum::calculate_checksum,
+    ModelVersion, calculate_checksum,
     envelope::{Envelope, EnvelopeKind},
     req::{PackReqError, ReqTrait},
     resp::{ParseRespError, RespTrait},

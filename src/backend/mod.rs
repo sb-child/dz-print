@@ -13,7 +13,7 @@ use rusb::UsbContext;
 use thiserror::Error;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::command::{self, packager};
+use crate::command;
 
 pub enum USBSelector {
     /// by VID and PID, pick the first match
@@ -281,7 +281,7 @@ impl USBBackend {
                         raw_packet_len -= buf.len();
                         buf.resize(max_out_size, 0);
                         let buf = [0u8; 0]; // + 2 bytes
-                        // let buf = packager::package_usb(buf); // + 2 bytes
+                        // TODO: 用 `crate::planner::usb::encode_reports(&buf)` 按 64 字节 HID 报告发送。
                         // println!("writing...");
                         let res = h1.write_interrupt(out_ep.address, &buf, in_timeout);
                         // println!("write done");
@@ -416,10 +416,10 @@ impl USBBackend {
                             }
                         },
                     }
-                    let unpacked = packager::unpackage_usb(buf);
-                    let unpacked = match unpacked {
-                        Some(x) => x,
-                        None => {
+                    let unpacked = match crate::planner::usb::decode_report(&buf) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            warn!("IN thread: invalid USB report: {e:?}");
                             continue;
                         }
                     };
