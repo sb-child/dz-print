@@ -294,19 +294,27 @@
       - `PaperWidth`: 支持最大纸宽(0.1mm)(比如`570`=57.0mm)
       - `printerLocateArea`: 1字节。定位区域。可选参数。
       - 其余字段长度随固件变化，解析时放 tail。
-  - `0x73` 获取打印统计信息 # TODO 可能有理解偏差
+  - `0x73` 获取打印统计信息 `rust:StatisticsV2V1V0Tl` [代码](src/command/req_template/statistics.rs)
     - 返回: `<WorkLines:u32BE> <PrintLines:u32BE> <NullLines:u32BE> <PrintPages:u32BE>`
       - `WorkLines`: 电机一共走过的行数。
       - `PrintLines`: 其中打印过的行数。
       - `NullLines`: 其中走过的空行数。
       - `PrintPages`: 打印过的总页数。
+      - 四个计数器是累计值，会跨页累加，对账要取差值。
+      - 实测样本里 `PrintLines + NullLines ≠ WorkLines`，字段顺序或语义可能还有偏差，解析时保留原始值。
   - `0x74` (X)
   - `0x75` 制造商 `rust:ManufacturerV2V1V0Tl` [代码](src/command/req_template/manufacturer.rs)
     - 返回: `<Manufacturer:string>`，GBK/GB2312 编码，`0x00` 结尾
       - `Manufacturer`: 制造商名称。
       - 解析: `resp_template` 保留原始字节，`resp::Manufacturer` 用 `encoding_rs` 解码为 `Box<str>`。
   - `0x76` (X)
-  - `0x77` 缓冲容量查询（流控核心），见 [flow-control.md](flow-control.md)
+  - `0x77` 缓冲容量查询（流控核心）`rust:BufferSizeV2V1V0Tl` [代码](src/command/req_template/buffer_size.rs)，见 [flow-control.md](flow-control.md)
+    - 请求载荷固定为 `00 00`（线上命令区 `1f 77 02 00 00 <校验>`）。
+    - 返回: `<Size:变长> <Status:i32LE> <SyncToken:i16LE> [其余...]`
+      - `Size`: 可用容量单位数，单位 500 字节；`Size == 1` 时按 1000 字节计。
+      - `Status`: `0` 正常，`0x0400_0000` 等待数据（缓冲还在消化），其余为错误。
+      - `SyncToken`: 疑似固件侧包序号，SDK 只用于日志。
+      - SDK 的流控决策只看 `Size`。`0x77` 有多个发送时机（握手、预算耗尽、纸张类型查询后），请求载荷始终是 `00 00`。
   - `0x78` 时间同步 (可读取写入) # TODO 到底怎么用
     - 无参数调用: 查询某设备信息？
     - 调用: `1f 78 [TimeZone:2bBE] [Year:u16BE] [Month] [Day] [Week] [Hour] [Minute] [Second]` 设置时间。# TODO: 为什么BLE连接要加100分钟?
@@ -321,7 +329,11 @@
       - 解析: `resp::DeviceName` 解码为 `Box<str>`。
   - `0x7a` 硬件版本
     - 返回: `0x26, 0x01, 0x04, 0x01, 0x04` = 硬件版本 2.6 (`"0x26"` -> `2.6`)
-  - `0x7b` 缓冲容量查询 2，见 [flow-control.md](flow-control.md)
+  - `0x7b` 缓冲容量查询 2（固件主动上报）`rust:BufferSize2V2V1V0Tl` [代码](src/command/resp_template/buffer_size2.rs)，见 [flow-control.md](flow-control.md)
+    - 只有响应：`1f 7b <Size:变长> [其余...]`
+      - `Size`: 同 `0x77`，单位 500 字节；`Size == 1` 时按 1000 字节计。
+      - 载荷比 `0x77` 精简，没有 `Status` / `SyncToken`。
+    - 主机不应主动发送 `0x7b`：SDK 里没有构造该请求的代码，只有响应分支。它可能是固件主动推送的精简流控通道。
   - `0x7c` 软件版本 `rust:SoftwareVersionV2V1V0Tl` [代码](src/command/req_template/software_version.rs)
     - 返回: `<SoftwareVersion:string>`
       - `SoftwareVersion`: 软件版本，格式 `x.y yyyymmdd` / `x.y.yyyymmdd`，`0x00` 结尾。

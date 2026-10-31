@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 pub mod bluetooth_mac;
+pub mod buffer_size;
 pub mod darkness;
 pub mod device_name;
 pub mod dpi;
@@ -16,6 +17,7 @@ pub mod print_width;
 pub mod software_version;
 pub mod speed;
 pub mod start_page;
+pub mod statistics;
 pub mod status;
 pub mod total_lines;
 

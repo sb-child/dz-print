@@ -100,13 +100,13 @@
 | `0x70` | `StatusV2V1V0Tl`                     | `StatusV2V1V0Tl` | ?        |
 | `0x71` | `DpiV2V1V0Tl`                        | `DpiV2V1V0Tl` | ?        |
 | `0x72` | `PrintWidthV2V1V0Tl`                 | `PrintWidthV2V1V0Tl` | ?        |
-| `0x73` | todo                                 | todo     | ?        |
+| `0x73` | `StatisticsV2V1V0Tl`                 | `StatisticsV2V1V0Tl` | ?        |
 | `0x75` | `ManufacturerV2V1V0Tl`               | `ManufacturerV2V1V0Tl` | ?        |
-| `0x77` | todo                                 | todo     | ?        |
+| `0x77` | `BufferSizeV2V1V0Tl`                 | `BufferSizeV2V1V0Tl` | ?        |
 | `0x78` | todo                                 | todo     | ?        |
 | `0x79` | `DeviceNameV2V1V0Tl`                 | `DeviceNameV2V1V0Tl` | ?        |
 | `0x7a` | todo                                 | todo     | ?        |
-| `0x7b` | todo                                 | todo     | ?        |
+| `0x7b` | 无                                   | `BufferSize2V2V1V0Tl` | ?        |
 | `0x7c` | `SoftwareVersionV2V1V0Tl`            | `SoftwareVersionV2V1V0Tl` | ?        |
 | `0x7d` | `BluetoothMacV2V1V0Tl`               | `BluetoothMacV2V1V0Tl` | ?        |
 | `0x7e` | todo                                 | ?        | ?        |
@@ -118,6 +118,7 @@
 
 > `0x70` / `0x71` / `0x72` 已在 DP27P / DP305P 上实测通过，但机型兼容性还没系统验证，先按 `?` 记。
 > `0x45` 协议里写的是 v2 支持、v1/v0 也许支持，表里按已确认的 v2 记。
+> `0x7b` 只有固件主动上报，SDK 里没有构造请求的代码，req 列按「无」记。
 > 标 `(X)` 的保留命令、以及 0x81~0x9f 中没有语义说明的空槽位没有收录。
 
 源文件(req):
@@ -134,6 +135,8 @@
 - [device_name.rs](src/command/req_template/device_name.rs)
 - [software_version.rs](src/command/req_template/software_version.rs)
 - [bluetooth_mac.rs](src/command/req_template/bluetooth_mac.rs)
+- [statistics.rs](src/command/req_template/statistics.rs)
+- [buffer_size.rs](src/command/req_template/buffer_size.rs)
 - [end_page.rs](src/command/req_template/end_page.rs)
 - [print_line_rle.rs](src/command/req_template/print_line_rle.rs)
 - [repeat_line.rs](src/command/req_template/repeat_line.rs)

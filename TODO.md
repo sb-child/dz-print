@@ -173,7 +173,7 @@ transport（USB HID / BLE 串口透传）
 - [ ] `0x5b`（2B，语义待确认）
 - [ ] `0x66` 纸张类型（1B）
 - [x] `0x71` DPI（u16BE）
-- [ ] `0x73` 统计（4 × u32BE）
+- [x] `0x73` 统计（4 × u32BE）
 - [ ] `0x7a` 硬件版本（5B）
 - [ ] `0x7f`（16B，语义待确认）
 - [ ] `0x80`（`[0] = 0x7f`）
@@ -191,9 +191,9 @@ transport（USB HID / BLE 串口透传）
 
 ### P4 流控（2）
 
-- [ ] `0x77`：`size: VarAuto` + `status: i32 LE` + `syncToken: i16 LE` + tail
-- [ ] `0x7b`：`size: VarAuto`
-- [ ] 用 [flow-control.md](./flow-control.md) 第 3 节示例做用例
+- [x] `0x77`：`size: VarAuto` + `status: i32 LE` + `syncToken: i16 LE` + tail
+- [x] `0x7b`：`size: VarAuto`（只有固件上报，主机不发请求）
+- [x] 用 [flow-control.md](./flow-control.md) 第 3 节示例做用例
 
 ### P5 帧层
 
@@ -204,8 +204,9 @@ transport（USB HID / BLE 串口透传）
 
 ### P6 读请求补齐
 
-- [x] `0x70` 空 payload 读取请求
-- [ ] `0x42`~`0x45`、`0x52`、`0x57`、`0x59`、`0x66`、`0x71`~`0x7d` 的空 payload 读取请求
+- [x] `0x70` / `0x71` / `0x72` / `0x73` / `0x75` / `0x77` / `0x79` / `0x7c` / `0x7d` 的读取请求
+- [x] `0x7b` 只有固件上报，没有请求
+- [ ] `0x52` / `0x57` / `0x59` / `0x66` 的读取请求（等响应格式确认）
 - [ ] 决定用 `ReadRequest { group, type_ }` 还是每命令一个空结构体
 
 ### P7 后端集成
@@ -237,6 +238,8 @@ transport（USB HID / BLE 串口透传）
 - [ ] `cmd-impl-status.md` 的 `0x9e` resp 列现在是「无」，需要修正
 - [ ] `0x70` / `0x72` 响应长度随固件变化，只从头部取固定字段，其余放 tail
 - [ ] `0x77` 的 2 字节变长在 SDK 读取侧是反的，那是 SDK bug，统一按写入侧约定
+- [ ] `0x77` 的 `status` 位语义：`0` 正常、`0x0400_0000` 等待数据、其余错误；尚未拿到干净回包验证
+- [ ] `0x73` 抓包里 `PrintLines + NullLines ≠ WorkLines`，字段顺序或语义待复核
 - [ ] `0x70` 请求的 `01` 参数（SDK `n1(true)` 分支）尚未确认用途，当前只发空载荷
 - [ ] USB 报告的 `1e <长度>` 按旧 `packager` 实现为「本片命令区长度」，不是整段长度；切片的长度语义需要真机确认
 - [ ] `ModelVersion` 判定依据：协议只写了 SDK `h=0/16/303`，没有从设备读取 `device_type` / `h` 的实现；DP27P 旧代码走 v1，DP305P 暂按 v2

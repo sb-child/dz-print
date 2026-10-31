@@ -6,6 +6,8 @@
 
 pub use derive_aliases::derive as der;
 pub mod bluetooth_mac;
+pub mod buffer_size;
+pub mod buffer_size2;
 pub mod darkness;
 pub mod device_name;
 pub mod dpi;
@@ -15,6 +17,7 @@ pub mod manufacturer;
 pub mod print_width;
 pub mod software_version;
 pub mod speed;
+pub mod statistics;
 pub mod status;
 
 #[cfg(test)]
