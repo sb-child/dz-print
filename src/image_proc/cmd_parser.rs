@@ -393,7 +393,10 @@ mod test {
         let dots = vec![true; 4];
         let skipped = PrintCommand::SkipPrintLine(1600, 1536, dots.clone()).parse();
         let printed = PrintCommand::PrintLine(1600, dots).parse();
-        assert_eq!(skipped, printed, "skip > 191 bytes must fall back to PrintLine");
+        assert_eq!(
+            skipped, printed,
+            "skip > 191 bytes must fall back to PrintLine"
+        );
 
         // skip > mw 属于非法输入, 同样退回 0x2a, 不丢行
         let dots = vec![true, true];

@@ -166,13 +166,14 @@ mod test {
     #[test]
     fn test_bitmap_line_covers_whole_width() {
         // 8x3, 每行只有最后一个像素是黑的
-        let img: GrayImage = GrayImage::from_fn(8, 3, |x, _| {
-            if x == 7 {
-                Luma([0u8])
-            } else {
-                Luma([255u8])
-            }
-        });
+        let img: GrayImage =
+            GrayImage::from_fn(
+                8,
+                3,
+                |x, _| {
+                    if x == 7 { Luma([0u8]) } else { Luma([255u8]) }
+                },
+            );
         let bitmap = Bitmap::from_gray_image(&img, DitherMode::Threshold);
         assert_eq!(bitmap.width(), 8);
         for y in 0..bitmap.height() {
