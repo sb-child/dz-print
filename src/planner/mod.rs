@@ -5,11 +5,13 @@
 //! 命令组装和传输层封包。
 //!
 //! - [`assembler`]：命令区的编码 / 切帧解码（BLE 帧格式）。
+//! - [`print`]：位图到打印命令参数的翻译，不编码、不管页面和流控。
 //! - [`usb`]：USB 外层 `1e <长度>` 的打包 / 解包和 HID 报告切片。
 //!
 //! BLE 是串口透传，没有外层包头，直接使用 [`assembler`] 的输出（流控在链路层）。
 
 pub mod assembler;
+pub mod print;
 pub mod usb;
 
 pub use assembler::{Assembler, DecodeError};
