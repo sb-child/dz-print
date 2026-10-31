@@ -217,6 +217,10 @@ impl TestFrontend {
         if cmd_area.is_empty() {
             return Ok(());
         }
+        debug!(
+            bytes = cmd_area.len(),
+            "write command area: {:02X?}", cmd_area
+        );
 
         let (ack_tx, ack_rx) = oneshot::channel();
         self.out_tx
@@ -615,6 +619,23 @@ fn test_bitmap() -> Bitmap {
     bm
 }
 
+/// `TEST_USB_RLE` 选择 RLE 模式，默认关闭。
+///
+/// 取值：`byte`、`bits4`、`bits5`、`bits6`、`bits4x`、`bits5x`、`bits6x`。
+/// 带 `x` 的只用 X 模式，用来排查 X / D 混用。
+fn rle_mode_from_env() -> RleMode {
+    match std::env::var("TEST_USB_RLE").as_deref() {
+        Ok("byte") => RleMode::Byte,
+        Ok("bits4") => RleMode::Bits4,
+        Ok("bits5") => RleMode::Bits5,
+        Ok("bits6") => RleMode::Bits6,
+        Ok("bits4x") => RleMode::Bits4XOnly,
+        Ok("bits5x") => RleMode::Bits5XOnly,
+        Ok("bits6x") => RleMode::Bits6XOnly,
+        _ => RleMode::Off,
+    }
+}
+
 /// 用 `FlowPlanner` 打印一张测试图。**会真的走纸。**
 async fn phase_print(tf: &TestFrontend) -> anyhow::Result<()> {
     if std::env::var_os("TEST_USB_PRINT").is_none() {
@@ -622,10 +643,11 @@ async fn phase_print(tf: &TestFrontend) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    info!("[8] 打印测试页（Transport + FlowPlanner）");
+    let rle = rle_mode_from_env();
+    info!("[8] 打印测试页（Transport + FlowPlanner, rle = {rle:?}）");
 
     let bm = test_bitmap();
-    let report = tf.print_bitmap_page(&bm, RleMode::Byte).await?;
+    let report = tf.print_bitmap_page(&bm, rle).await?;
     info!(
         chunks = report.chunks,
         bytes = report.bytes,

@@ -10,7 +10,7 @@
 //!   调用方应改用 [`PrintLine`](super::print_line::PrintLine)。
 
 use crate::command::{
-    ModelVersion,
+    ModelVersion, calculate_checksum,
     envelope::{Envelope, EnvelopeKind},
     req::{EncodeSnafu, PackReqError, ReqTrait, print_line::append_repeat_lines},
     req_template::print_line_rle::{
@@ -69,7 +69,8 @@ impl ReqTrait for PrintLineRle {
         if self.data.is_empty() {
             return Err(PackReqError::UnsupportedUsage);
         }
-        let ek = EnvelopeKind::AutoPackWithChecksum;
+        // RLE 帧的 `<长度>` / `<符号数>` 是协议字段，模板里已经写好。
+        // 这里用 `ManualPack`，避免 `Assembler` 再补一层长度；校验和手动补。
         let bytes = match self.kind {
             RleKind::Byte => {
                 let count = var_count(self.data.len() as u32, "rle_byte_count")?;
@@ -144,9 +145,18 @@ impl ReqTrait for PrintLineRle {
                 })?
             }
         };
-        let mut res = vec![Envelope::new(bytes, ek)];
-        // 每段 0x2e 最多 16383 行。
-        append_repeat_lines(&mut res, ek, self.repeats as usize, 16383)?;
+        let mut frame = bytes;
+        let checksum = calculate_checksum(&frame, 1, frame.len());
+        frame.push(checksum);
+
+        let mut res = vec![Envelope::new(frame, EnvelopeKind::ManualPack)];
+        // 每段 0x2e 最多 16383 行；`0x2e` 是普通命令，仍走自动长度 + 校验。
+        append_repeat_lines(
+            &mut res,
+            EnvelopeKind::AutoPackWithChecksum,
+            self.repeats as usize,
+            16383,
+        )?;
         Ok(res)
     }
 }
@@ -184,13 +194,18 @@ mod tests {
     #[test]
     fn v2_uses_the_matching_template() {
         let cases = [
-            (RleKind::Byte, vec![0xC2, 0xAA, 0xC1], "1f 29 03 c2 aa c1"),
-            (RleKind::Bits4x, vec![0xAE], "1f 3a 02 ae"),
-            (RleKind::Bits4d, vec![0xAE], "1f 3b 02 ae"),
-            (RleKind::Bits5x, vec![0x1F, 0xC0], "1f 2c 02 1f c0"),
-            (RleKind::Bits5d, vec![0x1F, 0xC0], "1f 2d 02 1f c0"),
-            (RleKind::Bits6x, vec![0x3F, 0xF0], "1f 3c 02 3f f0"),
-            (RleKind::Bits6d, vec![0x3F, 0xF0], "1f 3d 02 3f f0"),
+            // RLE 帧是 ManualPack：协议字段 + 校验和，不再有 Assembler 的额外长度。
+            (
+                RleKind::Byte,
+                vec![0xC2, 0xAA, 0xC1],
+                "1f 29 03 c2 aa c1 a6",
+            ),
+            (RleKind::Bits4x, vec![0xAE], "1f 3a 02 ae 15"),
+            (RleKind::Bits4d, vec![0xAE], "1f 3b 02 ae 14"),
+            (RleKind::Bits5x, vec![0x1F, 0xC0], "1f 2c 02 1f c0 f2"),
+            (RleKind::Bits5d, vec![0x1F, 0xC0], "1f 2d 02 1f c0 f1"),
+            (RleKind::Bits6x, vec![0x3F, 0xF0], "1f 3c 02 3f f0 92"),
+            (RleKind::Bits6d, vec![0x3F, 0xF0], "1f 3d 02 3f f0 91"),
         ];
         for (kind, data, expected) in cases {
             let cmd = PrintLineRle {
@@ -217,7 +232,7 @@ mod tests {
         };
         assert_eq!(
             payloads(&cmd, ModelVersion::V2),
-            vec![hexdec("1f 3a 02 ae"), hexdec("1f 2e 02")]
+            vec![hexdec("1f 3a 02 ae 15"), hexdec("1f 2e 02")]
         );
     }
 

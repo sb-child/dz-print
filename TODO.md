@@ -91,6 +91,26 @@
   - `TEST_USB_PRINT=1` 时打一张 384x64 测试图，默认跳过避免误走纸
   - `cargo check --bin test_usb` / clippy 干净
 
+- [x] RLE 帧改成 `ManualPack`（DP27P 实测定位）
+  - 现象：`RleMode::Byte` 图形右移、左侧拖影；`Off` 正常
+  - 原因：`PrintLineRle` 用 `AutoPackWithChecksum`，`Assembler` 在协议字段 `<RleByteLen>` 前又补了一层 `<len>`；设备把 `RleByteLen` 当成第一个 RLE 数据字节
+  - 修复：`PrintLineRle` 改用 `ManualPack`，模板保留 `<RleByteLen>` / `<符号数>`，校验和手动追加
+  - 复测：字节级 `0x29` 正常；位级 `0x2c` / `0x3c` 也正常
+  - `0x3a`（RLE4X）仍空白；X / D 混用仍会断层，真机用 `Bits5XOnly` / `Bits6XOnly`
+  - `cargo test --lib`: 313 passed
+
+- [x] 位级 RLE 的 X / D 混用问题（DP27P 实测）
+  - `Bits4` / `Bits5`（自动 X/D）图像中间出现周期性断层；`Bits5XOnly` 打印正常
+  - 位流本身自洽，例如 `1f 2c 04 ff ff c0` 解码正好是 384 个黑点
+  - 结论：DP27P 不把 X 行写进 D 的“上一行”基准，X / D 不能混用；`RleMode::Bits5` 暂时不要用于真机
+  - 已加 `RleMode::Bits4XOnly` / `Bits5XOnly` / `Bits6XOnly`，对应 `TEST_USB_RLE=bits4x|bits5x|bits6x`
+- [x] `0x3a`（RLE4X）在 DP27P 上打不出内容；`0x3c`（RLE6X）也不工作
+  - `bits4x` 日志确认 payload 正确：`1f 3a 06 ff ff ae 13`
+    - `FF FF AE` = `1111 1111 1111 1111 1010 1110` → 88×4 + 3 + 29 = 384 点
+    - 符号顺序由 DP 选出（3 后 29），总长与行宽一致
+  - 命令格式和位流都没有问题，因此判断为 DP27P 固件不认 `0x3a` / `0x3c`，或 RLE4 / RLE6 码本与 5 位不同
+  - 目前可用的位级方案只有 `Bits5XOnly`（`0x2c`）
+
 ## 规划：frontend / 设备线程 / transport
 
 目标：把「命令怎么编码」和「字节怎么送到设备」拆开。调用方只面对 `frontend`，
@@ -255,7 +275,9 @@ transport（USB HID / BLE 串口透传）
 
 ## 待确认 / 风险
 
-- [ ] RLE 编码（`0x29` / `0x2c` / `0x2d` / `0x3a` ~ `0x3d`）还没在 DP27P 上验证；「尾部白色不编码、解码端补白」和「D 模式保留上一行」两个假设需要实测确认
+- [x] RLE 的 `ManualPack` 修复已复测：字节级 `0x29` 正常，位级 `0x2c` / `0x3c` 正常
+- [ ] 「尾部白色不编码、解码端补白」在 X 模式下已验证；「D 模式保留上一行」只在连续 D 时可能成立，X / D 混用已确认会断层
+- [ ] `0x3a`（RLE4X）在 DP27P 上仍空白，待换机型或固件验证
 - [ ] `cmd-impl-status.md` 的 `0x9e` resp 列现在是「无」，需要修正
 - [ ] `0x70` / `0x72` 响应长度随固件变化，只从头部取固定字段，其余放 tail
 - [ ] `0x77` 的 2 字节变长在 SDK 读取侧是反的，那是 SDK bug，统一按写入侧约定

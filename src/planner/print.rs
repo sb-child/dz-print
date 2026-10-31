@@ -29,7 +29,8 @@ pub const MAX_DOTS_PER_LINE: usize = 1521;
 
 /// RLE 编码方案。
 ///
-/// 只描述“用哪一族 RLE”；位级模式会同时算 X 和 D，取字节数更小的那个。
+/// 只描述“用哪一族 RLE”；位级模式默认同时算 X 和 D，取字节数更小的那个。
+/// `*XOnly` 变体只用 X，用于验证设备是否支持 X / D 混用。
 /// 如果 RLE 编码后不比直接发一行小，仍然回退到 [`PrintCommand::Line`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RleMode {
@@ -44,6 +45,12 @@ pub enum RleMode {
     Bits5,
     /// 6 位符号 RLE，`1f 3c` / `1f 3d`。
     Bits6,
+    /// 4 位符号 RLE，只用 X，`1f 3a`。
+    Bits4XOnly,
+    /// 5 位符号 RLE，只用 X，`1f 2c`。
+    Bits5XOnly,
+    /// 6 位符号 RLE，只用 X，`1f 3c`。
+    Bits6XOnly,
 }
 
 /// 一条打印命令，只带调用命令层需要的参数。
@@ -182,8 +189,8 @@ pub fn print_bitmap(bm: &Bitmap, rle: RleMode) -> Result<Vec<PrintCommand>, Prin
 /// 选择并生成 RLE 行命令。
 ///
 /// 只有编码后比普通行（`raw_len` 字节）更小才返回 `Some`，否则返回 `None`
-/// 让调用方发 [`PrintCommand::Line`]。位级模式会同时算 X 和 D，取较小的那个；
-/// `prev` 为 `None`（第一行）时只算 X。
+/// 让调用方发 [`PrintCommand::Line`]。位级模式默认同时算 X 和 D，取较小的那个；
+/// `*XOnly` 只算 X；`prev` 为 `None`（第一行）时也只算 X。
 fn select_rle(
     line: &BitmapLine<'_>,
     prev: Option<BitmapLine<'_>>,
@@ -191,7 +198,7 @@ fn select_rle(
     repeats: u16,
     rle: RleMode,
 ) -> Result<Option<PrintCommand>, PrintError> {
-    let bits = match rle {
+    let (bits, allow_d) = match rle {
         RleMode::Off => return Ok(None),
         RleMode::Byte => {
             let stream = RleByteStream::encode(*line)?;
@@ -204,15 +211,18 @@ fn select_rle(
                 data: stream.data,
             }));
         }
-        RleMode::Bits4 => RleBits::Bits4,
-        RleMode::Bits5 => RleBits::Bits5,
-        RleMode::Bits6 => RleBits::Bits6,
+        RleMode::Bits4 => (RleBits::Bits4, true),
+        RleMode::Bits5 => (RleBits::Bits5, true),
+        RleMode::Bits6 => (RleBits::Bits6, true),
+        RleMode::Bits4XOnly => (RleBits::Bits4, false),
+        RleMode::Bits5XOnly => (RleBits::Bits5, false),
+        RleMode::Bits6XOnly => (RleBits::Bits6, false),
     };
 
     let x = RleBitStream::encode(*line, None, bits)?;
-    let d = match prev {
-        Some(prev) => Some(RleBitStream::encode(*line, Some(prev), bits)?),
-        None => None,
+    let d = match (allow_d, prev) {
+        (true, Some(prev)) => Some(RleBitStream::encode(*line, Some(prev), bits)?),
+        _ => None,
     };
     let (is_d, stream) = match d {
         Some(d) if d.data.len() < x.data.len() => (true, d),
@@ -482,6 +492,29 @@ mod test {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn x_only_mode_never_emits_d() {
+        let evens: Vec<usize> = (0..32).step_by(2).collect();
+        let odds: Vec<usize> = (1..32).step_by(2).collect();
+        let bm = make(32, &[&evens, &odds]);
+        for mode in [
+            RleMode::Bits4XOnly,
+            RleMode::Bits5XOnly,
+            RleMode::Bits6XOnly,
+        ] {
+            let cmds = print_bitmap(&bm, mode).unwrap();
+            assert!(
+                !cmds.iter().any(|c| matches!(
+                    c,
+                    PrintCommand::Rle4d { .. }
+                        | PrintCommand::Rle5d { .. }
+                        | PrintCommand::Rle6d { .. }
+                )),
+                "{mode:?} emitted a D command"
+            );
+        }
     }
 
     #[test]

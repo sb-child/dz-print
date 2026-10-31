@@ -230,6 +230,8 @@
 
 > RLE 命令（`0x29` / `0x2c` / `0x2d` / `0x3a` ~ `0x3d`）没有 `Repeats` / `Skips` 字段：
 > `req::PrintLineRle` 的 `repeats` 用 `0x2e` 展开；`v1` / `v0` 机型没有 RLE，退回普通行命令。
+> `0x29` 的 `<RleByteLen>` 和位级命令的 `<符号数>` 是**协议字段**，不是通用的数据长度字段：
+> `req::PrintLineRle` 用 `ManualPack` 发送，`Assembler` 不再额外补 `<len>`，校验和由 `pack` 手动追加。
 
 - `0x4_` 打印设置 (可读取写入)
   - `0x40` (X)
