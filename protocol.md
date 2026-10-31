@@ -29,6 +29,10 @@
 - `v1` 过渡机型。SDK: `h=16`
 - `v0` 最老机型。SDK: `h=303`
 
+> `h` 是 SDK 内部用来选命令集的字段，不是线上命令。仓库里目前没有自动识别
+> 机型版本的实现：已实测的 DP27P 旧代码走 `v1` 命令集，DP305P 暂按 `v2` 处理。
+> 接入后端时需要由调用方指定，或按型号 / 设备信息做映射。
+
 ## 传输协议 `双向`
 
 - 包头 `USB`
@@ -282,13 +286,14 @@
 - `0x7_` 设备信息 (可读取)
   - `0x70` 获取打印机状态 `rust:StatusV2V1V0Tl` [代码](src/command/req_template/status.rs)
     - [打印状态](print-status.md)
-  - `0x71` 获取设备DPI
+  - `0x71` 获取设备DPI `rust:DpiV2V1V0Tl` [代码](src/command/req_template/dpi.rs)
     - 返回: `<Dpi:u16BE>`: 打印头DPI(比如`300`)
-  - `0x72` 获取打印宽度和出纸宽度
+  - `0x72` 获取打印宽度和出纸宽度 `rust:PrintWidthV2V1V0Tl` [代码](src/command/req_template/print_width.rs)
     - 返回: `<PrintWidth:u16BE> <PaperWidth:u16BE> [printerLocateArea] 00 00 00 00`
       - `PrintWidth`: 打印头点数(比如`576`)
       - `PaperWidth`: 支持最大纸宽(0.1mm)(比如`570`=57.0mm)
       - `printerLocateArea`: 1字节。定位区域。可选参数。
+      - 其余字段长度随固件变化，解析时放 tail。
   - `0x73` 获取打印统计信息 # TODO 可能有理解偏差
     - 返回: `<WorkLines:u32BE> <PrintLines:u32BE> <NullLines:u32BE> <PrintPages:u32BE>`
       - `WorkLines`: 电机一共走过的行数。

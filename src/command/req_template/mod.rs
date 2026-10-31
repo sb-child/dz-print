@@ -7,6 +7,7 @@
 pub use crate::command::varint;
 pub use derive_aliases::derive as der;
 pub mod darkness;
+pub mod dpi;
 pub mod end_page;
 pub mod feed_line;
 pub mod gap_length;
@@ -16,6 +17,7 @@ pub mod page_offset;
 pub mod page_width;
 pub mod print_line;
 pub mod print_line_rle;
+pub mod print_width;
 pub mod repeat_line;
 pub mod speed;
 pub mod start_page;

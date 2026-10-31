@@ -98,8 +98,8 @@
 | `0x59` | todo                                 | todo     | ?        |
 | `0x66` | todo                                 | todo     | ?        |
 | `0x70` | `StatusV2V1V0Tl`                     | `StatusV2V1V0Tl` | ?        |
-| `0x71` | todo                                 | todo     | ?        |
-| `0x72` | todo                                 | todo     | ?        |
+| `0x71` | `DpiV2V1V0Tl`                        | `DpiV2V1V0Tl` | ?        |
+| `0x72` | `PrintWidthV2V1V0Tl`                 | `PrintWidthV2V1V0Tl` | ?        |
 | `0x73` | todo                                 | todo     | ?        |
 | `0x75` | todo                                 | todo     | ?        |
 | `0x77` | todo                                 | todo     | ?        |
@@ -128,6 +128,8 @@
 - [heat_control.rs](src/command/req_template/heat_control.rs)
 - [total_lines.rs](src/command/req_template/total_lines.rs)
 - [page_width.rs](src/command/req_template/page_width.rs)
+- [dpi.rs](src/command/req_template/dpi.rs)
+- [print_width.rs](src/command/req_template/print_width.rs)
 - [end_page.rs](src/command/req_template/end_page.rs)
 - [print_line_rle.rs](src/command/req_template/print_line_rle.rs)
 - [repeat_line.rs](src/command/req_template/repeat_line.rs)

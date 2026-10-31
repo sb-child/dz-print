@@ -2,7 +2,7 @@
 
 [返回](./README.md)
 
-当前主线：resp（设备→主机响应）层实现。命令实现状态见 [cmd-impl-status.md](./cmd-impl-status.md)。
+当前主线：resp（设备→主机响应）层实现；设备线程 / frontend 见下方「规划」。命令实现状态见 [cmd-impl-status.md](./cmd-impl-status.md)。
 
 ## 进行中
 
@@ -71,6 +71,61 @@
   - `protocol.md` / `print-status.md`：补 PageKey 位置和响应模板链接
   - 9 个用例；`cargo test --lib`: 129 passed
 
+## 规划：frontend / 设备线程 / transport
+
+目标：把「命令怎么编码」和「字节怎么送到设备」拆开。调用方只面对 `frontend`，
+不关心 USB/BLE，也不直接碰 `Assembler`。
+
+```text
+用户代码
+  │  同步或 async 调用
+  ▼
+frontend（选择后端 / 连接参数 / ModelVersion）
+  │  mpsc::Sender<Request>
+  ▼
+设备 worker 线程（每个设备一个）
+  │  编码 + 写 transport + 读响应
+  ▼
+transport（USB HID / BLE 串口透传）
+```
+
+- `frontend`
+  - 入口：选择 backend（USB / BLE）+ 连接参数 + `ModelVersion`
+  - 结构体持有到 worker 的 channel，不直接持有 USB/BLE 句柄
+  - 对外方法返回 `Result<T, FrontendError>`
+  - 设备断开后：worker 把状态置为不可用，后续调用立即返回错误，不再排队
+- 设备 worker
+  - 从 channel 取请求，按顺序编码发送
+  - 需要响应的请求进 FIFO，每项带一个 `oneshot` 和响应解码器
+  - 响应按到达顺序交给队首；半条帧留在缓冲区，等下次数据继续解析
+  - 写失败 / 读线程退出：清空 FIFO，所有等待者收到 `DeviceUnavailable`
+  - 不做业务判断，重试 / 流控策略放在 scheduler
+- `transport`
+  - 只负责字节读写，不解析命令
+  - USB：HID Interrupt + `planner::usb::encode_reports` / `decode_report`
+  - BLE：`ff02` 写、`ff01` 响应、`ff03` 的 `01 01` 信用
+- 待定
+  - 对外 API 用同步还是 async（tokio 已经在依赖里，默认 async？）
+  - frontend 是否用 `Disconnected` / `Connected` 类型状态区分
+  - 混合响应的分派方式：每请求自带 decoder，还是中央 `Resp` enum
+  - 大量无响应打印命令是否单独走批量队列，避免和查询命令抢 FIFO
+- 倾向
+  - worker 只做「切帧」，把原始 payload 交回 frontend；frontend 的泛型方法再
+    `T::parse`。这样不用把 `RespTrait` 擦成 `Any`，也避免跨线程传泛型闭包。
+  - 为此需要给 `Assembler` 暴露一个返回 `(Vec<u8>, consumed)` 的公开切帧接口。
+
+> 旧 `backend/mod.rs` 已经有 OUT/IN 线程、命令队列和 `response_buf` 的雏形，
+> 但它绑死旧的 `command::Command` / `Device`，只能参考结构，不能直接复用。
+
+- [ ] 定义 `Transport` trait（write / read / reset）
+- [ ] `Assembler` 暴露切帧接口：`decode_frame -> Option<(Vec<u8>, consumed)>`
+- [ ] 定义 `frontend::Device` 对外接口和错误类型
+- [ ] 设备 worker 线程 + 请求 FIFO + 响应配对
+- [ ] USB transport 接 `planner::usb`
+- [ ] BLE transport（`btleplug` + `ff03` 信用）
+- [ ] 断连 / 写失败时让所有 pending 请求返回错误
+- [ ] 示例：连接 → 读 DPI / 宽度 → 打印一张图
+
 ## resp 层约定
 
 - `payload` = `命令组 + 命令类型 + 数据`，不含长度字段和校验和，与 `Envelope.payload` 对称
@@ -117,7 +172,7 @@
 - [ ] `0x59` 支持语言（2B，语义待确认）
 - [ ] `0x5b`（2B，语义待确认）
 - [ ] `0x66` 纸张类型（1B）
-- [ ] `0x71` DPI（u16BE）
+- [x] `0x71` DPI（u16BE）
 - [ ] `0x73` 统计（4 × u32BE）
 - [ ] `0x7a` 硬件版本（5B）
 - [ ] `0x7f`（16B，语义待确认）
@@ -126,7 +181,7 @@
 ### P3 变长 / 字符串批（6）
 
 - [x] `0x70` 打印机状态（状态码 1B + `PageKey` u16BE + tail）
-- [ ] `0x72` 打印宽度 / 纸宽（u16BE ×2 + 可选定位区域 + tail）
+- [x] `0x72` 打印宽度 / 纸宽（u16BE ×2 + tail）
 - [ ] `0x75` 制造商（NUL 结尾字符串，GBK）
 - [ ] `0x79` 设备名（NUL 结尾字符串）
 - [ ] `0x7c` 软件版本（NUL 结尾字符串）
@@ -155,10 +210,13 @@
 
 ### P7 后端集成
 
+> 具体接口拆分见上面「规划：frontend / 设备线程 / transport」。
+
 - [ ] `lib.rs` 恢复 `pub mod backend;`
 - [ ] IN 线程用 `Assembler::decode_one` 替换旧的 `Command::parse_device_command`
 - [ ] 队列里放单条 raw payload，调用方用 `RespTrait::parse` 解码
 - [ ] 请求/响应 1:1 FIFO 配对
+- [ ] 连接后确定 `ModelVersion`：目前只能由调用方指定；SDK `h=0/16/303` 的来源还没确认
 - [ ] BLE 后端：`ff02` 写入、`ff01` 响应、`ff03` 的 `01 01` 信用流控（见 [issue #3](https://github.com/sb-child/dz-print/issues/3)）
 - [ ] 端到端：连接 → 读 DPI / 宽度 → 打印
 
@@ -181,6 +239,8 @@
 - [ ] `0x77` 的 2 字节变长在 SDK 读取侧是反的，那是 SDK bug，统一按写入侧约定
 - [ ] `0x70` 请求的 `01` 参数（SDK `n1(true)` 分支）尚未确认用途，当前只发空载荷
 - [ ] USB 报告的 `1e <长度>` 按旧 `packager` 实现为「本片命令区长度」，不是整段长度；切片的长度语义需要真机确认
+- [ ] `ModelVersion` 判定依据：协议只写了 SDK `h=0/16/303`，没有从设备读取 `device_type` / `h` 的实现；DP27P 旧代码走 v1，DP305P 暂按 v2
+- [ ] `0x88` 校验歧义：v2 的合法校验和恰好为 `0x88` 时会被当成「不校验」而跳过验证；与 SDK 行为一致，暂不处理
 - [ ] 每完成一个阶段，同步更新 `cmd-impl-status.md` 的 resp 列；确认过的格式补到 `protocol.md`
 - [x] 新增 `resp/` 后补 `README.md` 的代码结构说明
 

@@ -81,7 +81,7 @@ cargo run --bin dzcli
 - `planner/` `[新]` 命令组装和传输层封包
   - `assembler.rs`：`Assembler`，按机型把一组 `ReqTrait` 编码成命令区，再切帧解码成 `RespTrait`
   - `usb.rs`：USB 外层 `1e <长度>` 的打包 / 解包，以及按 64 字节 HID 报告切片
-- `frontend/` 新架构预留，目前是空文件
+- `frontend/` 新架构预留，目前是空文件（接口规划见 `TODO.md` 的「frontend / 设备线程 / transport」）
 - `scheduler/` 打印任务和设置类型的占位（`Job`、`Scheduler` 都还是空的）
 
 ## TODO

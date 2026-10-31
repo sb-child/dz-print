@@ -6,8 +6,10 @@
 
 pub use derive_aliases::derive as der;
 pub mod darkness;
+pub mod dpi;
 pub mod gap_length;
 pub mod gap_type;
+pub mod print_width;
 pub mod speed;
 pub mod status;
 

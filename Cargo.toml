@@ -16,7 +16,7 @@ num-traits = "0.2"
 num-derive = "0.5"
 strum = { version = "0.28", features = ["derive"] }
 rayon = "1.12.0"
-tokio = { version = "1.53.3", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 clap = { version = "4.6", features = ["derive"] }
@@ -33,7 +33,7 @@ typst-render = "0.15.1"
 # spin = "^0.9" <- wasmi v1.1.0 <- typst-library v0.15.1
 spin = "=0.9.9"
 tempfile = "3.27.0"
-ureq = "3.4.2"
+ureq = "3.5.0"
 tar = "0.4.46"
 flate2 = "1.1.10"
 deku = "0.20.3"

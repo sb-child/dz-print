@@ -93,7 +93,9 @@ impl Assembler {
         }
 
         let frame = &buf[..total];
-        // 校验位 = 0x88 表示不校验
+        // 校验位 = 0x88 表示「不校验」。SDK 也按这个规则处理。
+        // 注意歧义：v2 的合法校验和也可能正好是 0x88，此时会被当成不校验而跳过验证
+        // （概率约 1/256）。这里保持 SDK 行为，不额外区分。
         let actual = frame[total - 1];
         if actual != 0x88 {
             let expected = calculate_checksum(frame, 1, total - 1);
