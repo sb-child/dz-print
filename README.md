@@ -29,8 +29,6 @@ Motherboard produced by DothanTech(dothantech.com)
 - [点击查看](flow-control.md)buffer 容量感知的分块发送流控机制
 - [点击查看](TODO.md)当前开发进度和 resp 层实现计划
 
-或者直接看[源码](src/command/req_template)（`new-standard` 分支的命令模板）
-
 ## Development and Usage / 开发和使用
 
 - 依赖 `dbus-devel`，记得安装
@@ -69,15 +67,16 @@ cargo run --bin dzcli
   - `checksum.rs` 校验码计算（目前还没接进新流程）
   - `envelope.rs` `[新]` 命令载荷的封包类型：自动校验和 / 固定 `0x88` / 手动打包 / 裸字节
   - `models.rs` `[新]` 机型版本 `V0` / `V1` / `V2`
-  - `req/` `[新]` 打印命令的请求对象：实现 `ReqTrait`，按机型编码成一组 `Envelope`
-    - `start_page.rs`、`print_line.rs`、`feed_line.rs`、`total_lines.rs`、`end_page.rs`
-  - `req_template/` `[新]` 每个命令的字节布局模板（deku），同一命令的不同机型写法各一个模板
+  - `req/` `[新]` 请求对象：实现 `ReqTrait`，按机型编码成一组 `Envelope`
+  - `req_template/` `[新]` 每个请求的字节布局模板（deku），同一命令的不同机型写法各一个模板
+  - `resp/` `[新]` 响应对象：实现 `RespTrait`，把模板解析结果按机型归一化
+  - `resp_template/` `[新]` 每个响应的字节布局模板（deku），保留 `magic` 做命令头校验
   - `varint.rs` `[新]` 协议里的 4 种变长整数编解码
-  - `settings.rs` `[新]` 打印设置（速度、浓度、纸类型等）枚举和字符串解析
-  - `status.rs` `[新]` 打印机错误码
-  - `response.rs` `[新]` 设备回包解析（占位，还是空文件）
+  - `settings.rs` `[新]` 打印设置（速度、浓度、纸张间隔类型）枚举和字符串解析
+  - `status.rs` `[新]` `0x70` 打印机状态码 `PrinterStatus`（25 个线上值）
+  - `response.rs` `[新]` 帧层解析入口（占位，P5 实现）
   - `packager.rs` `[旧]` USB 封包 / 解包，已整体注释
-- `derive_alias.rs` `[新]` deku derive 的别名 `CmdTemplate`
+- `derive_alias.rs` `[新]` deku derive 的别名 `CmdTemplate` / `RespTemplate`
 - `backend/` `[旧]` `rusb` 底层通讯实现，`lib.rs` 里已注释掉
 - `image_proc/` `[旧]` 图像处理
   - `mod.rs` 位图类型和灰度 / 抖动转换
