@@ -20,6 +20,7 @@ pub mod repeat_line;
 pub mod speed;
 pub mod start_page;
 pub mod start_page_seqs_v0;
+pub mod status;
 pub mod total_lines;
 
 #[cfg(test)]
@@ -29,8 +30,7 @@ mod test_toolkits {
         s.split(&[' ', ',', '\t'])
             .filter(|c| c.len() == 2)
             .filter(|c| c.is_ascii())
-            .map(|c| u8::from_str_radix(c, 16))
-            .flatten()
+            .flat_map(|c| u8::from_str_radix(c, 16))
             .collect()
     }
 

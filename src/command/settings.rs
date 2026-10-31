@@ -255,7 +255,9 @@ impl FromStr for DarknessSetting {
 }
 
 /// 纸张间隔类型
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// discriminant = 线上值；`0x42` 命令在各机型上编码一致。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GapTypeSetting {
     /// 小票纸/连续纸
     #[default]
@@ -268,6 +270,33 @@ pub enum GapTypeSetting {
     BlackMark = 3,
     /// 透明贴
     Transparent = 4,
+}
+
+impl GapTypeSetting {
+    /// 线上值（全机型一致）
+    pub const fn to_wire(self) -> u8 {
+        self as u8
+    }
+
+    /// 从线上值解析（全机型一致）
+    pub fn from_wire(value: u8) -> Result<Self, PrintSettingError> {
+        Self::try_from(value)
+    }
+}
+
+impl TryFrom<u8> for GapTypeSetting {
+    type Error = PrintSettingError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Continuous),
+            1 => Ok(Self::Hole),
+            2 => Ok(Self::Gap),
+            3 => Ok(Self::BlackMark),
+            4 => Ok(Self::Transparent),
+            _ => Err(Self::Error::InvalidU8(value)),
+        }
+    }
 }
 
 // (先放着)
@@ -374,6 +403,24 @@ mod test {
 
         assert!(DarknessSetting::from_wire(0, ModelVersion::V0).is_err());
         assert!(DarknessSetting::from_wire(15, ModelVersion::V2).is_err());
+    }
+
+    #[test]
+    fn gap_type_wire() {
+        for (wire, setting) in [
+            (0, GapTypeSetting::Continuous),
+            (1, GapTypeSetting::Hole),
+            (2, GapTypeSetting::Gap),
+            (3, GapTypeSetting::BlackMark),
+            (4, GapTypeSetting::Transparent),
+        ] {
+            assert_eq!(setting as u8, wire);
+            assert_eq!(setting.to_wire(), wire);
+            assert_eq!(GapTypeSetting::from_wire(wire).unwrap(), setting);
+            assert_eq!(GapTypeSetting::try_from(wire).unwrap(), setting);
+        }
+
+        assert!(GapTypeSetting::from_wire(5).is_err());
     }
 
     #[test]

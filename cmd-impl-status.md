@@ -85,10 +85,10 @@
 | `0x3b` | `PrintLineRle4dV2Tl`                 | 无       | v2       |
 | `0x3c` | `PrintLineRle6xV2Tl`                 | 无       | v2       |
 | `0x3d` | `PrintLineRle6dV2Tl`                 | 无       | v2       |
-| `0x42` | `GapTypeV0V1V2Tl`                    | todo     | v0,v1,v2 |
-| `0x43` | `DarknessV2V1V0Tl`                   | todo     | v0,v1,v2 |
-| `0x44` | `SpeedV2V1V0Tl`                      | todo     | v0,v1,v2 |
-| `0x45` | `GapLengthV2Tl`                      | todo     | v2       |
+| `0x42` | `GapTypeV0V1V2Tl`                    | `GapTypeV0V1V2Tl` | v0,v1,v2 |
+| `0x43` | `DarknessV2V1V0Tl`                   | `DarknessV2V1V0Tl` | v0,v1,v2 |
+| `0x44` | `SpeedV2V1V0Tl`                      | `SpeedV2V1V0Tl` | v0,v1,v2 |
+| `0x45` | `GapLengthV2Tl`                      | `GapLengthV2Tl` | v2       |
 | `0x47` | todo                                 | 无       | ?        |
 | `0x48` | todo                                 | todo     | ?        |
 | `0x49` | todo                                 | ?        | ?        |
@@ -97,7 +97,7 @@
 | `0x57` | todo                                 | todo     | ?        |
 | `0x59` | todo                                 | todo     | ?        |
 | `0x66` | todo                                 | todo     | ?        |
-| `0x70` | todo                                 | todo     | ?        |
+| `0x70` | `StatusV2V1V0Tl`                     | `StatusV2V1V0Tl` | ?        |
 | `0x71` | todo                                 | todo     | ?        |
 | `0x72` | todo                                 | todo     | ?        |
 | `0x73` | todo                                 | todo     | ?        |
@@ -135,3 +135,4 @@
 - [darkness.rs](src/command/req_template/darkness.rs)
 - [speed.rs](src/command/req_template/speed.rs)
 - [gap_length.rs](src/command/req_template/gap_length.rs)
+- [status.rs](src/command/req_template/status.rs)

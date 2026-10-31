@@ -2,10 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+pub mod darkness;
 pub mod end_page;
 pub mod feed_line;
+pub mod gap_length;
+pub mod gap_type;
 pub mod print_line;
+pub mod speed;
 pub mod start_page;
+pub mod status;
 pub mod total_lines;
 
 use deku::DekuError;

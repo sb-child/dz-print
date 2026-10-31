@@ -42,6 +42,7 @@ pub struct StartPage {
     /// - v2,v1,v0: 支持。
     pub printer_gap_type: GapTypeSetting,
     /// 设置纸张间隔长度。
+    /// - 单位 0.01mm。
     /// - v2: 支持。范围`50..=4194303`。在`printer_gap_type != GapTypeSetting::Continuous`条件下生效。
     /// - v1,v0: 不支持。
     pub printer_gap_length: u32,
