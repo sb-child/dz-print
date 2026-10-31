@@ -5,12 +5,14 @@
 pub mod bluetooth_mac;
 pub mod buffer_size;
 pub mod darkness;
+pub mod device_info;
 pub mod device_name;
 pub mod dpi;
 pub mod end_page;
 pub mod feed_line;
 pub mod gap_length;
 pub mod gap_type;
+pub mod high_command;
 pub mod manufacturer;
 pub mod print_line;
 pub mod print_width;

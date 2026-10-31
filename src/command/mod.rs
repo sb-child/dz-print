@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 pub mod envelope;
+pub mod high_command;
 pub mod req;
 pub mod req_template;
 pub mod resp;

@@ -110,8 +110,8 @@
 | `0x7c` | `SoftwareVersionV2V1V0Tl`            | `SoftwareVersionV2V1V0Tl` | ?        |
 | `0x7d` | `BluetoothMacV2V1V0Tl`               | `BluetoothMacV2V1V0Tl`    | ?        |
 | `0x7e` | todo                                 | ?                         | ?        |
-| `0x7f` | todo                                 | ?                         | ?        |
-| `0x80` | todo                                 | todo                      | ?        |
+| `0x7f` | `DeviceInfoV2V1V0Tl`                 | `DeviceInfoV2V1V0Tl` | ?        |
+| `0x80` | `HighCommandV2V1V0Tl`                | `HighCommandV2V1V0Tl` | ?        |
 | `0x84` | todo                                 | todo                      | ?        |
 | `0x88` | todo                                 | todo                      | ?        |
 | `0x9e` | todo                                 | 无                        | ?        |
@@ -119,6 +119,8 @@
 > `0x70` / `0x71` / `0x72` 已在 DP27P / DP305P 上实测通过，但机型兼容性还没系统验证，先按 `?` 记。
 > `0x45` 协议里写的是 v2 支持、v1/v0 也许支持，表里按已确认的 v2 记。
 > `0x7b` 只有固件主动上报，SDK 里没有构造请求的代码，req 列按「无」记。
+> `0x48` / `0x52` / `0x57` / `0x59` / `0x5b` / `0x7a` 的回包已在 DP27P 上实测，布局待落成类型；`0x66` 在 DP27P USB 上多种变体均无响应，设置 `0x00` / `0x01` / `0x02` 也不改变 `0x42`。
+> `0x7f` 在 DP27P 上固定回 16 字节全 `00`，激活状态和参数都不影响。
 > 标 `(X)` 的保留命令、以及 0x81~0x9f 中没有语义说明的空槽位没有收录。
 
 源文件(req):
@@ -137,6 +139,8 @@
 - [bluetooth_mac.rs](src/command/req_template/bluetooth_mac.rs)
 - [statistics.rs](src/command/req_template/statistics.rs)
 - [buffer_size.rs](src/command/req_template/buffer_size.rs)
+- [device_info.rs](src/command/req_template/device_info.rs)
+- [high_command.rs](src/command/req_template/high_command.rs)
 - [end_page.rs](src/command/req_template/end_page.rs)
 - [print_line_rle.rs](src/command/req_template/print_line_rle.rs)
 - [repeat_line.rs](src/command/req_template/repeat_line.rs)

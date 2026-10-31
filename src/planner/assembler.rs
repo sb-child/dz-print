@@ -69,7 +69,13 @@ impl Assembler {
     }
 
     /// 切出缓冲区头部的一条完整帧，返回 payload 和已消费字节数。
-    fn decode_frame(&self, buf: &[u8]) -> Result<Option<(Vec<u8>, usize)>, DecodeError> {
+    ///
+    /// - `payload` 是 `命令组 + 命令类型 + data`，不含长度字段和校验和。
+    /// - `consumed` 是这条帧占用的字节数，调用方可以 `buf[consumed..]` 继续解下一条。
+    /// - 返回 `None` 表示数据还不足一条完整帧。
+    ///
+    /// 传输层只负责切帧，不认识具体响应类型；需要类型化结果时用 [`Self::decode_one`]。
+    pub fn decode_frame(&self, buf: &[u8]) -> Result<Option<(Vec<u8>, usize)>, DecodeError> {
         // 至少需要 命令组 + 命令类型 + 1 字节长度
         if buf.len() < 3 {
             return Ok(None);
