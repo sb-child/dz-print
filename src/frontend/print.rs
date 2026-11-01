@@ -71,11 +71,19 @@ impl Device {
     ///
     /// 最后一页的 `EndPage` 之后会调用 [`Device::wait_for_print_done`]，
     /// 等打印头真正走完再返回。
+    ///
+    /// 同一时刻只允许一个打印任务：已有任务在跑时立即返回
+    /// [`FrontendError::PrintBusy`]，不排队，避免两页数据交叉发送。
     pub async fn print_bitmap_job(
         &self,
         bm: &Bitmap,
         rle: RleMode,
     ) -> Result<FlowReport, FrontendError> {
+        let _job = self
+            .print_lock
+            .try_lock()
+            .map_err(|_| FrontendError::PrintBusy)?;
+
         let width = u16::try_from(bm.width())
             .map_err(|_| FrontendError::WidthOverflow { width: bm.width() })?;
         let page_count = bm.height().div_ceil(MAX_LINES_PER_PAGE);

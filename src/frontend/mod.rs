@@ -124,6 +124,8 @@ pub enum FrontendError {
     PrintTimeout { timeout: Duration },
     #[snafu(display("device worker did not stop within {timeout:?}"))]
     ShutdownTimeout { timeout: Duration },
+    #[snafu(display("a print job is already running"))]
+    PrintBusy,
 }
 
 /// 前台状态：响应队列 + 未取走的原始 payload。
@@ -201,6 +203,8 @@ pub struct Device {
     config: DeviceConfig,
     out_tx: worker::OutTx,
     recv: Mutex<RecvState>,
+    /// 同一时刻只允许一个 [`Device::print_bitmap_job`]。
+    print_lock: Mutex<()>,
     worker: worker::WorkerHandle,
 }
 
@@ -292,6 +296,7 @@ impl Device {
                 rx: recv_rx,
                 queue: VecDeque::new(),
             }),
+            print_lock: Mutex::new(()),
             worker,
         }
     }
@@ -805,6 +810,31 @@ mod tests {
         assert!(written.windows(2).any(|w| w == [0x1f, 0x26]), "TotalLines");
         assert!(written.windows(2).any(|w| w == [0x1f, 0x21]), "PrintLine");
         assert!(written.windows(2).any(|w| w == [0x1f, 0x28]), "EndPage");
+    }
+
+    /// 同一时刻只能有一个打印任务；第二个任务立即失败，不排队。
+    #[tokio::test]
+    async fn print_bitmap_job_rejects_a_second_job() {
+        let (device, _transport) =
+            device_with(&[status_frame(0x00), buffer_frame(50), status_frame(0x00)]);
+
+        let mut bitmap = Bitmap::new(8, 1).unwrap();
+        bitmap.line_mut(0).unwrap().set(0, true);
+
+        // 模拟已经有一个任务占着打印锁。
+        let running = device.print_lock.try_lock().unwrap();
+        let err = device
+            .print_bitmap_job(&bitmap, RleMode::Off)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FrontendError::PrintBusy), "{err:?}");
+
+        // 第一个任务结束后锁释放，再打印就正常。
+        drop(running);
+        device
+            .print_bitmap_job(&bitmap, RleMode::Off)
+            .await
+            .unwrap();
     }
 
     /// `Device` 需要能放进 `Arc` 跨 tokio task 共享。

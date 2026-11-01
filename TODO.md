@@ -445,6 +445,10 @@ transport（USB HID / BLE 串口透传）
     也只写 ERROR 日志，流控始终只看 `size`
   - `BufferSize::is_error()` 保留为诊断分类，`FlowError::BufferStatus` 删除
   - 补 `unknown_buffer_status_still_uses_the_budget` 测试
+- [x] `print_bitmap_job` 单任务锁
+  - `Device::print_lock`（`tokio::sync::Mutex<()>`）；已有任务运行时第二个调用
+    立即返回 `FrontendError::PrintBusy`，不排队，避免两页数据交叉发送
+  - 补 `print_bitmap_job_rejects_a_second_job` 测试
 - [x] `PrintLine` 参数校验
   - v0 的 `data_len` 用 `u16::try_from`，v1 的 `dots` 用 `checked_mul(8)` +
     `u16::try_from`，溢出返回 `ParamOutOfRange`
