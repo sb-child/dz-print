@@ -48,13 +48,6 @@
 //! [`FlowPlanner::needs_gap`] 为真时等待，并把 `0x77` 的响应交回来。
 //! [`crate::frontend::Device::print_bitmap_job`] 是完整的参考实现。
 
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
-
-use thiserror::Error;
-
 use crate::{
     command::{
         req::{PackReqError, ReqTrait},
@@ -62,6 +55,11 @@ use crate::{
     },
     planner::Assembler,
 };
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
+use thiserror::Error;
 
 /// 单块最大字节数。预算再大也按这个切，避免一次灌满设备缓冲。
 pub const MAX_CHUNK: usize = 9000;

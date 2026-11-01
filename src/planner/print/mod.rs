@@ -65,9 +65,11 @@
 //! `select_rle` 从 `RleMode` 选出 [`PrintCommand`]，[`into_reqs`] 再把它映射成
 //! `RleKind`；三层名字只差前缀，不要混用。
 
-use crate::bitmap::{Bitmap, BitmapError};
-use crate::command::req::{self, ReqTrait};
-use crate::rle::RleTransformError;
+use crate::{
+    bitmap::{Bitmap, BitmapError},
+    command::req::{self, ReqTrait},
+    rle::RleTransformError,
+};
 use thiserror::Error;
 
 mod rle;

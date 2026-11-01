@@ -8,10 +8,11 @@
 //! 让调用方发 [`PrintCommand::Line`]。位级模式默认同时算 X 和 D，取较小的那个；
 //! `*XOnly` 只算 X；`prev` 为 `None`（第一行、或刚 `Feed` 过）时也只算 X。
 
-use crate::bitmap::BitmapLine;
-use crate::rle::{RleBitStream, RleBits, RleByteStream};
-
 use super::{PrintCommand, PrintError, RleMode};
+use crate::{
+    bitmap::BitmapLine,
+    rle::{RleBitStream, RleBits, RleByteStream},
+};
 
 /// 选择并生成 RLE 行命令。
 ///

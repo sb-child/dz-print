@@ -36,15 +36,13 @@
 //! 退出时 `Drop` 会释放接口并把手动 detach 过的内核驱动接回去；
 //! [`Transport::reset`] 之后会重新 claim 一次。
 
-use std::time::Duration;
-
-use rusb::{Context, Device, DeviceHandle, Direction, TransferType, UsbContext};
-use tracing::{debug, info, warn};
-
 use crate::{
     backend::usb_frame,
     backend::{ReadStatus, Transport, TransportError, WriteOutcome},
 };
+use rusb::{Context, Device, DeviceHandle, Direction, TransferType, UsbContext};
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
 /// 德佟的 USB VID。
 pub const DETONGER_VID: u16 = 0x3533;

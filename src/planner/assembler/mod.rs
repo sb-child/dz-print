@@ -34,9 +34,6 @@
 //! `decode_one` 在数据不完整时返回 `Ok(None)`，不会消费缓冲区；需要原始
 //! payload（先按命令字节分发再解析）时用 [`Assembler::decode_frame`]。
 
-use pretty_hex::simple_hex;
-use snafu::{ResultExt, Snafu};
-
 use crate::command::{
     ModelVersion, calculate_checksum,
     envelope::{Envelope, EnvelopeKind},
@@ -44,6 +41,8 @@ use crate::command::{
     resp::{ParseRespError, RespTrait},
     varint::VarintMode,
 };
+use pretty_hex::simple_hex;
+use snafu::{ResultExt, Snafu};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Assembler {

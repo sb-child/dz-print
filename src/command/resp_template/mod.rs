@@ -24,6 +24,7 @@
 //! 业务代码请用 [`crate::command::resp`] 里的同名类型。
 
 pub use derive_aliases::derive as der;
+
 pub mod bluetooth_mac;
 pub mod buffer_size;
 pub mod buffer_size2;

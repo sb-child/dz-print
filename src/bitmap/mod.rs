@@ -36,9 +36,8 @@
 //! 整块位缓冲可以用 [`Bitmap::bits`] 借用，或用 [`Bitmap::from_bits`] /
 //! [`Bitmap::into_bits`] 和 `deku::bitvec::BitVec<u8, Msb0>` 互相转换。
 
-use std::ops::Range;
-
 use deku::bitvec::{BitField, BitSlice, BitVec, BitView, Msb0};
+use std::ops::Range;
 use thiserror::Error;
 
 /// 位图操作错误。

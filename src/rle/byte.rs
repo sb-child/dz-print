@@ -7,11 +7,9 @@
 //! 游程拆分在 [`BitmapLine::runs_bytes`](crate::bitmap::BitmapLine::runs_bytes)，
 //! 符号规则见 [`RleByteStream::encode`]。
 
-use deku::bitvec::BitField;
-
-use crate::bitmap::BitmapLine;
-
 use super::{RleTransformError, Run};
+use crate::bitmap::BitmapLine;
+use deku::bitvec::BitField;
 
 impl BitmapLine<'_> {
     /// 按字节拆游程（不足一字节的行在右侧补 0）。

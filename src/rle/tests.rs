@@ -3,10 +3,8 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use super::*;
-
-use deku::bitvec::{BitVec, Msb0, bits};
-
 use crate::bitmap::BitmapLine;
+use deku::bitvec::{BitVec, Msb0, bits};
 
 fn make_bits(bits: &[bool]) -> BitVec<u8, Msb0> {
     let mut bv = BitVec::<u8, Msb0>::new();

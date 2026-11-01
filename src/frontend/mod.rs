@@ -59,15 +59,6 @@
 //! - 打印整张位图用 [`Device::print_bitmap_job`]，见 `print` 模块
 //! - `shutdown` 之后 USB 句柄才释放；只 drop `Device` 不会等线程退出
 
-use std::{collections::VecDeque, time::Duration};
-
-use crossfire::oneshot;
-use mytm::{TypedTaskState, TypedTaskStateRef};
-use pretty_hex::simple_hex;
-use thiserror::Error;
-use tokio::sync::Mutex;
-use tracing::{debug, trace, warn};
-
 use crate::{
     backend::usb::UsbSelector,
     command::{
@@ -78,6 +69,13 @@ use crate::{
     },
     planner::{Assembler, flow::FlowError, print::PrintError},
 };
+use crossfire::oneshot;
+use mytm::{TypedTaskState, TypedTaskStateRef};
+use pretty_hex::simple_hex;
+use std::{collections::VecDeque, time::Duration};
+use thiserror::Error;
+use tokio::sync::Mutex;
+use tracing::{debug, trace, warn};
 
 mod print;
 mod worker;

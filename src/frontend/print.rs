@@ -44,10 +44,6 @@
 //! 才返回；中途出错会带着 [`FrontendError`](super::FrontendError) 返回。
 //! 如果只想要命令、不碰设备，用 [`crate::planner::print`]。
 
-use std::time::Duration;
-
-use tracing::{debug, info, warn};
-
 use crate::{
     bitmap::Bitmap,
     command::{
@@ -60,6 +56,8 @@ use crate::{
         print::{MAX_LINES_PER_PAGE, RleMode, into_reqs, print_bitmap_page},
     },
 };
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
 use super::{Device, FrontendError};
 

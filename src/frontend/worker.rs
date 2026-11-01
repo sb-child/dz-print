@@ -29,18 +29,17 @@
 //! 注意 `mytm` 只在 `Pending -> Running` 这一次转换通知等待者；之后更新
 //! `WorkerProgress` 只会刷新值，不会唤醒 `wait_for`，要读进度得轮询。
 
+use crate::{
+    backend::{ReadStatus, Transport, TransportError, WriteOutcome, usb::UsbTransport},
+    command::ModelVersion,
+    planner::Assembler,
+};
 use crossfire::{AsyncRx, MAsyncTx, MRx, TryRecvError, Tx, oneshot::TxOneshot, spsc};
 use mytm::{ProgressUpdater, TaskHandle, TaskManager};
 use pretty_hex::simple_hex;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
-
-use crate::{
-    backend::{ReadStatus, Transport, TransportError, WriteOutcome, usb::UsbTransport},
-    command::ModelVersion,
-    planner::Assembler,
-};
 
 /// 打开设备的工厂。测试可以注入 [`crate::backend`] 里的内存 transport。
 pub(crate) type TransportFactory =

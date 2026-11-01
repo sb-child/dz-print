@@ -26,6 +26,7 @@
 
 pub use crate::command::varint;
 pub use derive_aliases::derive as der;
+
 pub mod bluetooth_mac;
 pub mod buffer_size;
 pub mod darkness;

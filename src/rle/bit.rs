@@ -7,11 +7,9 @@
 //! 游程拆分在 [`BitmapLine::runs_bits`](crate::bitmap::BitmapLine::runs_bits)，
 //! 码本和符号布局见 [`RleBits`] 和 `rle.md`。
 
-use std::sync::OnceLock;
-
-use crate::bitmap::BitmapLine;
-
 use super::{RleTransformError, Run};
+use crate::bitmap::BitmapLine;
+use std::sync::OnceLock;
 
 pub const RLE4_INDEX_LUT: [usize; 8] = [1, 2, 3, 4, 9, 14, 29, 88];
 pub const RLE5_INDEX_LUT: [usize; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 24, 36, 48, 120];

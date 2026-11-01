@@ -45,10 +45,9 @@ pub mod statistics;
 pub mod status;
 pub mod total_lines;
 
+use crate::command::{ModelVersion, envelope::Envelope};
 use deku::DekuError;
 use snafu::Snafu;
-
-use crate::command::{ModelVersion, envelope::Envelope};
 
 pub trait ReqTrait {
     fn pack(&self, cv: ModelVersion) -> Result<Vec<Envelope>, PackReqError>;
