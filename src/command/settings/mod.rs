@@ -32,16 +32,17 @@
 //! [`GapTypeSetting`] 全机型线上值一致，只有 `to_wire` / `from_wire`。
 
 use crate::command::ModelVersion;
+use snafu::Snafu;
 use std::str::FromStr;
 
-#[derive(thiserror::Error, Debug)]
+#[derive(Snafu, Debug)]
 pub enum PrintSettingError {
-    #[error("Invalid value `{0}`")]
-    InvalidU8(u8),
-    #[error("Invalid value `{0}`")]
-    InvalidU32(u32),
-    #[error("Invalid string `{0}`")]
-    InvalidString(String),
+    #[snafu(display("Invalid value `{value}`"))]
+    InvalidU8 { value: u8 },
+    #[snafu(display("Invalid value `{value}`"))]
+    InvalidU32 { value: u32 },
+    #[snafu(display("Invalid string `{value}`"))]
+    InvalidString { value: String },
 }
 
 /// 打印速度。
@@ -82,8 +83,8 @@ impl SpeedSetting {
     pub fn from_user(value: u8) -> Result<Self, PrintSettingError> {
         let wire = value
             .checked_sub(1)
-            .ok_or(PrintSettingError::InvalidU8(value))?;
-        Self::try_from(wire).map_err(|_| PrintSettingError::InvalidU8(value))
+            .ok_or(PrintSettingError::InvalidU8 { value })?;
+        Self::try_from(wire).map_err(|_| PrintSettingError::InvalidU8 { value })
     }
 
     /// 线上值
@@ -102,7 +103,7 @@ impl SpeedSetting {
             ModelVersion::V1 | ModelVersion::V2 => value,
             ModelVersion::V0 => value
                 .checked_sub(1)
-                .ok_or(PrintSettingError::InvalidU8(value))?,
+                .ok_or(PrintSettingError::InvalidU8 { value })?,
         };
         Self::try_from(wire)
     }
@@ -119,7 +120,7 @@ impl TryFrom<u8> for SpeedSetting {
             2 => Ok(Self::Normal),
             3 => Ok(Self::Speed3),
             4 => Ok(Self::Max),
-            _ => Err(Self::Error::InvalidU8(value)),
+            _ => Err(Self::Error::InvalidU8 { value }),
         }
     }
 }
@@ -134,7 +135,9 @@ impl FromStr for SpeedSetting {
             "max" => Ok(Self::Max),
             _ => value
                 .parse::<u8>()
-                .map_err(|_| Self::Err::InvalidString(value.to_string()))
+                .map_err(|_| Self::Err::InvalidString {
+                    value: value.to_string(),
+                })
                 .and_then(Self::from_user),
         }
     }
@@ -218,8 +221,8 @@ impl DarknessSetting {
     pub fn from_user(value: u8) -> Result<Self, PrintSettingError> {
         let wire = value
             .checked_sub(1)
-            .ok_or(PrintSettingError::InvalidU8(value))?;
-        Self::try_from(wire).map_err(|_| PrintSettingError::InvalidU8(value))
+            .ok_or(PrintSettingError::InvalidU8 { value })?;
+        Self::try_from(wire).map_err(|_| PrintSettingError::InvalidU8 { value })
     }
 
     /// 线上值
@@ -238,7 +241,7 @@ impl DarknessSetting {
             ModelVersion::V1 | ModelVersion::V2 => value,
             ModelVersion::V0 => value
                 .checked_sub(1)
-                .ok_or(PrintSettingError::InvalidU8(value))?,
+                .ok_or(PrintSettingError::InvalidU8 { value })?,
         };
         Self::try_from(wire)
     }
@@ -265,7 +268,7 @@ impl TryFrom<u8> for DarknessSetting {
             12 => Ok(Self::Darkness12),
             13 => Ok(Self::Darkness13),
             14 => Ok(Self::Max),
-            _ => Err(Self::Error::InvalidU8(value)),
+            _ => Err(Self::Error::InvalidU8 { value }),
         }
     }
 }
@@ -280,7 +283,9 @@ impl FromStr for DarknessSetting {
             "max" => Ok(Self::Max),
             _ => value
                 .parse::<u8>()
-                .map_err(|_| Self::Err::InvalidString(value.to_string()))
+                .map_err(|_| Self::Err::InvalidString {
+                    value: value.to_string(),
+                })
                 .and_then(Self::from_user),
         }
     }
@@ -326,7 +331,7 @@ impl TryFrom<u8> for GapTypeSetting {
             2 => Ok(Self::Gap),
             3 => Ok(Self::BlackMark),
             4 => Ok(Self::Transparent),
-            _ => Err(Self::Error::InvalidU8(value)),
+            _ => Err(Self::Error::InvalidU8 { value }),
         }
     }
 }

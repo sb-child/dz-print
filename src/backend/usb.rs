@@ -90,10 +90,12 @@ pub struct UsbTransport {
 impl UsbTransport {
     /// 按选择器打开并声明设备。
     pub fn open(selector: &UsbSelector) -> Result<Self, TransportError> {
-        let ctx = Context::new().map_err(|e| TransportError::Io(e.to_string()))?;
-        let devices = ctx
-            .devices()
-            .map_err(|e| TransportError::Io(e.to_string()))?;
+        let ctx = Context::new().map_err(|e| TransportError::Io {
+            message: e.to_string(),
+        })?;
+        let devices = ctx.devices().map_err(|e| TransportError::Io {
+            message: e.to_string(),
+        })?;
 
         for device in devices.iter() {
             let Ok(desc) = device.device_descriptor() else {
@@ -177,18 +179,18 @@ impl Transport for UsbTransport {
             return Ok(WriteOutcome::Written);
         }
 
-        let reports = usb_frame::encode_reports(cmd_area)
-            .map_err(|e| TransportError::Encode(e.to_string()))?;
+        let reports = usb_frame::encode_reports(cmd_area).map_err(|e| TransportError::Encode {
+            message: e.to_string(),
+        })?;
         for report in reports {
             let written = self
                 .handle
                 .write_interrupt(self.endpoints.ep_out, &report, self.write_timeout)
                 .map_err(map_usb_error)?;
             if written != report.len() {
-                return Err(TransportError::Io(format!(
-                    "short write: {written} of {} byte(s)",
-                    report.len()
-                )));
+                return Err(TransportError::Io {
+                    message: format!("short write: {written} of {} byte(s)", report.len()),
+                });
             }
         }
         Ok(WriteOutcome::Written)
@@ -202,8 +204,11 @@ impl Transport for UsbTransport {
         {
             Ok(0) => Ok(ReadStatus::Timeout),
             Ok(n) => {
-                let chunk = usb_frame::decode_report(&report[..n])
-                    .map_err(|e| TransportError::Protocol(e.to_string()))?;
+                let chunk = usb_frame::decode_report(&report[..n]).map_err(|e| {
+                    TransportError::Protocol {
+                        message: e.to_string(),
+                    }
+                })?;
                 out.extend_from_slice(chunk);
                 Ok(ReadStatus::Data)
             }
@@ -351,17 +356,23 @@ fn claim_interfaces(
         if handle.kernel_driver_active(iface).unwrap_or(false) {
             handle
                 .detach_kernel_driver(iface)
-                .map_err(|e| TransportError::Io(e.to_string()))?;
+                .map_err(|e| TransportError::Io {
+                    message: e.to_string(),
+                })?;
             if !detached.contains(&iface) {
                 detached.push(iface);
             }
         }
         handle
             .claim_interface(iface)
-            .map_err(|e| TransportError::Io(e.to_string()))?;
+            .map_err(|e| TransportError::Io {
+                message: e.to_string(),
+            })?;
         handle
             .set_alternate_setting(iface, setting)
-            .map_err(|e| TransportError::Io(e.to_string()))?;
+            .map_err(|e| TransportError::Io {
+                message: e.to_string(),
+            })?;
         claimed.push((iface, setting));
     }
     Ok(detached)
@@ -410,9 +421,13 @@ fn usb_name_matches(candidate: &str, expected: &str) -> bool {
 fn map_usb_error(e: rusb::Error) -> TransportError {
     match e {
         rusb::Error::NoDevice | rusb::Error::Pipe | rusb::Error::Io => {
-            TransportError::Disconnected(e.to_string())
+            TransportError::Disconnected {
+                message: e.to_string(),
+            }
         }
-        other => TransportError::Io(other.to_string()),
+        other => TransportError::Io {
+            message: other.to_string(),
+        },
     }
 }
 

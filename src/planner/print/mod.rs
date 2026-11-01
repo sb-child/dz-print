@@ -70,7 +70,7 @@ use crate::{
     command::req::{self, ReqTrait},
     rle::RleTransformError,
 };
-use thiserror::Error;
+use snafu::Snafu;
 
 mod rle;
 
@@ -274,19 +274,19 @@ pub fn into_reqs(commands: &[PrintCommand]) -> Vec<Box<dyn ReqTrait>> {
 }
 
 /// 打印计划错误。
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Snafu, PartialEq, Eq)]
 pub enum PrintError {
-    #[error("bitmap width {width} exceeds the {max}-dot limit of a single print line")]
+    #[snafu(display("bitmap width {width} exceeds the {max}-dot limit of a single print line"))]
     LineTooWide { width: usize, max: usize },
 
-    #[error("page line limit {lines} must be in 1..={max}")]
+    #[snafu(display("page line limit {lines} must be in 1..={max}"))]
     InvalidPageLines { lines: usize, max: usize },
 
-    #[error(transparent)]
-    Bitmap(#[from] BitmapError),
+    #[snafu(transparent)]
+    Bitmap { source: BitmapError },
 
-    #[error(transparent)]
-    Rle(#[from] RleTransformError),
+    #[snafu(transparent)]
+    Rle { source: RleTransformError },
 }
 
 /// 一页的打印计划。

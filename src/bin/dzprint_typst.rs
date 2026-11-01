@@ -464,13 +464,13 @@
 //     }
 // }
 
-// #[derive(thiserror::Error, Debug)]
+// #[derive(Snafu, Debug)]
 // enum PrintSettingError {
-//     #[error("Invalid value `{0}`")]
+//     #[snafu(display("Invalid value `{0}`"))]
 //     InvalidU8(u8),
-//     #[error("Invalid value `{0}`")]
+//     #[snafu(display("Invalid value `{0}`"))]
 //     InvalidU16(u16),
-//     #[error("Invalid string `{0}`")]
+//     #[snafu(display("Invalid string `{0}`"))]
 //     InvalidString(String),
 // }
 
@@ -499,7 +499,7 @@
 //             3 => Ok(Self::Normal),
 //             4 => Ok(Self::Speed3),
 //             5 => Ok(Self::Max),
-//             _ => Err(Self::Error::InvalidU8(value)),
+//             _ => Err(Self::Error::InvalidU8 { value }),
 //         }
 //     }
 // }
@@ -562,7 +562,7 @@
 //             13 => Ok(Self::Darkness12),
 //             14 => Ok(Self::Darkness13),
 //             15 => Ok(Self::Max),
-//             _ => Err(Self::Error::InvalidU8(value)),
+//             _ => Err(Self::Error::InvalidU8 { value }),
 //         }
 //     }
 // }

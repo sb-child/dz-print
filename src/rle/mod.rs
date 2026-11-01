@@ -41,7 +41,7 @@
 //! / [`BitmapLine::runs_bytes`](crate::bitmap::BitmapLine::runs_bytes)，它们是
 //! [`Run`] 的唯一来源。实现见 `rle/bit.rs` 和 `rle/byte.rs`。
 
-use thiserror::Error;
+use snafu::Snafu;
 
 mod bit;
 mod byte;
@@ -52,11 +52,11 @@ mod tests;
 pub use bit::{RLE4_INDEX_LUT, RLE5_INDEX_LUT, RLE6_INDEX_LUT, RleBitStream, RleBits};
 pub use byte::RleByteStream;
 
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Snafu, Debug, PartialEq, Eq)]
 pub enum RleTransformError {
-    #[error("Data is empty.")]
+    #[snafu(display("Data is empty."))]
     EmptyData,
-    #[error("Line width mismatch: expected {expected}, got {actual}.")]
+    #[snafu(display("Line width mismatch: expected {expected}, got {actual}."))]
     LineWidthMismatch { expected: usize, actual: usize },
 }
 

@@ -32,7 +32,7 @@
 //! 固件 `>= 20230605` 也接受 [`HighCommandMode::EnableAlt`]（`0x49`）；
 //! 设备结束激活后回的 [`HighCommandMode::Disabled`]（`0x80`）主机不应主动发送。
 
-use thiserror::Error;
+use snafu::Snafu;
 
 /// `0x80` 的线上参数值。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -69,16 +69,16 @@ impl TryFrom<u8> for HighCommandMode {
             0x49 => Ok(Self::EnableAlt),
             0x7f => Ok(Self::Enable),
             0x80 => Ok(Self::Disabled),
-            _ => Err(HighCommandError::InvalidMode(value)),
+            _ => Err(HighCommandError::InvalidMode { mode: value }),
         }
     }
 }
 
 /// `0x80` 参数错误。
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Snafu, PartialEq, Eq)]
 pub enum HighCommandError {
-    #[error("Invalid high command mode: {0:#04x}")]
-    InvalidMode(u8),
+    #[snafu(display("Invalid high command mode: {mode:#04x}"))]
+    InvalidMode { mode: u8 },
 }
 
 #[cfg(test)]
@@ -105,6 +105,6 @@ mod test {
     #[test]
     fn unknown_value_is_error() {
         let err = HighCommandMode::from_wire(0x01).unwrap_err();
-        assert_eq!(err, HighCommandError::InvalidMode(0x01));
+        assert_eq!(err, HighCommandError::InvalidMode { mode: 0x01 });
     }
 }

@@ -37,25 +37,25 @@
 //! [`Bitmap::into_bits`] 和 `deku::bitvec::BitVec<u8, Msb0>` 互相转换。
 
 use deku::bitvec::{BitField, BitSlice, BitVec, BitView, Msb0};
+use snafu::Snafu;
 use std::ops::Range;
-use thiserror::Error;
 
 /// 位图操作错误。
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Snafu, PartialEq, Eq)]
 pub enum BitmapError {
-    #[error("bitmap size must be non-zero, got {width} x {height}")]
+    #[snafu(display("bitmap size must be non-zero, got {width} x {height}"))]
     EmptySize { width: usize, height: usize },
 
-    #[error("bitmap size {width} x {height} overflows usize")]
+    #[snafu(display("bitmap size {width} x {height} overflows usize"))]
     SizeOverflow { width: usize, height: usize },
 
-    #[error("line {index} out of range, height = {height}")]
+    #[snafu(display("line {index} out of range, height = {height}"))]
     LineOutOfRange { index: usize, height: usize },
 
-    #[error("pixel {x} out of range, width = {width}")]
+    #[snafu(display("pixel {x} out of range, width = {width}"))]
     PixelOutOfRange { x: usize, width: usize },
 
-    #[error("length mismatch: expected {expected}, got {actual}")]
+    #[snafu(display("length mismatch: expected {expected}, got {actual}"))]
     LengthMismatch { expected: usize, actual: usize },
 }
 

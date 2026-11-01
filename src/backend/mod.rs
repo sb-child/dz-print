@@ -39,30 +39,30 @@
 pub mod usb;
 pub mod usb_frame;
 
-use thiserror::Error;
+use snafu::Snafu;
 
 /// 传输层错误。
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Snafu, PartialEq, Eq)]
 pub enum TransportError {
     /// 没有找到匹配的设备。
-    #[error("no matching device")]
+    #[snafu(display("no matching device"))]
     NotFound,
 
     /// 设备已经断开。
-    #[error("device disconnected: {0}")]
-    Disconnected(String),
+    #[snafu(display("device disconnected: {message}"))]
+    Disconnected { message: String },
 
     /// 底层读写失败。
-    #[error("transport io error: {0}")]
-    Io(String),
+    #[snafu(display("transport io error: {message}"))]
+    Io { message: String },
 
     /// 发送前的封包失败。
-    #[error("transport encode error: {0}")]
-    Encode(String),
+    #[snafu(display("transport encode error: {message}"))]
+    Encode { message: String },
 
     /// 收到的数据不符合传输层格式。
-    #[error("transport protocol error: {0}")]
-    Protocol(String),
+    #[snafu(display("transport protocol error: {message}"))]
+    Protocol { message: String },
 }
 
 /// 一次写入的结果。

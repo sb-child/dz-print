@@ -37,7 +37,7 @@ use crate::{
 use crossfire::{AsyncRx, MAsyncTx, MRx, TryRecvError, Tx, oneshot::TxOneshot, spsc};
 use mytm::{ProgressUpdater, TaskHandle, TaskManager};
 use pretty_hex::simple_hex;
-use thiserror::Error;
+use snafu::Snafu;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
@@ -55,13 +55,13 @@ pub(crate) struct WorkerProgress;
 /// worker 的退出原因。
 ///
 /// 单条命令的写失败通过 [`OutJob::ack`] 回给前台，不会作为 worker 的退出原因。
-#[derive(Debug, Error)]
+#[derive(Debug, Snafu)]
 pub(crate) enum WorkerError {
-    #[error("open device failed: {0}")]
-    Open(String),
-    #[error("read failed: {0}")]
-    Read(String),
-    #[error("device closed")]
+    #[snafu(display("open device failed: {message}"))]
+    Open { message: String },
+    #[snafu(display("read failed: {message}"))]
+    Read { message: String },
+    #[snafu(display("device closed"))]
     Closed,
 }
 
@@ -141,7 +141,9 @@ fn run(
         Ok(transport) => transport,
         Err(e) => {
             error!("open device failed: {e:?}");
-            return Err(WorkerError::Open(e.to_string()));
+            return Err(WorkerError::Open {
+                message: e.to_string(),
+            });
         }
     };
     // 唯一一次 `Pending -> Running`：`Device::ready()` 用它判断设备已打开。
@@ -195,7 +197,9 @@ fn run(
             }
             Err(e) => {
                 error!("read failed: {e:?}");
-                return Err(WorkerError::Read(e.to_string()));
+                return Err(WorkerError::Read {
+                    message: e.to_string(),
+                });
             }
         }
     }

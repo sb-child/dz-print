@@ -18,7 +18,6 @@ strum = { version = "0.28", features = ["derive"] }
 rayon = "1.12.0"
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = "0.7.20"
-thiserror = "2.0.21"
 anyhow = "1.0.104"
 clap = { version = "4.6", features = ["derive"] }
 typst = "0.15.1"
@@ -45,6 +44,7 @@ itoa = "1.0.18"
 encoding_rs = "0.8.44"
 crossfire = { version = "3.1.22", features = ["tokio"] }
 mytm = { git = "https://github.com/sb-child/mytm", rev = "fd1b520d30f40c17905e375c8d1f1e17d02eb7c8" }
+futures-util = "0.3.34"
 
 [profile.release]
 opt-level = 2

@@ -381,10 +381,12 @@ fn page_start_must_be_inside_the_bitmap() {
     let bm = Bitmap::new(8, 4).unwrap();
     assert_eq!(
         print_bitmap_page(&bm, 4, RleMode::Off, MAX_LINES_PER_PAGE),
-        Err(PrintError::Bitmap(BitmapError::LineOutOfRange {
-            index: 4,
-            height: 4,
-        }))
+        Err(PrintError::Bitmap {
+            source: BitmapError::LineOutOfRange {
+                index: 4,
+                height: 4,
+            },
+        })
     );
 
     let page = print_bitmap_page(&bm, 2, RleMode::Off, MAX_LINES_PER_PAGE).unwrap();

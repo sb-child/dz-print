@@ -55,11 +55,11 @@ use crate::{
     },
     planner::Assembler,
 };
+use snafu::Snafu;
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
-use thiserror::Error;
 
 /// 单块最大字节数。预算再大也按这个切，避免一次灌满设备缓冲。
 pub const MAX_CHUNK: usize = 9000;
@@ -115,11 +115,11 @@ pub enum ChunkDecision {
 }
 
 /// 流控错误。
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Snafu, PartialEq, Eq)]
 pub enum FlowError {
-    #[error("print job exceeded its {0:?} deadline")]
-    Timeout(Duration),
-    #[error("printer reported buffer status {status:#010x}")]
+    #[snafu(display("print job exceeded its {timeout:?} deadline"))]
+    Timeout { timeout: Duration },
+    #[snafu(display("printer reported buffer status {status:#010x}"))]
     BufferStatus { status: i32 },
 }
 
@@ -282,7 +282,7 @@ impl FlowPlanner {
     pub fn check_deadline(&self) -> Result<(), FlowError> {
         let elapsed = self.started.elapsed();
         if elapsed > self.config.job_timeout {
-            Err(FlowError::Timeout(elapsed))
+            Err(FlowError::Timeout { timeout: elapsed })
         } else {
             Ok(())
         }
@@ -451,7 +451,7 @@ mod tests {
             ..Default::default()
         });
         std::thread::sleep(Duration::from_millis(2));
-        assert!(matches!(p.check_deadline(), Err(FlowError::Timeout(_))));
+        assert!(matches!(p.check_deadline(), Err(FlowError::Timeout { .. })));
     }
 
     #[test]

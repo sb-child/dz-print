@@ -70,10 +70,11 @@ use crate::{
     planner::{Assembler, flow::FlowError, print::PrintError},
 };
 use crossfire::oneshot;
+use futures_util::FutureExt;
 use mytm::{TypedTaskState, TypedTaskStateRef};
 use pretty_hex::simple_hex;
+use snafu::{OptionExt, Snafu};
 use std::{collections::VecDeque, time::Duration};
-use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{debug, trace, warn};
 
@@ -81,13 +82,13 @@ mod print;
 mod worker;
 
 /// 响应接收错误。
-#[derive(Debug, Error)]
+#[derive(Debug, Snafu)]
 pub enum RecvError {
-    #[error("device thread is gone")]
+    #[snafu(display("device thread is gone"))]
     Closed,
-    #[error("timed out after {0:?} waiting for a response")]
-    Timeout(Duration),
-    #[error("front of the buffer is not '{expected}': {source}")]
+    #[snafu(display("timed out after {timeout:?} waiting for a response"))]
+    Timeout { timeout: Duration },
+    #[snafu(display("front of the buffer is not '{expected}': {source}"))]
     Parse {
         expected: &'static str,
         source: ParseRespError,
@@ -95,34 +96,34 @@ pub enum RecvError {
 }
 
 /// frontend 错误。
-#[derive(Debug, Error)]
+#[derive(Debug, Snafu)]
 pub enum FrontendError {
-    #[error("device thread is gone")]
+    #[snafu(display("device thread is gone"))]
     WorkerGone,
-    #[error("device is not ready: {0}")]
-    NotReady(String),
-    #[error("device write failed: {0}")]
-    Write(String),
-    #[error(transparent)]
-    Recv(#[from] RecvError),
-    #[error(transparent)]
-    Pack(#[from] PackReqError),
-    #[error(transparent)]
-    Print(#[from] PrintError),
-    #[error(transparent)]
-    Flow(#[from] FlowError),
-    #[error("bitmap width {width} does not fit in u16")]
+    #[snafu(display("device is not ready: {message}"))]
+    NotReady { message: String },
+    #[snafu(display("device write failed: {message}"))]
+    Write { message: String },
+    #[snafu(transparent)]
+    Recv { source: RecvError },
+    #[snafu(transparent)]
+    Pack { source: PackReqError },
+    #[snafu(transparent)]
+    Print { source: PrintError },
+    #[snafu(transparent)]
+    Flow { source: FlowError },
+    #[snafu(display("bitmap width {width} does not fit in u16"))]
     WidthOverflow { width: usize },
-    #[error("bitmap needs {pages} pages, the device supports at most 65534")]
+    #[snafu(display("bitmap needs {pages} pages, the device supports at most 65534"))]
     TooManyPages { pages: usize },
-    #[error("page has {lines} lines, does not fit in u16")]
+    #[snafu(display("page has {lines} lines, does not fit in u16"))]
     PageTooTall { lines: usize },
-    #[error("printer reported {0:?} while waiting for print completion")]
-    PrinterStatus(PrinterStatus),
-    #[error("print did not finish within {0:?}")]
-    PrintTimeout(Duration),
-    #[error("device worker did not stop within {0:?}")]
-    ShutdownTimeout(Duration),
+    #[snafu(display("printer reported {status:?} while waiting for print completion"))]
+    PrinterStatus { status: PrinterStatus },
+    #[snafu(display("print did not finish within {timeout:?}"))]
+    PrintTimeout { timeout: Duration },
+    #[snafu(display("device worker did not stop within {timeout:?}"))]
+    ShutdownTimeout { timeout: Duration },
 }
 
 /// 前台状态：响应队列 + 未取走的原始 payload。
@@ -312,13 +313,15 @@ impl Device {
             .await
         {
             TypedTaskState::Running(_) => Ok(()),
-            TypedTaskState::Failed(e) => Err(FrontendError::NotReady(e.to_string())),
-            TypedTaskState::Panicked(msg) => {
-                Err(FrontendError::NotReady(format!("worker panicked: {msg}")))
-            }
-            TypedTaskState::Pending => {
-                Err(FrontendError::NotReady("worker is still pending".into()))
-            }
+            TypedTaskState::Failed(e) => Err(FrontendError::NotReady {
+                message: e.to_string(),
+            }),
+            TypedTaskState::Panicked(msg) => Err(FrontendError::NotReady {
+                message: format!("worker panicked: {msg}"),
+            }),
+            TypedTaskState::Pending => Err(FrontendError::NotReady {
+                message: "worker is still pending".into(),
+            }),
             TypedTaskState::Cancelling | TypedTaskState::Cancelled => {
                 Err(FrontendError::WorkerGone)
             }
@@ -336,7 +339,7 @@ impl Device {
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), FrontendError> {
         self.worker.cancel();
         match tokio::time::timeout(timeout, self.worker.wait_terminal()).await {
-            Err(_) => Err(FrontendError::ShutdownTimeout(timeout)),
+            Err(_) => Err(FrontendError::ShutdownTimeout { timeout }),
             Ok(TypedTaskState::Failed(e)) => {
                 warn!("device worker stopped with error: {e}");
                 Ok(())
@@ -372,17 +375,18 @@ impl Device {
         trace!("write command area: {}", simple_hex(&cmd_area));
 
         let (ack_tx, ack_rx) = oneshot::oneshot();
+
         self.out_tx
             .send(worker::OutJob {
                 cmd_area,
                 ack: ack_tx,
             })
-            .await
-            .map_err(|_| FrontendError::WorkerGone)?;
+            .map(|r| r.ok().context(WorkerGoneSnafu))
+            .await?;
         ack_rx
-            .await
-            .map_err(|_| FrontendError::WorkerGone)?
-            .map_err(FrontendError::Write)
+            .map(|r| r.ok().context(WorkerGoneSnafu))
+            .await?
+            .map_err(|message| FrontendError::Write { message })
     }
 
     /// 等打印机把已经发送的页真正打完。
@@ -411,13 +415,13 @@ impl Device {
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                return Err(FrontendError::PrintTimeout(timeout));
+                return Err(FrontendError::PrintTimeout { timeout });
             }
             tokio::time::sleep(poll.min(remaining)).await;
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                return Err(FrontendError::PrintTimeout(timeout));
+                return Err(FrontendError::PrintTimeout { timeout });
             }
             self.try_send_batch(&[&req::status::Status {}]).await?;
 
@@ -442,7 +446,9 @@ impl Device {
             );
 
             if status.status.is_error() {
-                return Err(FrontendError::PrinterStatus(status.status));
+                return Err(FrontendError::PrinterStatus {
+                    status: status.status,
+                });
             }
             if matches!(
                 status.status,
@@ -498,7 +504,7 @@ impl Device {
             match tokio::time::timeout(timeout, state.rx.recv()).await {
                 Ok(Ok(payload)) => state.push(payload),
                 Ok(Err(_)) => return Err(RecvError::Closed),
-                Err(_) => return Err(RecvError::Timeout(timeout)),
+                Err(_) => return Err(RecvError::Timeout { timeout }),
             }
         }
     }
@@ -584,7 +590,7 @@ impl Device {
                         simple_hex(&raw.0)
                     );
                 }
-                Err(RecvError::Timeout(_)) => return Ok(None),
+                Err(RecvError::Timeout { .. }) => return Ok(None),
                 Err(e) => return Err(e),
             }
         }
@@ -749,7 +755,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(err, FrontendError::PrinterStatus(PrinterStatus::NoPaper)),
+            matches!(
+                err,
+                FrontendError::PrinterStatus {
+                    status: PrinterStatus::NoPaper
+                }
+            ),
             "{err:?}"
         );
     }
@@ -770,7 +781,7 @@ mod tests {
             .wait_for_print_done(Duration::from_millis(30))
             .await
             .unwrap_err();
-        assert!(matches!(err, FrontendError::PrintTimeout(_)), "{err:?}");
+        assert!(matches!(err, FrontendError::PrintTimeout { .. }), "{err:?}");
     }
 
     #[tokio::test]
@@ -810,7 +821,7 @@ mod tests {
 
         let err = device.ready().await.unwrap_err();
         assert!(
-            matches!(&err, FrontendError::NotReady(msg) if msg.contains("no matching device")),
+            matches!(&err, FrontendError::NotReady { message } if message.contains("no matching device")),
             "{err:?}"
         );
     }
@@ -954,7 +965,10 @@ mod tests {
             .shutdown(Duration::from_millis(20))
             .await
             .unwrap_err();
-        assert!(matches!(err, FrontendError::ShutdownTimeout(_)), "{err:?}");
+        assert!(
+            matches!(err, FrontendError::ShutdownTimeout { .. }),
+            "{err:?}"
+        );
     }
 
     /// 外层 `TaskManager::close()` 能停掉 worker，和 `shutdown()` 配合得到确定终点。

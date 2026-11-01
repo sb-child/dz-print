@@ -23,11 +23,11 @@ fn speed_user_and_wire() {
 
     assert!(matches!(
         SpeedSetting::from_user(0),
-        Err(PrintSettingError::InvalidU8(0))
+        Err(PrintSettingError::InvalidU8 { value: 0 })
     ));
     assert!(matches!(
         SpeedSetting::from_user(6),
-        Err(PrintSettingError::InvalidU8(6))
+        Err(PrintSettingError::InvalidU8 { value: 6 })
     ));
     assert!(SpeedSetting::try_from(5).is_err());
 }
@@ -65,11 +65,11 @@ fn darkness_user_and_wire() {
 
     assert!(matches!(
         DarknessSetting::from_user(0),
-        Err(PrintSettingError::InvalidU8(0))
+        Err(PrintSettingError::InvalidU8 { value: 0 })
     ));
     assert!(matches!(
         DarknessSetting::from_user(16),
-        Err(PrintSettingError::InvalidU8(16))
+        Err(PrintSettingError::InvalidU8 { value: 16 })
     ));
 }
 
