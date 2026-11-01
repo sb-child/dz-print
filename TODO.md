@@ -81,7 +81,7 @@
 - [x] Transport trait + USB 实现
   - `backend/mod.rs`：`Transport`（`write` / `read_chunk` / `reset`）、`WriteOutcome`、`ReadStatus`、`TransportError`
   - `write` 允许返回 `Blocked`，给 BLE 的 `ff03` 信用留口子，传输层不阻塞等读
-  - `backend/usb.rs`：`UsbTransport` / `UsbSelector`（设备名 / VID+PID / Auto），端点发现、声明接口、复用 `planner::usb` 报告切片
+  - `backend/usb.rs`：`UsbTransport` / `UsbSelector`（设备名 / VID+PID / Auto），端点发现、声明接口、复用 `backend::usb_frame` 报告切片
   - `reset` 后等 1 秒重新枚举
   - 对象安全用例；`cargo test --lib`: 313 passed
 
@@ -172,7 +172,7 @@ transport（USB HID / BLE 串口透传）
   - 不做业务判断；流控计划用 `planner::flow`，重试策略放上层
 - `transport`
   - 只负责字节读写，不解析命令
-  - USB：HID Interrupt + `planner::usb::encode_reports` / `decode_report`
+  - USB：HID Interrupt + `backend::usb_frame::encode_reports` / `decode_report`
   - BLE：`ff02` 写、`ff01` 响应、`ff03` 的 `01 01` 信用
 - 待定
   - 对外 API 用同步还是 async（tokio 已经在依赖里，默认 async？）
@@ -186,7 +186,7 @@ transport（USB HID / BLE 串口透传）
 
 - [x] 定义 `Transport` trait（write / read / reset）
 - [x] `Assembler` 暴露切帧接口：`decode_frame -> Option<(Vec<u8>, consumed)>`
-- [x] USB transport 接 `planner::usb`
+- [x] USB transport 接 `backend::usb_frame`（原 `planner::usb`）
 - [x] 定义 `frontend::Device` 对外接口和错误类型
 - [x] 设备 worker 线程 + 发送 FIFO + 原始 payload 响应队列
 - [ ] 严格请求 / 响应配对（当前按调用顺序取，允许换类型重试）
@@ -271,7 +271,7 @@ transport（USB HID / BLE 串口透传）
 - [x] `src/planner/assembler.rs`：`Assembler::encode` / `decode_one`（命令头 → 变长长度 → data → 校验和）
 - [x] `decode_one(buf) -> Option<(resp, consumed)>`：尾部半条返回 `None`，调用方保留缓冲区
 - [x] 用例：两条拼接、半条、坏校验、`0x88` 固定校验、2 字节长度字段
-- [x] USB `1e <len>` 入口：`src/planner/usb.rs`（封包 / 解包 / 64 字节 HID 报告切片）
+- [x] USB `1e <len>` 入口：`src/backend/usb_frame.rs`（原 `src/planner/usb.rs`，封包 / 解包 / 64 字节 HID 报告切片）
 
 ### P6 读请求补齐
 
@@ -382,18 +382,24 @@ transport（USB HID / BLE 串口透传）
 
 ### P1 拆分长文件 / 命名
 
-- [ ] `src/planner/print.rs`（含 `into_reqs`）拆成 `print/mod.rs`
-  （`RleMode` / `PrintCommand` / `PrintPage` / `PrintError`）、
-  `print/rle.rs`（`select_rle`）、`print/tests.rs`
-- [ ] `src/rle.rs` 拆成 `rle/mod.rs`、`rle/bit.rs`、`rle/byte.rs`、`rle/tests.rs`
-  - 补模块级 `//!`，链接 `rle.md`
-  - `TryInto<Vec<Run<_>>>`（`src/rle.rs:31-87`）改成命名方法 `runs_bits()` / `runs_bytes()`
-- [ ] 大文件的测试移到独立子模块：`bitmap.rs`（约 180 行测试）、
-  `varint.rs`（约 165）、`settings.rs`（约 130）、`assembler.rs`
-- [ ] `src/planner/usb.rs` 改名为 `transport/usb_frame.rs` 或
-  `backend/usb_frame.rs`，避免和 `backend/usb.rs` 混淆
-- [ ] 统一 RLE 命名：`RleMode::Bits4` / `RleKind::Bits4x` / `PrintCommand::Rle4x`
-  保留一套命名，或在文档里补类型对照表
+- [x] `src/planner/print.rs` 拆成 `print/mod.rs`（`RleMode` / `PrintCommand` /
+  `PrintPage` / `PrintError` / 分页 / `into_reqs`）、`print/rle.rs`（`select_rle`）、
+  `print/tests.rs`
+- [x] `src/rle.rs` 拆成 `rle/mod.rs`（`Run` / `RleTransformError`）、`rle/bit.rs`
+  （RLE4/5/6 码表、位级 X/D）、`rle/byte.rs`（字节级）、`rle/tests.rs`
+  - `rle/mod.rs` 补模块级 `//!` 和用法示例
+  - `TryInto<Vec<Run<_>>>` 改成命名方法 `BitmapLine::runs_bits()` / `runs_bytes()`，
+    不再有隐式 `try_into`
+- [x] 大文件的测试移到独立子模块
+  - `bitmap/`、`command/varint/`、`command/settings/`、`planner/assembler/`
+    都改成 `mod.rs` + `tests.rs`
+- [x] `src/planner/usb.rs` 改名为 `backend/usb_frame.rs`
+  - 避免和 `backend/usb.rs` 混淆；文档、README、`flow-control.md` 同步更新
+- [x] 统一 RLE 命名
+  - `RleKind::Bits4x` / `Bits5x` / `Bits6x`（以及 D 变体）改成
+    `Rle4x` / `Rle5x` / `Rle6x`，和 `PrintCommand::Rle4x` 对齐
+  - `RleMode::Bits4/5/6`（自动 X/D）保留原名，在 `planner::print` 文档里补
+    `RleMode` / `RleKind` / `PrintCommand` 的对照表
 
 ### P1 机械重复
 
@@ -451,7 +457,7 @@ transport（USB HID / BLE 串口透传）
 - [x] 日志降噪：`try_send_batch` 只记命令数和字节数，`send_cmd_area` 的完整
   hex 降到 trace
 - [x] 三处漏网的数组打印改 `simple_hex`：`planner/assembler.rs`、
-  `planner/usb.rs`、`command/resp/gap_length.rs`
+  `usb_frame.rs`、`command/resp/gap_length.rs`
 
 ### P2 死代码 / 依赖 / 文档
 
@@ -485,7 +491,7 @@ transport（USB HID / BLE 串口透传）
 
 ### 验收
 
-- [ ] `cargo test --lib` 不低于当前 345 passed
+- [ ] `cargo test --lib` 不低于当前 344 passed
 - [ ] `cargo clippy --all-targets` 无 dead_code / 未使用依赖警告
 - [ ] `cargo fmt -- --check` 通过
 - [ ] `cargo doc --no-deps --lib` 无警告

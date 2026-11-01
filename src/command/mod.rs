@@ -39,7 +39,7 @@
 //! ```
 //!
 //! 加上长度字段和校验和（命令区）用 [`crate::planner::Assembler`]；
-//! 加上 USB 外层用 [`crate::planner::usb`]。
+//! 加上 USB 外层用 [`crate::backend::usb_frame`]。
 
 pub mod envelope;
 pub mod high_command;

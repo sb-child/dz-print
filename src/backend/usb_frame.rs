@@ -15,23 +15,23 @@
 //! - 一份 HID 报告固定 64 字节：1 字节报告号 + 63 字节数据。数据区以长度字段开头，所以一份报告最多放 62 字节命令区（此时长度字段固定为 1 字节）。
 //! - 命令区超过 62 字节时按 62 字节切片，每片各自带 `1e <长度>`；报告尾部补 `0x00` 到 64 字节。接收方按长度字段裁掉补齐的零。
 //!
-//! 命令区本身的格式见 [`Assembler`](super::Assembler)。BLE 是串口透传，没有这层
+//! 命令区本身的格式见 [`Assembler`](crate::planner::Assembler)。BLE 是串口透传，没有这层
 //! USB 包头，本模块只用于 USB。
 //!
 //! # 用法
 //!
 //! ```
-//! use dz_print::planner::usb::{self, REPORT_SIZE};
+//! use dz_print::backend::usb_frame::{self, REPORT_SIZE};
 //!
 //! // 命令区（Assembler::encode 的输出）
 //! let command_area = vec![0x1f, 0x70, 0x00, 0x8f];
 //!
 //! // 发：一刀切成 64 字节报告
-//! let reports: Vec<[u8; REPORT_SIZE]> = usb::encode_reports(&command_area)?;
+//! let reports: Vec<[u8; REPORT_SIZE]> = usb_frame::encode_reports(&command_area)?;
 //! assert_eq!(reports.len(), 1);
 //!
 //! // 收：去掉 `1e <长度>` 和尾部补零
-//! let payload = usb::decode_report(&reports[0])?;
+//! let payload = usb_frame::decode_report(&reports[0])?;
 //! assert_eq!(payload, command_area.as_slice());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```

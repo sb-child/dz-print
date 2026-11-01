@@ -19,7 +19,7 @@
 //!
 //! let cmd = req::print_line_rle::PrintLineRle {
 //!     repeats: 0,
-//!     kind: RleKind::Bits5x,
+//!     kind: RleKind::Rle5x,
 //!     count: 2,                    // 符号数
 //!     data: vec![0x1F, 0xC0],      // MSB-first 位流
 //! };
@@ -54,17 +54,17 @@ pub enum RleKind {
     #[default]
     Byte,
     /// 4 位符号，直接编码当前行：`1f 3a`。
-    Bits4x,
+    Rle4x,
     /// 4 位符号，先和上一行 XOR：`1f 3b`。
-    Bits4d,
+    Rle4d,
     /// 5 位符号，直接编码当前行：`1f 2c`。
-    Bits5x,
+    Rle5x,
     /// 5 位符号，先和上一行 XOR：`1f 2d`。
-    Bits5d,
+    Rle5d,
     /// 6 位符号，直接编码当前行：`1f 3c`。
-    Bits6x,
+    Rle6x,
     /// 6 位符号，先和上一行 XOR：`1f 3d`。
-    Bits6d,
+    Rle6d,
 }
 
 /// 打印一行(RLE 编码)。
@@ -109,7 +109,7 @@ impl ReqTrait for PrintLineRle {
                     cmd_name: "PrintLineRleByteV2Tl",
                 })?
             }
-            RleKind::Bits4x => {
+            RleKind::Rle4x => {
                 let cmd = PrintLineRle4xV2Tl {
                     rle_runs_count: var_count(self.count, "rle_runs_count")?,
                     data: self.data.clone(),
@@ -119,7 +119,7 @@ impl ReqTrait for PrintLineRle {
                     cmd_name: "PrintLineRle4xV2Tl",
                 })?
             }
-            RleKind::Bits4d => {
+            RleKind::Rle4d => {
                 let cmd = PrintLineRle4dV2Tl {
                     rle_runs_count: var_count(self.count, "rle_runs_count")?,
                     data: self.data.clone(),
@@ -129,7 +129,7 @@ impl ReqTrait for PrintLineRle {
                     cmd_name: "PrintLineRle4dV2Tl",
                 })?
             }
-            RleKind::Bits5x => {
+            RleKind::Rle5x => {
                 let cmd = PrintLineRle5xV2Tl {
                     rle_runs_count: var_count(self.count, "rle_runs_count")?,
                     data: self.data.clone(),
@@ -139,7 +139,7 @@ impl ReqTrait for PrintLineRle {
                     cmd_name: "PrintLineRle5xV2Tl",
                 })?
             }
-            RleKind::Bits5d => {
+            RleKind::Rle5d => {
                 let cmd = PrintLineRle5dV2Tl {
                     rle_runs_count: var_count(self.count, "rle_runs_count")?,
                     data: self.data.clone(),
@@ -149,7 +149,7 @@ impl ReqTrait for PrintLineRle {
                     cmd_name: "PrintLineRle5dV2Tl",
                 })?
             }
-            RleKind::Bits6x => {
+            RleKind::Rle6x => {
                 let cmd = PrintLineRle6xV2Tl {
                     rle_runs_count: var_count(self.count, "rle_runs_count")?,
                     data: self.data.clone(),
@@ -159,7 +159,7 @@ impl ReqTrait for PrintLineRle {
                     cmd_name: "PrintLineRle6xV2Tl",
                 })?
             }
-            RleKind::Bits6d => {
+            RleKind::Rle6d => {
                 let cmd = PrintLineRle6dV2Tl {
                     rle_runs_count: var_count(self.count, "rle_runs_count")?,
                     data: self.data.clone(),
@@ -220,12 +220,12 @@ mod tests {
                 vec![0xC2, 0xAA, 0xC1],
                 "1f 29 03 c2 aa c1 a6",
             ),
-            (RleKind::Bits4x, vec![0xAE], "1f 3a 02 ae 15"),
-            (RleKind::Bits4d, vec![0xAE], "1f 3b 02 ae 14"),
-            (RleKind::Bits5x, vec![0x1F, 0xC0], "1f 2c 02 1f c0 f2"),
-            (RleKind::Bits5d, vec![0x1F, 0xC0], "1f 2d 02 1f c0 f1"),
-            (RleKind::Bits6x, vec![0x3F, 0xF0], "1f 3c 02 3f f0 92"),
-            (RleKind::Bits6d, vec![0x3F, 0xF0], "1f 3d 02 3f f0 91"),
+            (RleKind::Rle4x, vec![0xAE], "1f 3a 02 ae 15"),
+            (RleKind::Rle4d, vec![0xAE], "1f 3b 02 ae 14"),
+            (RleKind::Rle5x, vec![0x1F, 0xC0], "1f 2c 02 1f c0 f2"),
+            (RleKind::Rle5d, vec![0x1F, 0xC0], "1f 2d 02 1f c0 f1"),
+            (RleKind::Rle6x, vec![0x3F, 0xF0], "1f 3c 02 3f f0 92"),
+            (RleKind::Rle6d, vec![0x3F, 0xF0], "1f 3d 02 3f f0 91"),
         ];
         for (kind, data, expected) in cases {
             let cmd = PrintLineRle {
@@ -246,7 +246,7 @@ mod tests {
     fn v2_repeats_expand_to_0x2e() {
         let cmd = PrintLineRle {
             repeats: 3,
-            kind: RleKind::Bits4x,
+            kind: RleKind::Rle4x,
             count: 2,
             data: vec![0xAE],
         };
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn v1_and_v0_are_unsupported() {
         let cmd = PrintLineRle {
-            kind: RleKind::Bits4x,
+            kind: RleKind::Rle4x,
             count: 2,
             data: vec![0xAE],
             ..Default::default()
@@ -275,7 +275,7 @@ mod tests {
     #[test]
     fn empty_data_is_unsupported() {
         let cmd = PrintLineRle {
-            kind: RleKind::Bits4x,
+            kind: RleKind::Rle4x,
             count: 0,
             data: Vec::new(),
             ..Default::default()
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn count_above_varint_max_is_rejected() {
         let cmd = PrintLineRle {
-            kind: RleKind::Bits6x,
+            kind: RleKind::Rle6x,
             count: 4_194_304,
             data: vec![0xFF],
             ..Default::default()

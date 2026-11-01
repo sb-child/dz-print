@@ -12,7 +12,7 @@
 //!   `*_template` 只描述线上字节，[`command::varint`] 是变长整数，
 //!   [`command::settings`] 是速度 / 浓度 / 纸张类型等设置值。
 //! - [`planner`]：把命令编码成字节。`assembler` 补长度和校验和，
-//!   [`planner::usb`] 再切成 64 字节 HID 报告，[`planner::flow`] 决定什么时候发、
+//!   [`backend::usb_frame`] 再切成 64 字节 HID 报告，[`planner::flow`] 决定什么时候发、
 //!   每次发多少。
 //! - [`bitmap`] / [`rle`] / [`raster`]：位图、RLE 编码和图像抖动。
 //! - [`backend`]：真正读写设备的 [`Transport`](backend::Transport)（目前是 USB）。

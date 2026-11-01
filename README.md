@@ -67,8 +67,8 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
   - `dzprint` 打印图片、`dzprint_typst` 打印 Typst 文档：`[旧]` 实现整体被注释，目前 `main` 是空的
   - `dzcli` CLI 雏形（只有 `clap` 参数骨架，功能还没接）
   - `test_usb` `[新]` 真机 USB 测试平台：clap 参数选择设备 / `--phase` / `--rle` / `--rows`，覆盖查询 / 流控 / `0x80` 激活 / `0x7f` 探测 / 打印测试
-- `bitmap.rs` `[新]` 以 bit 为单位的位图行类型，供 RLE 和命令层使用
-- `rle.rs` `[新]` 位图行的行程编码（RLE）：RLE4 / RLE5 / RLE6 码表，位级 X/D 与字节级编码器
+- `bitmap/` `[新]` 以 bit 为单位的位图（`mod.rs`），行视图供 RLE 和命令层使用；测试在 `tests.rs`
+- `rle/` `[新]` 位图行的行程编码：`bit.rs`（RLE4 / RLE5 / RLE6 码表和位级 X/D）、`byte.rs`（字节级）、`mod.rs`（游程拆分 `runs_bits` / `runs_bytes`）
 - `command/` 通讯协议
   - `mod.rs` 模块入口；机型版本 `ModelVersion`（`V0` / `V1` / `V2`）；校验码计算 `calculate_checksum`
   - `envelope.rs` `[新]` 命令载荷的封包类型：自动校验和 / 固定 `0x88` / 手动打包 / 裸字节
@@ -77,19 +77,19 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
   - `req_template/` `[新]` 每个请求的字节布局模板（deku），同一命令的不同机型写法各一个模板
   - `resp/` `[新]` 响应对象：实现 `RespTrait`，把模板解析结果按机型归一化
   - `resp_template/` `[新]` 每个响应的字节布局模板（deku），保留 `magic` 做命令头校验
-  - `varint.rs` `[新]` 协议里的 4 种变长整数编解码
-  - `settings.rs` `[新]` 打印设置（速度、浓度、纸张间隔类型）枚举和字符串解析
+  - `varint/` `[新]` 协议里的 4 种变长整数编解码（`mod.rs` + `tests.rs`）
+  - `settings/` `[新]` 打印设置（速度、浓度、纸张间隔类型）枚举和字符串解析（`mod.rs` + `tests.rs`）
   - `status.rs` `[新]` `0x70` 打印机状态码 `PrinterStatus`（25 个已知线上值 + `Unknown(raw)`）。`Unknown(0x0c..)` 仍然按错误处理
 - `derive_alias.rs` `[新]` deku derive 的别名 `CmdTemplate` / `RespTemplate`
 - `backend/` `[新]` 传输层
   - `mod.rs`：`Transport` trait（`write` / `read_chunk` / `reset`），只搬字节，不解析命令
-  - `usb.rs`：`UsbTransport` / `UsbSelector`，`rusb` 中断端点读写，按 `planner::usb` 切 HID 报告
+  - `usb.rs`：`UsbTransport` / `UsbSelector`，`rusb` 中断端点读写
+  - `usb_frame.rs`：USB 外层 `1e <长度>` 的打包 / 解包，按 64 字节 HID 报告切片（原 `planner/usb.rs`）
 - `raster.rs` `[新]` 图像 → 位图的抖动转换：灰度图 / `tiny-skia` 画布 → `bitmap::Bitmap`
 - `planner/` `[新]` 命令组装和传输层封包
-  - `assembler.rs`：`Assembler`，按机型把一组 `ReqTrait` 编码成命令区，再切帧解码成 `RespTrait`
+  - `assembler/`：`Assembler`，按机型把一组 `ReqTrait` 编码成命令区，再切帧解码成 `RespTrait`（`mod.rs` + `tests.rs`）
   - `flow.rs`：`FlowPlanner`，`0x77` 预算感知的分块发送计划（9000 字节分块、50 ms 间隔、超时退化），不做 IO
-  - `print.rs`：位图 → 打印计划；`into_reqs` 把 `PrintCommand` 翻译成命令层请求对象
-  - `usb.rs`：USB 外层 `1e <长度>` 的打包 / 解包，以及按 64 字节 HID 报告切片
+  - `print/`：位图 → 打印计划。`mod.rs` 放 `RleMode` / `PrintCommand` / 分页 / `into_reqs`，`rle.rs` 放 `select_rle`，测试在 `tests.rs`
 - `frontend/` `[新]` 设备 frontend
   - `mod.rs`：`Device` / `DeviceConfig` / `RecvError` / `FrontendError`，批量发送、按类型接收、`recv_matching`、`wait_for_print_done`、`shutdown`
   - `worker.rs`：阻塞线程里的 USB 读写、命令区切帧、原始 payload 队列；worker 由 `mytm::TaskManager` 托管，可取消、可等待线程真正退出。三个通道都用 `crossfire`：写任务 `mpmc::bounded_async_blocking(8)`（异步发送端、阻塞接收端）、payload `spsc::unbounded_async`（阻塞发送端、异步接收端）、单条写任务 ack `crossfire::oneshot`

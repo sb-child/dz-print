@@ -7,7 +7,7 @@
 //! - [`assembler`]：命令区的编码 / 切帧解码（BLE 帧格式）。
 //! - [`flow`]：预算感知的分块发送计划（`0x77` 预算、9000 字节分块、超时退化）。
 //! - `print`：位图到打印命令参数的翻译，按 `0x26` 的行数上限切页。
-//! - [`usb`]：USB 外层 `1e <长度>` 的打包 / 解包和 HID 报告切片。
+//! - [`crate::backend::usb_frame`]：USB 外层 `1e <长度>` 的打包 / 解包和 HID 报告切片。
 //!
 //! BLE 是串口透传，没有外层包头，直接使用 [`assembler`] 的输出（流控在链路层）。
 //!
@@ -17,14 +17,14 @@
 //!
 //! ```
 //! use dz_print::command::{ModelVersion, req};
-//! use dz_print::planner::{Assembler, usb};
+//! use dz_print::{backend::usb_frame, planner::Assembler};
 //!
 //! // 1. 编码命令区（含长度字段和校验和）
 //! let area = Assembler::new(ModelVersion::V2).encode(&[&req::status::Status {}])?;
 //! assert_eq!(area, vec![0x1f, 0x70, 0x00, 0x8f]);
 //!
 //! // 2. USB 链路：切成 HID 报告
-//! let reports = usb::encode_reports(&area)?;
+//! let reports = usb_frame::encode_reports(&area)?;
 //! assert_eq!(reports.len(), 1);
 //!
 //! // 3. 收到响应后切帧并解析
@@ -43,6 +43,5 @@
 pub mod assembler;
 pub mod flow;
 pub mod print;
-pub mod usb;
 
 pub use assembler::{Assembler, DecodeError};

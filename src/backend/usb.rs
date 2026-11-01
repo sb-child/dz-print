@@ -5,8 +5,8 @@
 //! USB HID 中断端点传输。
 //!
 //! 选设备 → 找同一接口上的 IN/OUT 中断端点对 → 声明接口。写入时用
-//! [`crate::planner::usb::encode_reports`] 按 64 字节报告切片，读取时用
-//! [`crate::planner::usb::decode_report`] 去掉 `1e <长度>` 包头和补零。
+//! [`crate::backend::usb_frame::encode_reports`] 按 64 字节报告切片，读取时用
+//! [`crate::backend::usb_frame::decode_report`] 去掉 `1e <长度>` 包头和补零。
 //!
 //! # 用法
 //!
@@ -42,8 +42,8 @@ use rusb::{Context, Device, DeviceHandle, Direction, TransferType, UsbContext};
 use tracing::{debug, info, warn};
 
 use crate::{
+    backend::usb_frame,
     backend::{ReadStatus, Transport, TransportError, WriteOutcome},
-    planner::usb,
 };
 
 /// 德佟的 USB VID。
@@ -179,8 +179,8 @@ impl Transport for UsbTransport {
             return Ok(WriteOutcome::Written);
         }
 
-        let reports =
-            usb::encode_reports(cmd_area).map_err(|e| TransportError::Encode(e.to_string()))?;
+        let reports = usb_frame::encode_reports(cmd_area)
+            .map_err(|e| TransportError::Encode(e.to_string()))?;
         for report in reports {
             let written = self
                 .handle
@@ -197,14 +197,14 @@ impl Transport for UsbTransport {
     }
 
     fn read_chunk(&mut self, out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
-        let mut report = [0u8; usb::REPORT_SIZE];
+        let mut report = [0u8; usb_frame::REPORT_SIZE];
         match self
             .handle
             .read_interrupt(self.endpoints.ep_in, &mut report, self.read_timeout)
         {
             Ok(0) => Ok(ReadStatus::Timeout),
             Ok(n) => {
-                let chunk = usb::decode_report(&report[..n])
+                let chunk = usb_frame::decode_report(&report[..n])
                     .map_err(|e| TransportError::Protocol(e.to_string()))?;
                 out.extend_from_slice(chunk);
                 Ok(ReadStatus::Data)

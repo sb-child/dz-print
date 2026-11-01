@@ -82,7 +82,7 @@
 
 USB 帧再套一层 `1e <命令区长度:变长> <命令区...>`；BLE 直接以命令区起始。
 `0x1e` 在 DP305P 上就是 HID 的 Report ID（见 `protocol.md`）。HID 报告固定
-64 字节，装不下整段命令区时按 62 字节切片，实现在 `src/planner/usb.rs`。
+64 字节，装不下整段命令区时按 62 字节切片，实现在 `src/backend/usb_frame.rs`（原 `src/planner/usb.rs`）。
 BLE 是串口透传，没有这层包头，但链路上还有一套 `ff03` 的 `01 01` 写信用流控，
 细节见 `protocol.md` 的「蓝牙 (BLE) 传输」。
 
@@ -433,7 +433,7 @@ async fn pump(link: &mut Link, mut data: &[u8]) -> Result<()> {
 | -------------------------- | ---------------------------------------------------------------- |
 | `src/planner/flow.rs`      | `FlowPlanner`：预算 / 分块 / 间隔 / 超时退化，纯计划不做 IO     |
 | `src/planner/assembler.rs` | `Assembler`：命令区编码 / 切帧解码，含校验和                     |
-| `src/planner/usb.rs`       | USB 外层 `1e <长度>` 封包 / 解包，按 64 字节 HID 报告切片        |
+| `src/backend/usb_frame.rs` | USB 外层 `1e <长度>` 封包 / 解包，按 64 字节 HID 报告切片        |
 | `src/backend/mod.rs`       | `Transport` trait：只搬字节，不做节流；USB 实现在 `backend/usb.rs` |
 | `src/command/req/`         | 命令请求对象，只负责编码，不负责节奏                             |
 

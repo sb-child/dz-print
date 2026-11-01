@@ -37,6 +37,7 @@
 //! 真机 USB 用 [`usb::UsbTransport`]，见该模块文档。
 
 pub mod usb;
+pub mod usb_frame;
 
 use thiserror::Error;
 
