@@ -464,10 +464,10 @@
   - 帧载荷固定 16 字节，按 4 × `u32BE` 切分
   - DP27P (USB, 软件版本 `3.1.20230620`):
     `1F 73 00 06 DE 9E 00 0D C3 34 00 04 D8 B8 00 00 05 06`
-    - workLines = 450206
-    - printLines = 901940
-    - nullLines = 317624
-    - printPages = 1286
+    - workLines = 450206 (走纸会增加这个值，打印不算在里面)
+    - printLines = 901940 (打印一行会增加这个值)
+    - nullLines = 317624 (打印一行空行会增加这个值)
+    - printPages = 1286 (打印完一页会增加这个值)
   - 旧样本: `00, 01, b6, 4b, 00, 01, 76, ce, 00, 00, 71, 58, 00, 00, 00, de`
   - 两批样本都不满足 `workLines == printLines + nullLines`；新样本里
     `printLines` 还约是 `workLines` 的 2 倍。字段顺序或语义还没定，当前只按
