@@ -9,7 +9,7 @@
 //!
 //! 规则来自 `flow-control.md`：
 //!
-//! - 预算小于剩余总量时查 `0x77`（同一帧带上 `0x70`）；
+//! - 当前预算花完（`== 0`）时查 `0x77`（同一帧带上 `0x70`）；
 //! - 单块取 `min(预算, MAX_CHUNK)`，块边界落在命令边界上，不切一条命令；
 //! - 预算不足 `max_chunk` 时块间等 `chunk_gap`；
 //! - `0x77` 超时按 `fallback_budget` 保守推进；
@@ -168,8 +168,12 @@ impl FlowPlanner {
             return ChunkDecision::Send(chunk);
         }
 
-        // SDK 的条件是「预算 < 剩余总量」，不是「预算 == 0」。
-        if self.budget < self.remaining {
+        // 先把已经拿到的预算花完，再补查询。
+        //
+        // 不能写成「预算 < 剩余总量就查询」：长任务里剩余总量几乎总是大于单次
+        // 预算，那样会在拿到预算后立刻又去查询，永远不发数据。预算表示的是
+        // “现在还能写多少”，花完（`== 0`）再查即可。
+        if self.budget == 0 {
             self.querying = true;
             self.report.budget_queries += 1;
             return ChunkDecision::QueryBudget;
@@ -309,12 +313,16 @@ mod tests {
     }
 
     #[test]
-    fn asks_for_budget_when_budget_is_less_than_pending() {
+    fn spends_budget_before_querying_again() {
         let mut p = planner();
         for _ in 0..20 {
             p.push(vec![0u8; 1000]);
         }
         p.on_buffer_size(&buffer(10)); // 5000 < 20000
+
+        // 预算不够整页，但足够发一块：先把这 5000 发完。
+        assert!(matches!(p.step(), ChunkDecision::Send(c) if c.len() == 5000));
+        // 花完才补查询。
         assert!(matches!(p.step(), ChunkDecision::QueryBudget));
         // 响应到达前不重复查询。
         assert!(matches!(p.step(), ChunkDecision::Wait));

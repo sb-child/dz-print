@@ -24,7 +24,7 @@ pub mod status;
 
 #[cfg(test)]
 mod test_toolkits {
-    use pretty_hex::PrettyHex as _;
+    use pretty_hex::simple_hex;
 
     pub fn hexdec(s: &str) -> Vec<u8> {
         s.split(&[' ', ',', '\t'])
@@ -43,7 +43,7 @@ mod test_toolkits {
             rest.is_empty(),
             "DekuRead: {} trailing byte(s): {}",
             rest.len(),
-            rest.hex_dump()
+            simple_hex(&rest)
         );
         assert_eq!(bits, 0, "DekuRead: trailing {} bit(s)", bits);
         tl
@@ -54,8 +54,8 @@ mod test_toolkits {
             enc,
             exp,
             "Test Failed:\nenc={}\nexp={}",
-            enc.hex_dump(),
-            exp.hex_dump()
+            simple_hex(&enc),
+            simple_hex(&exp)
         );
     }
 }

@@ -35,7 +35,7 @@ pub mod total_lines;
 
 #[cfg(test)]
 mod test_toolkits {
-    use pretty_hex::PrettyHex as _;
+    use pretty_hex::simple_hex;
     pub fn hexdec(s: &str) -> Vec<u8> {
         s.split(&[' ', ',', '\t'])
             .filter(|c| c.len() == 2)
@@ -56,8 +56,8 @@ mod test_toolkits {
             enc,
             exp,
             "Test Failed:\nenc={}\nexp={}",
-            enc.hex_dump(),
-            exp.hex_dump()
+            simple_hex(&enc),
+            simple_hex(&exp)
         );
     }
 }

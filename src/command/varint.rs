@@ -23,6 +23,7 @@
 //! `0xC0|xxx` 指的是两个字节取或。
 
 use deku::{DekuError, DekuReader, DekuWriter, ctx::Order, no_std_io, reader::Reader};
+use pretty_hex::simple_hex;
 
 macro_rules! impl_var_int {
     (
@@ -79,11 +80,12 @@ macro_rules! impl_var_int {
                         reader.read_bytes(len - 1, &mut buf[1..len], Order::Msb0)?;
                     }
 
-                    let (v, used) = mode.decode(&buf[..len]).ok_or_else(|| {
+                    let bytes = &buf[..len];
+                    let (v, used) = mode.decode(bytes).ok_or_else(|| {
                         DekuError::Parse(
                             format!(
-                                "Failed to decode {mode:?} from {len} byte(s): {:02X?}",
-                                &buf[..len]
+                                "Failed to decode {mode:?} from {len} byte(s): {}",
+                                simple_hex(&bytes)
                             )
                             .into(),
                         )

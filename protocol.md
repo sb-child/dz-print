@@ -159,6 +159,9 @@
     - `v2`机型: `1f 26 <Lines:变长>` `rust:TotalLinesV2Tl` [代码](src/command/req_template/total_lines.rs)
     - `v1`机型: `1f 26 <Lines:C0Be16>` `rust:TotalLinesV1Tl` [代码](src/command/req_template/total_lines.rs)
     - `v0`机型: 没有这种命令。
+    - `Lines` 上限：`v2` 为 `16383`，`v1` 为 `65535`。高于 `16383` 的位图必须拆成多页：
+      每页重新发 `0x20` / `0x26` / `0x28`，`page_idx` 递增，页间保持 `Continuous`。
+      `planner::print::print_bitmap_pages` 负责按 `16383` 行切页。
   - `0x27` 设置标签宽度 `rust:PageWidthV2V1Tl` [代码](src/command/req_template/page_width.rs)
     - `v2,v1`机型: `1f 27 <Width>`: `Width` = (宽(dot)+7)/8, 1字节。
     - `v0`机型: 见 `1a 37`。

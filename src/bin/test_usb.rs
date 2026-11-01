@@ -19,6 +19,7 @@
 use std::{collections::VecDeque, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
+use pretty_hex::simple_hex;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tracing::{debug, error, info, trace, warn};
 
@@ -35,11 +36,12 @@ use dz_print::{
         req::{self, PackReqError, ReqTrait},
         resp::{self, ParseRespError, RespTrait},
         settings::GapTypeSetting,
+        status::PrinterStatus,
     },
     planner::{
         Assembler,
         flow::{ChunkDecision, FlowPlanner, FlowReport},
-        print::{PrintCommand, RleMode, print_bitmap},
+        print::{MAX_LINES_PER_PAGE, PrintCommand, RleMode, print_bitmap_page},
     },
 };
 
@@ -49,6 +51,14 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// 被动监听 `0x7b` 的时间。
 const PUSH_TIMEOUT: Duration = Duration::from_secs(1);
+/// 等打印完成时轮询 `0x70` 的间隔。
+const PRINT_POLL: Duration = Duration::from_millis(100);
+/// `EndPage` 后允许的启动宽限期；期间即使状态是空闲也继续等，避免误判。
+const PRINT_START_GRACE: Duration = Duration::from_secs(1);
+/// 至少连续几次空闲才认为打印完成。
+const PRINT_IDLE_CONFIRM: usize = 2;
+/// 等打印完成的总超时。
+const PRINT_DONE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// 后台线程收到的写任务。
 struct OutJob {
@@ -206,8 +216,8 @@ impl TestFrontend {
         debug!(
             commands = cmds.len(),
             bytes = cmd_area.len(),
-            "encoded command area: {:02X?}",
-            cmd_area
+            "encoded command area: {}",
+            simple_hex(&cmd_area)
         );
         self.send_cmd_area(cmd_area).await
     }
@@ -219,7 +229,8 @@ impl TestFrontend {
         }
         debug!(
             bytes = cmd_area.len(),
-            "write command area: {:02X?}", cmd_area
+            "write command area: {}",
+            simple_hex(&cmd_area)
         );
 
         let (ack_tx, ack_rx) = oneshot::channel();
@@ -237,84 +248,180 @@ impl TestFrontend {
         Ok(())
     }
 
-    /// 用 [`FlowPlanner`] 打印一整页位图。
+    /// 用 [`FlowPlanner`] 打印一整张位图。
     ///
-    /// 会真的驱动打印头：先发 `StartPage` + `TotalLines`，再按预算分块发送
-    /// 位图行，最后 `EndPage`。预算不足时发 `0x70` + `0x77`，`0x77` 超时
-    /// 退化到固定 8 KiB。
-    pub async fn print_bitmap_page(&self, bm: &Bitmap, rle: RleMode) -> Result<FlowReport> {
-        let commands = print_bitmap(bm, rle)?;
-        let reqs = print_commands_to_reqs(&commands);
-
+    /// 位图高于 [`MAX_LINES_PER_PAGE`] 时自动拆成多页：每页发
+    /// `StartPage` + `TotalLines`，再按预算分块发送行命令，最后 `EndPage`。
+    /// 页与页之间沿用 `Continuous`，不额外走纸。预算不足时发 `0x70` + `0x77`，
+    /// `0x77` 超时退化到固定 8 KiB。
+    pub async fn print_bitmap_job(&self, bm: &Bitmap, rle: RleMode) -> Result<FlowReport> {
         let width = u16::try_from(bm.width()).context("bitmap too wide")?;
-        let lines = u16::try_from(bm.height()).context("bitmap too tall")?;
+        let page_count = bm.height().div_ceil(MAX_LINES_PER_PAGE);
 
-        self.try_send_batch(&[
-            &req::start_page::StartPage {
-                page_idx: 1,
-                print_sep_line: false,
-                data_pixel_width: width,
-                printer_gap_type: GapTypeSetting::Continuous,
-                printer_gap_length: 0,
-            },
-            &req::total_lines::TotalLines { lines },
-        ])
-        .await?;
+        let mut total = FlowReport::default();
+        let mut start = 0usize;
+        let mut page_no = 0usize;
+        while start < bm.height() {
+            // 逐页生成命令，避免长图把所有页的命令同时留在内存里。
+            let page = print_bitmap_page(bm, start, rle, MAX_LINES_PER_PAGE)?;
+            start += page.lines;
+            page_no += 1;
 
-        let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|c| c.as_ref()).collect();
-        let mut flow = FlowPlanner::default();
-        flow.push_commands(&self.assembler, &refs)?;
+            let page_idx = u16::try_from(page_no).context("too many pages")?;
+            if page_idx > 65534 {
+                bail!("bitmap needs {page_no} pages, the device supports at most 65534");
+            }
+            let lines = u16::try_from(page.lines).context("page too tall")?;
 
-        loop {
-            match flow.step() {
-                ChunkDecision::Send(chunk) => {
-                    self.send_cmd_area(chunk).await?;
-                    if flow.needs_gap() {
+            self.try_send_batch(&[
+                &req::start_page::StartPage {
+                    page_idx,
+                    print_sep_line: false,
+                    data_pixel_width: width,
+                    printer_gap_type: GapTypeSetting::Continuous,
+                    printer_gap_length: 0,
+                },
+                &req::total_lines::TotalLines { lines },
+            ])
+            .await?;
+
+            let reqs = print_commands_to_reqs(&page.commands);
+            let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|c| c.as_ref()).collect();
+            let mut flow = FlowPlanner::default();
+            flow.push_commands(&self.assembler, &refs)?;
+
+            loop {
+                match flow.step() {
+                    ChunkDecision::Send(chunk) => {
+                        self.send_cmd_area(chunk).await?;
+                        if flow.needs_gap() {
+                            tokio::time::sleep(flow.config().chunk_gap).await;
+                        }
+                        flow.check_deadline()?;
+                    }
+                    ChunkDecision::QueryBudget => {
                         tokio::time::sleep(flow.config().chunk_gap).await;
-                    }
-                    flow.check_deadline()?;
-                }
-                ChunkDecision::QueryBudget => {
-                    tokio::time::sleep(flow.config().chunk_gap).await;
-                    self.try_send_batch(&[
-                        &req::status::Status {},
-                        &req::buffer_size::BufferSize {},
-                    ])
-                    .await?;
-                    // 先 0x70 后 0x77，按顺序取。
-                    let _ = self
-                        .try_recv_one_timeout::<resp::status::Status>(flow.config().budget_timeout)
-                        .await;
-                    match self
-                        .try_recv_one_timeout::<resp::buffer_size::BufferSize>(
-                            flow.config().budget_timeout,
-                        )
-                        .await
-                    {
-                        Ok(bs) => {
-                            debug!(
-                                size = bs.size,
-                                budget = bs.budget(),
-                                status = bs.status,
-                                "buffer size"
-                            );
-                            flow.on_buffer_size(&bs);
-                        }
-                        Err(e) => {
-                            warn!("buffer size timeout, fall back to 8 KiB: {e}");
-                            flow.on_budget_timeout();
+                        self.try_send_batch(&[
+                            &req::status::Status {},
+                            &req::buffer_size::BufferSize {},
+                        ])
+                        .await?;
+                        // 先 0x70 后 0x77，按顺序取。
+                        let _ = self
+                            .try_recv_one_timeout::<resp::status::Status>(
+                                flow.config().budget_timeout,
+                            )
+                            .await;
+                        match self
+                            .try_recv_one_timeout::<resp::buffer_size::BufferSize>(
+                                flow.config().budget_timeout,
+                            )
+                            .await
+                        {
+                            Ok(bs) => {
+                                debug!(
+                                    size = bs.size,
+                                    budget = bs.budget(),
+                                    status = bs.status,
+                                    "buffer size"
+                                );
+                                flow.on_buffer_size(&bs);
+                            }
+                            Err(e) => {
+                                warn!("buffer size timeout, fall back to 8 KiB: {e}");
+                                flow.on_budget_timeout();
+                            }
                         }
                     }
+                    ChunkDecision::Wait => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    ChunkDecision::Done => break,
                 }
-                ChunkDecision::Wait => {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            self.try_send_batch(&[&req::end_page::EndPage {}]).await?;
+
+            // `EndPage` 只是把数据交给固件；最后一页要等打印头真正走完，
+            // 否则前台一退出，USB 句柄被释放，纸可能只走了一半。
+            if start >= bm.height() {
+                let status = self.wait_for_print_done(PRINT_DONE_TIMEOUT).await?;
+                info!(
+                    status = ?status.status,
+                    page_key = status.page_key,
+                    "print completed"
+                );
+            }
+
+            let report = flow.report();
+            total.chunks += report.chunks;
+            total.bytes += report.bytes;
+            total.budget_queries += report.budget_queries;
+            total.degraded |= report.degraded;
+            info!(
+                page = page_no,
+                pages = page_count,
+                lines = page.lines,
+                chunks = report.chunks,
+                bytes = report.bytes,
+                "page finished"
+            );
+        }
+        Ok(total)
+    }
+
+    /// 等打印机把已经发送的页真正打完。
+    ///
+    /// `EndPage` 只是把数据交给固件，返回时打印头可能还在走。这里每
+    /// [`PRINT_POLL`] 查一次 `0x70`：
+    ///
+    /// - `Printing` / `Rotating` / `PageNotReady` 视为还在忙；
+    /// - 至少观察到一次忙，之后回到 `Printable` / `NoJob` 才返回；
+    /// - 如果打印很快就结束了，则等过 [`PRINT_START_GRACE`] 后再接受空闲状态；
+    /// - `0x0c` 及以上的错误状态直接返回错误。
+    ///
+    /// 只应在最后一页的 `EndPage` 之后调用；不要在行数据中间插 `0x70`。
+    pub async fn wait_for_print_done(&self, timeout: Duration) -> Result<resp::status::Status> {
+        let started = tokio::time::Instant::now();
+        let mut seen_busy = false;
+        let mut idle_polls = 0usize;
+        loop {
+            tokio::time::sleep(PRINT_POLL).await;
+            self.try_send_batch(&[&req::status::Status {}]).await?;
+            let status = self.try_recv_one::<resp::status::Status>().await?;
+            debug!(
+                status = ?status.status,
+                page_key = status.page_key,
+                seen_busy,
+                idle_polls,
+                "print status"
+            );
+
+            if status.status.is_error() {
+                bail!(
+                    "printer reported {:?} while waiting for print completion",
+                    status.status
+                );
+            }
+            if matches!(
+                status.status,
+                PrinterStatus::Printing | PrinterStatus::Rotating | PrinterStatus::PageNotReady
+            ) {
+                seen_busy = true;
+                idle_polls = 0;
+            } else {
+                idle_polls += 1;
+                if (seen_busy || started.elapsed() >= PRINT_START_GRACE)
+                    && idle_polls >= PRINT_IDLE_CONFIRM
+                {
+                    return Ok(status);
                 }
-                ChunkDecision::Done => break,
+            }
+
+            if started.elapsed() > timeout {
+                bail!("print did not finish within {timeout:?}");
             }
         }
-
-        self.try_send_batch(&[&req::end_page::EndPage {}]).await?;
-        Ok(flow.report())
     }
 
     /// 接收指定类型的回复。
@@ -389,7 +496,7 @@ fn drain_frames(
         match assembler.decode_frame(received) {
             Ok(Some((payload, consumed))) => {
                 received.drain(..consumed);
-                trace!("response payload: {:02X?}", payload);
+                trace!("response payload: {}", simple_hex(&payload));
                 if tx.send(payload).is_err() {
                     return false;
                 }
@@ -478,6 +585,9 @@ fn bg(
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
+        .with_file(true)
+        .with_line_number(true)
+        .with_target(false)
         .init();
 
     // 用法：`test_usb [型号-序列号]`，不带参数时取第一台德佟设备。
@@ -497,14 +607,14 @@ async fn main() -> anyhow::Result<()> {
 
 async fn app(tf: &TestFrontend) -> anyhow::Result<()> {
     // phase_single(tf).await?;
-    // phase_device_info(tf).await?;
+    phase_device_info(tf).await?;
     // phase_flow_control(tf).await?;
-    phase_high_command(tf).await?;
+    // phase_high_command(tf).await?;
     // phase_device_info_probe(tf).await?;
     // phase_settings(tf).await?;
     // phase_raw_probes(tf).await?;
     // phase_push_listen(tf).await?;
-    phase_print(tf).await?;
+    // phase_print(tf).await?;
     Ok(())
 }
 
@@ -601,9 +711,16 @@ fn print_commands_to_reqs(commands: &[PrintCommand]) -> Vec<Box<dyn ReqTrait>> {
         .collect()
 }
 
-/// 一张 384x64 的测试图：外框 + 每 8 行一条横线。
+/// 一张 384 x `rows` 的测试图：外框 + 每 8 行一条横线。
+///
+/// 默认 `64 * 50` 行；`TEST_USB_ROWS` 可以覆盖，用来验证多页打印。
 fn test_bitmap() -> Bitmap {
-    let mut bm = Bitmap::new(384, 64).unwrap();
+    let height = std::env::var("TEST_USB_ROWS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(64 * 50);
+    let mut bm = Bitmap::new(384, height).unwrap();
     let width = bm.width();
     for y in 0..bm.height() {
         let mut line = bm.line_mut(y).unwrap();
@@ -647,7 +764,7 @@ async fn phase_print(tf: &TestFrontend) -> anyhow::Result<()> {
     info!("[8] 打印测试页（Transport + FlowPlanner, rle = {rle:?}）");
 
     let bm = test_bitmap();
-    let report = tf.print_bitmap_page(&bm, rle).await?;
+    let report = tf.print_bitmap_job(&bm, rle).await?;
     info!(
         chunks = report.chunks,
         bytes = report.bytes,
@@ -683,6 +800,7 @@ async fn phase_device_info(tf: &TestFrontend) -> anyhow::Result<()> {
     tf.try_send_batch(&[
         &req::status::Status {},
         &req::print_width::PrintWidth {},
+        &req::dpi::Dpi {},
         &req::statistics::Statistics {},
         &req::manufacturer::Manufacturer {},
         &req::device_name::DeviceName {},
@@ -694,17 +812,22 @@ async fn phase_device_info(tf: &TestFrontend) -> anyhow::Result<()> {
 
     let status: resp::status::Status = tf.try_recv_one().await?;
     info!(
-        "status = {:?}, page_key = {:#06x}, tail = {:02X?}",
-        status.status, status.page_key, status.tail
+        "status = {:?}, page_key = {:#06x}, tail = {}",
+        status.status,
+        status.page_key,
+        simple_hex(&status.tail)
     );
 
     let width: resp::print_width::PrintWidth = tf.try_recv_one().await?;
     info!(
-        "print width = {}, paper width = {:.1}mm, tail = {:02X?}",
+        "print width = {}, paper width = {:.1}mm, tail = {}",
         width.print_width,
         width.paper_width as f32 / 10.0,
-        width.tail
+        simple_hex(&width.tail)
     );
+
+    let dpi: resp::dpi::Dpi = tf.try_recv_one().await?;
+    info!("dpi = {}", dpi.dpi);
 
     let stats: resp::statistics::Statistics = tf.try_recv_one().await?;
     info!(
@@ -729,7 +852,7 @@ async fn phase_device_info(tf: &TestFrontend) -> anyhow::Result<()> {
     );
 
     let info: resp::device_info::DeviceInfo = tf.try_recv_one().await?;
-    info!("0x7f device info = {:02X?}", info.data);
+    info!("0x7f device info = {}", simple_hex(&info.data));
 
     Ok(())
 }
@@ -778,10 +901,14 @@ async fn phase_high_command(tf: &TestFrontend) -> anyhow::Result<()> {
         .try_recv_one_timeout::<resp::high_command::HighCommand>(PROBE_TIMEOUT)
         .await
     {
-        Ok(h) => info!("0x80 enable -> {:?}, tail = {:02X?}", h.mode, h.tail),
+        Ok(h) => info!(
+            "0x80 enable -> {:?}, tail = {}",
+            h.mode,
+            simple_hex(&h.tail)
+        ),
         Err(RecvError::Parse { .. }) => {
             if let Some(raw) = tf.try_pop_raw().await {
-                warn!("0x80 enable 解析失败，丢弃: {:02X?}", raw);
+                warn!("0x80 enable 解析失败，丢弃: {}", simple_hex(&raw));
             }
         }
         Err(e) => warn!("0x80 enable: {e}"),
@@ -795,10 +922,14 @@ async fn phase_high_command(tf: &TestFrontend) -> anyhow::Result<()> {
         .try_recv_one_timeout::<resp::high_command::HighCommand>(PROBE_TIMEOUT)
         .await
     {
-        Ok(h) => info!("0x80 disable -> {:?}, tail = {:02X?}", h.mode, h.tail),
+        Ok(h) => info!(
+            "0x80 disable -> {:?}, tail = {}",
+            h.mode,
+            simple_hex(&h.tail)
+        ),
         Err(RecvError::Parse { .. }) => {
             if let Some(raw) = tf.try_pop_raw().await {
-                warn!("0x80 disable 解析失败，丢弃: {:02X?}", raw);
+                warn!("0x80 disable 解析失败，丢弃: {}", simple_hex(&raw));
             }
         }
         Err(e) => warn!("0x80 disable: {e}"),
@@ -817,7 +948,7 @@ async fn phase_device_info_probe(tf: &TestFrontend) -> anyhow::Result<()> {
     tf.try_send_batch(&[&req::high_command::HighCommand::default()])
         .await?;
     match recv_matching(tf, 0x80, PROBE_TIMEOUT).await? {
-        Some(raw) => info!("0x7f 前激活: {:02X?}", raw.0),
+        Some(raw) => info!("0x7f 前激活: {}", simple_hex(&raw.0)),
         None => warn!("0x7f 前激活: 无响应"),
     }
 
@@ -853,7 +984,7 @@ async fn phase_device_info_probe(tf: &TestFrontend) -> anyhow::Result<()> {
     }])
     .await?;
     match recv_matching(tf, 0x80, PROBE_TIMEOUT).await? {
-        Some(raw) => info!("0x7f 后结束激活: {:02X?}", raw.0),
+        Some(raw) => info!("0x7f 后结束激活: {}", simple_hex(&raw.0)),
         None => warn!("0x7f 后结束激活: 无响应"),
     }
 
@@ -874,11 +1005,11 @@ async fn read_device_info(tf: &TestFrontend, label: &str) -> anyhow::Result<()> 
 fn log_device_info(tf: &TestFrontend, label: &str, raw: &[u8]) {
     match resp::device_info::DeviceInfo::parse(raw, tf.model_version()) {
         Ok(info) => info!(
-            "0x7f {label} -> {} byte(s): {:02X?}",
+            "0x7f {label} -> {} byte(s): {}",
             info.data.len(),
-            info.data
+            simple_hex(&info.data)
         ),
-        Err(e) => warn!("0x7f {label} 解析失败: {e}; raw = {:02X?}", raw),
+        Err(e) => warn!("0x7f {label} 解析失败: {e}; raw = {}", simple_hex(&raw)),
     }
 }
 
@@ -888,22 +1019,26 @@ async fn phase_settings(tf: &TestFrontend) -> anyhow::Result<()> {
 
     if let Some(raw) = read_raw(tf, 0x43).await? {
         match resp::darkness::Darkness::parse(&raw.0, tf.model_version()) {
-            Ok(v) => info!("0x43 浓度 = {:?}, raw = {:02X?}", v.darkness, raw.0),
-            Err(e) => warn!("0x43 解析失败: {e}; raw = {:02X?}", raw.0),
+            Ok(v) => info!("0x43 浓度 = {:?}, raw = {}", v.darkness, simple_hex(&raw.0)),
+            Err(e) => warn!("0x43 解析失败: {e}; raw = {}", simple_hex(&raw.0)),
         }
     }
 
     if let Some(raw) = read_raw(tf, 0x44).await? {
         match resp::speed::Speed::parse(&raw.0, tf.model_version()) {
-            Ok(v) => info!("0x44 速度 = {:?}, raw = {:02X?}", v.speed, raw.0),
-            Err(e) => warn!("0x44 解析失败: {e}; raw = {:02X?}", raw.0),
+            Ok(v) => info!("0x44 速度 = {:?}, raw = {}", v.speed, simple_hex(&raw.0)),
+            Err(e) => warn!("0x44 解析失败: {e}; raw = {}", simple_hex(&raw.0)),
         }
     }
 
     if let Some(raw) = read_raw(tf, 0x45).await? {
         match resp::gap_length::GapLength::parse(&raw.0, tf.model_version()) {
-            Ok(v) => info!("0x45 纸间隔 = {} (0.01mm), raw = {:02X?}", v.gap, raw.0),
-            Err(e) => warn!("0x45 解析失败: {e}; raw = {:02X?}", raw.0),
+            Ok(v) => info!(
+                "0x45 纸间隔 = {} (0.01mm), raw = {}",
+                v.gap,
+                simple_hex(&raw.0)
+            ),
+            Err(e) => warn!("0x45 解析失败: {e}; raw = {}", simple_hex(&raw.0)),
         }
     }
 
@@ -932,7 +1067,7 @@ async fn phase_raw_probes(tf: &TestFrontend) -> anyhow::Result<()> {
     for &(code, name) in PROBES {
         tf.try_send_batch(&[&ReadCmd(code)]).await?;
         match recv_matching(tf, code, PROBE_TIMEOUT).await? {
-            Some(raw) => info!("{code:#04x} {name}: {:02X?}", raw.0),
+            Some(raw) => info!("{code:#04x} {name}: {}", simple_hex(&raw.0)),
             None => warn!("{code:#04x} {name}: 无响应"),
         }
     }
@@ -951,7 +1086,7 @@ async fn phase_push_listen(tf: &TestFrontend) -> anyhow::Result<()> {
                 buf.size,
                 buf.budget()
             ),
-            Err(e) => warn!("0x7b 解析失败: {e}; raw = {:02X?}", raw.0),
+            Err(e) => warn!("0x7b 解析失败: {e}; raw = {}", simple_hex(&raw.0)),
         },
         None => info!("这段时间没有 0x7b 推送"),
     }
@@ -990,9 +1125,9 @@ async fn recv_matching(
                     return Ok(Some(raw));
                 }
                 warn!(
-                    "期望 {cmd:#04x}，丢弃不匹配的头部帧 {:#04x}: {:02X?}",
+                    "期望 {cmd:#04x}，丢弃不匹配的头部帧 {:#04x}: {}",
                     actual.unwrap_or(0x00),
-                    raw.0
+                    simple_hex(&raw.0)
                 );
             }
             Err(RecvError::Timeout(_)) => return Ok(None),

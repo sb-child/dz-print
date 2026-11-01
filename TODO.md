@@ -104,12 +104,42 @@
   - 位流本身自洽，例如 `1f 2c 04 ff ff c0` 解码正好是 384 个黑点
   - 结论：DP27P 不把 X 行写进 D 的“上一行”基准，X / D 不能混用；`RleMode::Bits5` 暂时不要用于真机
   - 已加 `RleMode::Bits4XOnly` / `Bits5XOnly` / `Bits6XOnly`，对应 `TEST_USB_RLE=bits4x|bits5x|bits6x`
-- [x] `0x3a`（RLE4X）在 DP27P 上打不出内容；`0x3c`（RLE6X）也不工作
+- [x] `0x3a`（RLE4X）在 DP27P 上打不出内容
   - `bits4x` 日志确认 payload 正确：`1f 3a 06 ff ff ae 13`
     - `FF FF AE` = `1111 1111 1111 1111 1010 1110` → 88×4 + 3 + 29 = 384 点
     - 符号顺序由 DP 选出（3 后 29），总长与行宽一致
-  - 命令格式和位流都没有问题，因此判断为 DP27P 固件不认 `0x3a` / `0x3c`，或 RLE4 / RLE6 码本与 5 位不同
-  - 目前可用的位级方案只有 `Bits5XOnly`（`0x2c`）
+  - 命令格式和位流都没有问题，因此判断为 DP27P 固件不认 `0x3a`，或 RLE4 码本与 5 位不同
+  - `0x3c`（RLE6X）随后复测正常
+  - 目前可用的位级方案：`Bits5XOnly`（`0x2c`）/ `Bits6XOnly`（`0x3c`）
+
+- [x] 长位图自动拆页
+  - `0x26 TotalLines` 在 v2 上的上限是 `16383`，`print_bitmap` 只描述一页
+  - 新增 `planner::print::print_bitmap_pages` / `PrintPage`：按 `MAX_LINES_PER_PAGE`
+    切页，每页第一行按全白基准，D 模式不跨页引用上一页
+  - `test_usb::print_bitmap_job` 逐页发 `StartPage` / `TotalLines` / 行命令 / `EndPage`，
+    `page_idx` 递增，页间保持 `Continuous`；`FlowPlanner` 每页新建
+  - `TEST_USB_ROWS` 可覆盖测试图行数，用来验证多页
+  - 多页在 DP27P 上的纸面行为（是否连续、有无额外间距）待实测
+  - `cargo test --lib`: 318 passed
+
+- [x] 长页流控死循环（`TotalLines = 16383`）
+  - 现象：日志每隔 50 ms 发一次 `1f 70 ... 1f 77 ...`，预算一直是 24500，但从不发送行数据
+  - 原因：`FlowPlanner::step` 用「`budget < remaining`」判断要查询。长页的 `remaining`
+    永远大于单次预算，于是拿到预算后立刻又进入查询分支
+  - 修复：改成「当前预算花完（`budget == 0`）再查 `0x77`」；补回归测试
+    `spends_budget_before_querying_again`
+  - `flow-control.md` 的发送循环同步改成先发完当前预算
+
+- [x] 等打印真正完成再退出
+  - 现象：`EndPage` 之后程序立即结束，纸还在走，USB 句柄一释放打印就中断
+  - `EndPage` 只是把数据交给固件，电机是异步驱动的
+  - 新增 `TestFrontend::wait_for_print_done`：轮询 `0x70`
+    - `Printing` / `Rotating` / `PageNotReady` 视为还在忙
+    - 连续 2 次 `Printable` / `NoJob` 才认为完成
+    - 短任务用 1 秒启动宽限期兜底，避免在固件真正启动前误判
+    - `0x0c` 及以上错误状态立即返回
+  - 只在最后一个 `EndPage` 后调用；行数据中间不要插 `0x70`
+  - 默认超时 10 分钟
 
 ## 规划：frontend / 设备线程 / transport
 

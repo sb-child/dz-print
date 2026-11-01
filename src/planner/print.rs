@@ -5,14 +5,15 @@
 //! 位图到打印命令的计划。
 //!
 //! 这里只做一件事：把 [`Bitmap`] 逐行翻译成打印命令的**参数**，不编码、不补长度和校验和、
-//! 不管页面、不管流控。调用方拿到的每个命令自己决定怎么调用命令层：
+//! 不管流控。调用方拿到的每个命令自己决定怎么调用命令层：
 //!
 //! - [`PrintCommand::Line`] → [crate::command::req::print_line::PrintLine]
 //! - [`PrintCommand::Feed`] → [crate::command::req::feed_line::FeedLine]
 //! - `PrintCommand::Rle*` → [crate::command::req::print_line_rle::PrintLineRle]
 //!
-//! 页面边界（`StartPage` / `EndPage`）、分页、重试由上层负责；发送时的预算和
-//! 分块见 [`crate::planner::flow`]。
+//! 页面边界的 `StartPage` / `EndPage` 仍由上层发送；位图高于
+//! [`MAX_LINES_PER_PAGE`] 时用 [`print_bitmap_pages`] 先拆页，
+//! 发送时的预算和分块见 [`crate::planner::flow`]。
 //!
 //! 位级 D 模式假定设备保留上一行（包括普通 [`PrintCommand::Line`]）的解码结果，
 //! 第一行按全白处理。
@@ -26,6 +27,13 @@ use thiserror::Error;
 /// 取 `StartPage::data_pixel_width` 的上限 `1521`：它同时满足 `0x2b` 的
 /// `skips` / `data_len <= 191` 字节（`191 * 8 = 1528` 点）。
 pub const MAX_DOTS_PER_LINE: usize = 1521;
+
+/// 单页最大行数。
+///
+/// `0x26 TotalLines` 在 v2 上的上限是 `16383`，所以一张高于这个行数的位图
+/// 必须拆成多页，每页重新发 `0x20 StartPage` / `0x26 TotalLines` / `0x28 EndPage`。
+/// `0x25` 等命令的 2 字节变长字段同样是这个上限。
+pub const MAX_LINES_PER_PAGE: usize = 16383;
 
 /// RLE 编码方案。
 ///
@@ -114,11 +122,27 @@ pub enum PrintError {
     #[error("bitmap width {width} exceeds the {max}-dot limit of a single print line")]
     LineTooWide { width: usize, max: usize },
 
+    #[error("page line limit {lines} must be in 1..={max}")]
+    InvalidPageLines { lines: usize, max: usize },
+
     #[error(transparent)]
     Bitmap(#[from] BitmapError),
 
     #[error(transparent)]
     Rle(#[from] RleTransformError),
+}
+
+/// 一页的打印计划。
+///
+/// `lines` 是这一页的总行数，直接对应 `0x26 TotalLines`；`commands` 是页内
+/// 的行命令和走纸命令。上层按 [`PrintPage`] 依次发 `StartPage` /
+/// `TotalLines` / `commands` / `EndPage`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrintPage {
+    /// 这一页的行数，范围 `1..=`[`MAX_LINES_PER_PAGE`]。
+    pub lines: usize,
+    /// 页内的打印命令。
+    pub commands: Vec<PrintCommand>,
 }
 
 /// 把位图逐行翻译成打印命令。
@@ -128,7 +152,82 @@ pub enum PrintError {
 /// - 其余行去掉左侧整字节空白放进 `skips`，去掉右侧空白后作为 `data`。
 /// - `rle` 不为 [`RleMode::Off`] 时尝试 RLE 编码，只有比普通行更小才采用。
 ///   RLE 只有 `v2` 机型支持，`v1` / `v0` 请传 [`RleMode::Off`]。
+///
+/// 返回的命令属于**一页**；位图高于 [`MAX_LINES_PER_PAGE`] 时请改用
+/// [`print_bitmap_pages`]，否则 `0x26 TotalLines` 会超出 v2 的字段范围。
 pub fn print_bitmap(bm: &Bitmap, rle: RleMode) -> Result<Vec<PrintCommand>, PrintError> {
+    print_bitmap_range(bm, 0, bm.height(), rle)
+}
+
+/// 把位图切成多页，每页最多 `max_lines` 行。
+///
+/// v2 的 `0x26 TotalLines` 上限是 [`MAX_LINES_PER_PAGE`]。超过这个行数的位图
+/// 必须拆页，否则 `print_bitmap` 的结果无法用一个 `TotalLines` 描述。
+///
+/// 每页的第一行都按全白基准处理，D 模式不会跨页引用上一页的解码结果。
+///
+/// 这个函数一次返回所有页；如果位图非常大、不想同时保留所有页的命令，
+/// 可以用 [`print_bitmap_page`] 按 `start` 逐页生成。
+pub fn print_bitmap_pages(
+    bm: &Bitmap,
+    rle: RleMode,
+    max_lines: usize,
+) -> Result<Vec<PrintPage>, PrintError> {
+    validate_page_lines(max_lines)?;
+
+    let mut pages = Vec::with_capacity(bm.height().div_ceil(max_lines));
+    let mut start = 0usize;
+    while start < bm.height() {
+        let page = print_bitmap_page(bm, start, rle, max_lines)?;
+        start += page.lines;
+        pages.push(page);
+    }
+    Ok(pages)
+}
+
+/// 计算从第 `start` 行开始的一页，最多 `max_lines` 行。
+///
+/// `start` 必须小于位图高度；返回的 [`PrintPage::lines`] 是实际行数
+/// （最后一页可能不足 `max_lines`）。
+pub fn print_bitmap_page(
+    bm: &Bitmap,
+    start: usize,
+    rle: RleMode,
+    max_lines: usize,
+) -> Result<PrintPage, PrintError> {
+    validate_page_lines(max_lines)?;
+    if start >= bm.height() {
+        return Err(BitmapError::LineOutOfRange {
+            index: start,
+            height: bm.height(),
+        }
+        .into());
+    }
+
+    let end = (start + max_lines).min(bm.height());
+    Ok(PrintPage {
+        lines: end - start,
+        commands: print_bitmap_range(bm, start, end, rle)?,
+    })
+}
+
+fn validate_page_lines(max_lines: usize) -> Result<(), PrintError> {
+    if max_lines == 0 || max_lines > MAX_LINES_PER_PAGE {
+        return Err(PrintError::InvalidPageLines {
+            lines: max_lines,
+            max: MAX_LINES_PER_PAGE,
+        });
+    }
+    Ok(())
+}
+
+/// [`print_bitmap`] 的行区间版本。
+fn print_bitmap_range(
+    bm: &Bitmap,
+    start: usize,
+    end: usize,
+    rle: RleMode,
+) -> Result<Vec<PrintCommand>, PrintError> {
     if bm.width() > MAX_DOTS_PER_LINE {
         return Err(PrintError::LineTooWide {
             width: bm.width(),
@@ -137,13 +236,13 @@ pub fn print_bitmap(bm: &Bitmap, rle: RleMode) -> Result<Vec<PrintCommand>, Prin
     }
 
     let mut out = Vec::new();
-    let mut y = 0usize;
-    while y < bm.height() {
+    let mut y = start;
+    while y < end {
         let line = bm.line(y)?;
         let Some(first) = line.first_one() else {
             // 连续空白行：走纸一次就够。
             let mut count = 1usize;
-            while y + count < bm.height() && bm.line(y + count)?.is_blank() {
+            while y + count < end && bm.line(y + count)?.is_blank() {
                 count += 1;
             }
             push_feed(&mut out, count);
@@ -157,15 +256,19 @@ pub fn print_bitmap(bm: &Bitmap, rle: RleMode) -> Result<Vec<PrintCommand>, Prin
         // 会再发一条同样的命令。
         let mut repeats = 0usize;
         while repeats < u16::MAX as usize
-            && y + repeats + 1 < bm.height()
+            && y + repeats + 1 < end
             && bm.line(y + repeats + 1)?.bits() == line.bits()
         {
             repeats += 1;
         }
         let repeats = repeats as u16;
 
-        // D 模式需要上一行的解码结果；第一行按全白处理。
-        let prev = if y == 0 { None } else { Some(bm.line(y - 1)?) };
+        // D 模式需要上一行的解码结果；每页第一行按全白处理。
+        let prev = if y == start {
+            None
+        } else {
+            Some(bm.line(y - 1)?)
+        };
         if let Some(cmd) = select_rle(&line, prev, raw_len, repeats, rle)? {
             out.push(cmd);
             y += 1 + repeats as usize;
@@ -530,5 +633,84 @@ mod test {
                 data: vec![0xAE],
             }]
         );
+    }
+
+    /// 一组命令实际打印 / 走纸的总行数。
+    fn printed_lines(cmds: &[PrintCommand]) -> usize {
+        cmds.iter()
+            .map(|cmd| match cmd {
+                PrintCommand::Feed { lines } => *lines as usize,
+                PrintCommand::Line { repeats, .. }
+                | PrintCommand::RleByte { repeats, .. }
+                | PrintCommand::Rle4x { repeats, .. }
+                | PrintCommand::Rle4d { repeats, .. }
+                | PrintCommand::Rle5x { repeats, .. }
+                | PrintCommand::Rle5d { repeats, .. }
+                | PrintCommand::Rle6x { repeats, .. }
+                | PrintCommand::Rle6d { repeats, .. } => *repeats as usize + 1,
+            })
+            .sum()
+    }
+
+    #[test]
+    fn long_bitmap_splits_at_total_lines_limit() {
+        let height = MAX_LINES_PER_PAGE + 10;
+        let mut bm = Bitmap::new(8, height).unwrap();
+        bm.fill(true);
+
+        let pages = print_bitmap_pages(&bm, RleMode::Off, MAX_LINES_PER_PAGE).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].lines, MAX_LINES_PER_PAGE);
+        assert_eq!(pages[1].lines, 10);
+        assert_eq!(printed_lines(&pages[0].commands), MAX_LINES_PER_PAGE);
+        assert_eq!(printed_lines(&pages[1].commands), 10);
+        assert_eq!(
+            pages[0].lines + pages[1].lines,
+            bm.height(),
+            "pages must cover the whole bitmap"
+        );
+    }
+
+    #[test]
+    fn pages_do_not_reuse_previous_page_for_d() {
+        let height = MAX_LINES_PER_PAGE + 2;
+        let mut bm = Bitmap::new(32, height).unwrap();
+        bm.fill(true);
+
+        let pages = print_bitmap_pages(&bm, RleMode::Bits5, MAX_LINES_PER_PAGE).unwrap();
+        assert!(
+            matches!(pages[1].commands[0], PrintCommand::Rle5x { .. }),
+            "the first line of a page must not XOR against the previous page, got {:?}",
+            pages[1].commands[0]
+        );
+    }
+
+    #[test]
+    fn page_line_limit_must_fit_total_lines() {
+        let bm = Bitmap::new(8, 1).unwrap();
+        for limit in [0, MAX_LINES_PER_PAGE + 1] {
+            assert_eq!(
+                print_bitmap_pages(&bm, RleMode::Off, limit),
+                Err(PrintError::InvalidPageLines {
+                    lines: limit,
+                    max: MAX_LINES_PER_PAGE,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn page_start_must_be_inside_the_bitmap() {
+        let bm = Bitmap::new(8, 4).unwrap();
+        assert_eq!(
+            print_bitmap_page(&bm, 4, RleMode::Off, MAX_LINES_PER_PAGE),
+            Err(PrintError::Bitmap(BitmapError::LineOutOfRange {
+                index: 4,
+                height: 4,
+            }))
+        );
+
+        let page = print_bitmap_page(&bm, 2, RleMode::Off, MAX_LINES_PER_PAGE).unwrap();
+        assert_eq!(page.lines, 2);
     }
 }

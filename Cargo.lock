@@ -700,6 +700,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
+name = "crossfire"
+version = "3.1.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "342783f90d75bfc49d9c7cff550d0a25d3b1b346b5964f3f22672d195cbb6b1f"
+dependencies = [
+ "crossfire-utils",
+ "futures-core",
+ "parking_lot",
+ "pointers",
+ "smallvec",
+ "tokio",
+]
+
+[[package]]
+name = "crossfire-utils"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3398c18f4a17fd2b156e19256dfd20666488d5bf9a0d111d3fa8088e12b62ae"
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -871,6 +891,7 @@ dependencies = [
  "bytebuffer",
  "chrono",
  "clap",
+ "crossfire",
  "deku",
  "derive_aliases",
  "encoding_rs",
@@ -2488,6 +2509,12 @@ dependencies = [
  "flate2",
  "miniz_oxide 0.8.9",
 ]
+
+[[package]]
+name = "pointers"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e527185f77b1805a7f16bed2b92e9bbe5a5efcb925f760e3c61cbd243b2ade93"
 
 [[package]]
 name = "polycool"
