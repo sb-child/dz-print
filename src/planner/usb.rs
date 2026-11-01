@@ -152,12 +152,7 @@ pub fn decode_report(report: &[u8]) -> Result<&[u8], UsbError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn hexdec(s: &str) -> Vec<u8> {
-        s.split_whitespace()
-            .map(|c| u8::from_str_radix(c, 16).unwrap())
-            .collect()
-    }
+    use crate::test_util::hexdec;
 
     #[test]
     fn encode_packet_matches_flow_control_sample() {

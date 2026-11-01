@@ -28,12 +28,7 @@ impl RespTrait for DeviceName {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    fn hexdec(s: &str) -> Vec<u8> {
-        s.split_whitespace()
-            .map(|c| u8::from_str_radix(c, 16).unwrap())
-            .collect()
-    }
+    use crate::test_util::hexdec;
 
     /// BLE 实测: `1F 79 11 "DP305P-Y60870279\0"`
     #[test]

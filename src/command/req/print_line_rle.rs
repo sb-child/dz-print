@@ -201,12 +201,7 @@ fn var_count(count: u32, param: &str) -> Result<VarAuto, PackReqError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn hexdec(s: &str) -> Vec<u8> {
-        s.split_whitespace()
-            .map(|c| u8::from_str_radix(c, 16).unwrap())
-            .collect()
-    }
+    use crate::test_util::hexdec;
 
     fn payloads(cmd: &PrintLineRle, mv: ModelVersion) -> Vec<Vec<u8>> {
         cmd.pack(mv)

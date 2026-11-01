@@ -86,9 +86,4 @@ pub mod raster;
 pub mod rle;
 
 #[cfg(test)]
-mod tests {
-    // use super::*;
-
-    #[test]
-    fn test() {}
-}
+mod test_util;

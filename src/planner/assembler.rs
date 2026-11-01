@@ -263,12 +263,7 @@ mod tests {
         resp::{darkness::Darkness as RespDarkness, status::Status as RespStatus},
         status::PrinterStatus,
     };
-
-    fn hexdec(s: &str) -> Vec<u8> {
-        s.split_whitespace()
-            .map(|c| u8::from_str_radix(c, 16).unwrap())
-            .collect()
-    }
+    use crate::test_util::hexdec;
 
     #[test]
     fn encode_v2_adds_length_and_checksum() {

@@ -74,12 +74,7 @@ pub(crate) fn budget_from_size(size: u16) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    fn hexdec(s: &str) -> Vec<u8> {
-        s.split_whitespace()
-            .map(|c| u8::from_str_radix(c, 16).unwrap())
-            .collect()
-    }
+    use crate::test_util::hexdec;
 
     #[test]
     fn parse_ok() {

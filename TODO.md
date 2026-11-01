@@ -403,7 +403,10 @@ transport（USB HID / BLE 串口透传）
 - [ ] RLE 的 7 处映射（`RleMode`、`PrintCommand`、`RleKind`、`select_rle`、
   `PrintLineRle::pack`、`req_template`、`planner::print::into_reqs`）用宏生成，
   新增变体只改一处
-- [ ] 16 份 `fn hexdec` 合并到 `#[cfg(test)] test_util`
+- [x] 16 份 `fn hexdec` 合并到 `#[cfg(test)] test_util`
+  - 新增 `src/test_util.rs`（`#[cfg(test)] mod test_util`），严格解析两位 hex token
+  - `req_template` / `resp_template` 的 `test_toolkits` 改为 `pub(crate) use`
+  - 顺带删掉 `src/lib.rs` 末尾的空 dummy test（`cargo test --lib` 344 passed）
 - [ ] `_tail: ()` 41 处：只在需要尾部 magic 时保留，其余删掉或改名
 - [ ] `VarintMode::encode_into_safe` 复用 `encode_into`；当前无人使用
 - [ ] `SpeedSetting` / `DarknessSetting` 的 `from_user` / `to_wire` / `from_wire`

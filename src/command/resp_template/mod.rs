@@ -45,13 +45,7 @@ pub mod status;
 mod test_toolkits {
     use pretty_hex::simple_hex;
 
-    pub fn hexdec(s: &str) -> Vec<u8> {
-        s.split(&[' ', ',', '\t'])
-            .filter(|c| c.len() == 2)
-            .filter(|c| c.is_ascii())
-            .flat_map(|c| u8::from_str_radix(c, 16))
-            .collect()
-    }
+    pub(crate) use crate::test_util::hexdec;
 
     pub fn dec_tl<'a, D>(buf: &'a [u8]) -> D
     where

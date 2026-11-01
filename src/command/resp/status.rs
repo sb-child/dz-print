@@ -38,6 +38,7 @@ impl RespTrait for Status {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::test_util::hexdec;
 
     fn payload(data: &[u8]) -> Vec<u8> {
         let mut b = vec![0x1f, 0x70];
@@ -94,11 +95,5 @@ mod test {
     fn magic_mismatch_is_decode_error() {
         let err = Status::parse(&[0x1f, 0x71, 0x00, 0x00, 0x01], ModelVersion::V2).unwrap_err();
         assert!(matches!(err, ParseRespError::Decode { .. }), "{err:?}");
-    }
-
-    fn hexdec(s: &str) -> Vec<u8> {
-        s.split_whitespace()
-            .map(|c| u8::from_str_radix(c, 16).unwrap())
-            .collect()
     }
 }

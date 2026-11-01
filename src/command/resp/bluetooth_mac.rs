@@ -61,12 +61,7 @@ impl RespTrait for BluetoothMac {
 #[cfg(test)]
 mod test {
     use super::*;
-
-    fn hexdec(s: &str) -> Vec<u8> {
-        s.split_whitespace()
-            .map(|c| u8::from_str_radix(c, 16).unwrap())
-            .collect()
-    }
+    use crate::test_util::hexdec;
 
     /// 实测: `1f 7d 10 60 6e 41 37 c4 37 14 60 6e 41 37 c4 37`
     #[test]

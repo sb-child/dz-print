@@ -55,14 +55,8 @@ pub mod total_lines;
 
 #[cfg(test)]
 mod test_toolkits {
+    pub(crate) use crate::test_util::hexdec;
     use pretty_hex::simple_hex;
-    pub fn hexdec(s: &str) -> Vec<u8> {
-        s.split(&[' ', ',', '\t'])
-            .filter(|c| c.len() == 2)
-            .filter(|c| c.is_ascii())
-            .flat_map(|c| u8::from_str_radix(c, 16))
-            .collect()
-    }
 
     pub fn enc_tl<D>(tl: &D) -> Vec<u8>
     where
