@@ -45,9 +45,10 @@ cargo run --bin dzprint_typst
 # TODO: 更完善的 CLI
 cargo run --bin dzcli
 
-# 真机 USB 测试平台（需要连接德佟打印机，可传 `型号-序列号` 选择设备）
+# 真机 USB 测试平台（需要连接德佟打印机）
 cargo run --bin test_usb
-cargo run --bin test_usb -- DP27P-Y4094C023
+cargo run --bin test_usb -- DP27P-Y4094C023 --phase device-info
+cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
 ```
 
 ## Code Layout / 代码结构
@@ -62,7 +63,7 @@ cargo run --bin test_usb -- DP27P-Y4094C023
 - `bin/` 可执行的示例
   - `dzprint` 打印图片、`dzprint_typst` 打印 Typst 文档：`[旧]` 实现整体被注释，目前 `main` 是空的
   - `dzcli` CLI 雏形（只有 `clap` 参数骨架，功能还没接）
-  - `test_usb` `[新]` 真机 USB 测试平台：按设备名选择、`backend::usb::UsbTransport` 收发、命令区切帧、响应队列，覆盖查询 / 流控 / `0x80` 激活 / `0x7f` 探测；`TEST_USB_PRINT=1` 时用 `FlowPlanner` 打一张测试图
+  - `test_usb` `[新]` 真机 USB 测试平台：clap 参数选择设备 / `--phase` / `--rle` / `--rows`，覆盖查询 / 流控 / `0x80` 激活 / `0x7f` 探测 / 打印测试
 - `bitmap.rs` `[新]` 以 bit 为单位的位图行类型，供 RLE 和命令层使用
 - `rle.rs` `[新]` 位图行的行程编码（RLE）：RLE4 / RLE5 / RLE6 码表，位级 X/D 与字节级编码器
 - `command/` 通讯协议
@@ -84,8 +85,12 @@ cargo run --bin test_usb -- DP27P-Y4094C023
 - `planner/` `[新]` 命令组装和传输层封包
   - `assembler.rs`：`Assembler`，按机型把一组 `ReqTrait` 编码成命令区，再切帧解码成 `RespTrait`
   - `flow.rs`：`FlowPlanner`，`0x77` 预算感知的分块发送计划（9000 字节分块、50 ms 间隔、超时退化），不做 IO
+  - `print.rs`：位图 → 打印计划；`into_reqs` 把 `PrintCommand` 翻译成命令层请求对象
   - `usb.rs`：USB 外层 `1e <长度>` 的打包 / 解包，以及按 64 字节 HID 报告切片
-- `frontend/` 新架构预留，目前是空文件（接口规划见 `TODO.md` 的「frontend / 设备线程 / transport」）
+- `frontend/` `[新]` 设备 frontend
+  - `mod.rs`：`Device` / `DeviceConfig` / `RecvError` / `FrontendError`，批量发送、按类型接收、`recv_matching`、`wait_for_print_done`
+  - `worker.rs`：阻塞线程里的 USB 读写、命令区切帧、原始 payload 队列
+  - `print.rs`：`Device::print_bitmap_job`，分页 + `FlowPlanner` 流控 + 页末等待打印完成
 
 ## TODO
 

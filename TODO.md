@@ -2,7 +2,7 @@
 
 [返回](./README.md)
 
-当前主线：resp（设备→主机响应）层实现；设备线程 / frontend 见下方「规划」。命令实现状态见 [cmd-impl-status.md](./cmd-impl-status.md)。
+当前主线：frontend / 设备线程已落地（`src/frontend/`），下一步补 BLE、断连处理和完整 CLI。命令实现状态见 [cmd-impl-status.md](./cmd-impl-status.md)。
 
 ## 进行中
 
@@ -87,8 +87,8 @@
 
 - [x] `test_usb` 换用 `UsbTransport` + `FlowPlanner`
   - 删除自己维护的 `USBSelector` / 端点发现 / `write_cmd_area`，改用 `backend::usb::UsbTransport`
-  - 新增 `TestFrontend::print_bitmap_page`：`StartPage` + `TotalLines` + 按预算分块 + `EndPage`
-  - `TEST_USB_PRINT=1` 时打一张 384x64 测试图，默认跳过避免误走纸
+  - 新增 `print_bitmap_job`：`StartPage` + `TotalLines` + 按预算分块 + `EndPage`
+  - `--phase print` 时打一张测试图，默认只跑 `device-info` 避免误走纸
   - `cargo check --bin test_usb` / clippy 干净
 
 - [x] RLE 帧改成 `ManualPack`（DP27P 实测定位）
@@ -103,7 +103,7 @@
   - `Bits4` / `Bits5`（自动 X/D）图像中间出现周期性断层；`Bits5XOnly` 打印正常
   - 位流本身自洽，例如 `1f 2c 04 ff ff c0` 解码正好是 384 个黑点
   - 结论：DP27P 不把 X 行写进 D 的“上一行”基准，X / D 不能混用；`RleMode::Bits5` 暂时不要用于真机
-  - 已加 `RleMode::Bits4XOnly` / `Bits5XOnly` / `Bits6XOnly`，对应 `TEST_USB_RLE=bits4x|bits5x|bits6x`
+  - 已加 `RleMode::Bits4XOnly` / `Bits5XOnly` / `Bits6XOnly`，对应 `--rle bits4x|bits5x|bits6x`
 - [x] `0x3a`（RLE4X）在 DP27P 上打不出内容
   - `bits4x` 日志确认 payload 正确：`1f 3a 06 ff ff ae 13`
     - `FF FF AE` = `1111 1111 1111 1111 1010 1110` → 88×4 + 3 + 29 = 384 点
@@ -118,7 +118,7 @@
     切页，每页第一行按全白基准，D 模式不跨页引用上一页
   - `test_usb::print_bitmap_job` 逐页发 `StartPage` / `TotalLines` / 行命令 / `EndPage`，
     `page_idx` 递增，页间保持 `Continuous`；`FlowPlanner` 每页新建
-  - `TEST_USB_ROWS` 可覆盖测试图行数，用来验证多页
+  - `--rows` 可覆盖测试图行数，用来验证多页
   - 多页在 DP27P 上的纸面行为（是否连续、有无额外间距）待实测
   - `cargo test --lib`: 318 passed
 
@@ -133,7 +133,7 @@
 - [x] 等打印真正完成再退出
   - 现象：`EndPage` 之后程序立即结束，纸还在走，USB 句柄一释放打印就中断
   - `EndPage` 只是把数据交给固件，电机是异步驱动的
-  - 新增 `TestFrontend::wait_for_print_done`：轮询 `0x70`
+  - 新增 `Device::wait_for_print_done`：轮询 `0x70`
     - `Printing` / `Rotating` / `PageNotReady` 视为还在忙
     - 连续 2 次 `Printable` / `NoJob` 才认为完成
     - 短任务用 1 秒启动宽限期兜底，避免在固件真正启动前误判
@@ -187,8 +187,9 @@ transport（USB HID / BLE 串口透传）
 - [x] 定义 `Transport` trait（write / read / reset）
 - [x] `Assembler` 暴露切帧接口：`decode_frame -> Option<(Vec<u8>, consumed)>`
 - [x] USB transport 接 `planner::usb`
-- [ ] 定义 `frontend::Device` 对外接口和错误类型
-- [ ] 设备 worker 线程 + 请求 FIFO + 响应配对
+- [x] 定义 `frontend::Device` 对外接口和错误类型
+- [x] 设备 worker 线程 + 发送 FIFO + 原始 payload 响应队列
+- [ ] 严格请求 / 响应配对（当前按调用顺序取，允许换类型重试）
 - [ ] BLE transport（`btleplug` + `ff03` 信用）
 - [ ] 断连 / 写失败时让所有 pending 请求返回错误
 - [ ] 示例：连接 → 读 DPI / 宽度 → 打印一张图
@@ -322,6 +323,124 @@ transport（USB HID / BLE 串口透传）
 - [ ] `0x88` 校验歧义：v2 的合法校验和恰好为 `0x88` 时会被当成「不校验」而跳过验证；与 SDK 行为一致，暂不处理
 - [ ] 每完成一个阶段，同步更新 `cmd-impl-status.md` 的 resp 列；确认过的格式补到 `protocol.md`
 - [x] 新增 `resp/` 后补 `README.md` 的代码结构说明
+
+## 代码质量审核（2026-11-01）
+
+> 只读审核结论：`cargo test --lib` 318 passed；`cargo fmt --check` 通过；
+> `cargo clippy --all-targets` 当时有 `test_usb` 的 dead_code 和 11 个未使用依赖；
+> `cargo doc --no-deps --lib` 1 个文档链接警告。审核期间未修改源码。
+>
+> P0 完成情况（2026-11-01）：`cargo test --lib` 326 passed、`cargo test --bins` 2 passed；
+> `cargo clippy --all-targets` 已无 dead_code 警告，只剩 11 个未使用依赖。
+
+### P0 结构：frontend 与 test_usb
+
+> 本节的 P0 与上面「规划：frontend / 设备线程 / transport」的未完成项重叠，
+> 完成时两边一起勾选。当前两边已同步。
+
+- [x] 把 `TestFrontend` / `RecvState` / `bg` / `drain_frames` / `wait_for_print_done`
+  从 `src/bin/test_usb.rs` 搬到 `src/frontend/`
+  - 拆分：`frontend/mod.rs`（`Device` / `DeviceConfig` / 收发 / 等待完成）、
+    `frontend/worker.rs`（worker / 切帧 / `OutJob`）、
+    `frontend/print.rs`（`print_bitmap_job`）
+  - 用内存 transport 给发送、`recv_matching`、等待完成和打印任务补了 7 个单测
+  - `src/bin/test_usb.rs` 只保留 `main`、`phase_*`、clap 参数和测试图
+- [x] 把 `print_commands_to_reqs` 搬进库：`planner::print::into_reqs`
+  - `PrintCommand` 现在由库内统一翻译成 `Box<dyn ReqTrait>`
+- [x] `test_usb` 的阶段选择改用 clap：`--phase` / `--rle` / `--rows`，
+  不再读取环境变量，12 个 dead_code 警告已消除
+
+### P1 拆分长文件 / 命名
+
+- [ ] `src/planner/print.rs`（含 `into_reqs`）拆成 `print/mod.rs`
+  （`RleMode` / `PrintCommand` / `PrintPage` / `PrintError`）、
+  `print/rle.rs`（`select_rle`）、`print/tests.rs`
+- [ ] `src/rle.rs` 拆成 `rle/mod.rs`、`rle/bit.rs`、`rle/byte.rs`、`rle/tests.rs`
+  - 补模块级 `//!`，链接 `rle.md`
+  - `TryInto<Vec<Run<_>>>`（`src/rle.rs:31-87`）改成命名方法 `runs_bits()` / `runs_bytes()`
+- [ ] 大文件的测试移到独立子模块：`bitmap.rs`（约 180 行测试）、
+  `varint.rs`（约 165）、`settings.rs`（约 130）、`assembler.rs`
+- [ ] `src/planner/usb.rs` 改名为 `transport/usb_frame.rs` 或
+  `backend/usb_frame.rs`，避免和 `backend/usb.rs` 混淆
+- [ ] 统一 RLE 命名：`RleMode::Bits4` / `RleKind::Bits4x` / `PrintCommand::Rle4x`
+  保留一套命名，或在文档里补类型对照表
+
+### P1 机械重复
+
+- [ ] `EnvelopeKind` 的 20 处 `match mv` 收敛成
+  `impl From<ModelVersion> for EnvelopeKind`
+- [ ] 46 处 `to_bytes().context(EncodeSnafu { cmd_name })` 用宏或 helper 收敛
+- [ ] RLE 的 7 处映射（`RleMode`、`PrintCommand`、`RleKind`、`select_rle`、
+  `PrintLineRle::pack`、`req_template`、`planner::print::into_reqs`）用宏生成，
+  新增变体只改一处
+- [ ] 16 份 `fn hexdec` 合并到 `#[cfg(test)] test_util`
+- [ ] `_tail: ()` 41 处：只在需要尾部 magic 时保留，其余删掉或改名
+- [ ] `VarintMode::encode_into_safe` 复用 `encode_into`；当前无人使用
+- [ ] `SpeedSetting` / `DarknessSetting` 的 `from_user` / `to_wire` / `from_wire`
+  可抽公共宏
+
+### P1 正确性 / 健壮性
+
+- [ ] 响应队列按命令字节分发
+  - `Device::recv_matching` 已搬进 `src/frontend/mod.rs`，但
+    `frontend/print.rs` 的预算查询和 `wait_for_print_done` 仍用 `try_recv_one`
+  - `0x7b` 或未知状态仍可能卡在队首，导致预算查询退化或等待完成报错
+  - 方案：两处都改用 `recv_matching`，不匹配的帧丢弃并记录
+- [ ] `wait_for_print_done` 跳过非 `0x70` 帧，不因 `0x7b` 推送退出
+- [ ] D 模式在 `Feed` 之后强制只用 X：`src/planner/print.rs` 的
+  `prev = bm.line(y - 1)` 可能取到已合并成 `Feed` 的空白行
+  - 补「空白行后接 D 行」的测试
+- [ ] 修正文档矛盾：`src/planner/print.rs:18-19` 说 D 保留普通 Line，
+  `rle.md:21-24` 说 X / D 不能混用
+  - `RleMode::Bits4/5/6` 改名 `*Auto`，或加「DP27P 不可用」警告
+- [ ] `PrinterStatus` 支持未知值：`Unknown(u8)` 或
+  `Status { raw, status: Option<_> }`
+  - 避免 `0x0c+` 新错误码变成 `ParseRespError::InvalidValue` 并卡队列
+- [ ] `FlowPlanner::on_buffer_size` 检查 `BufferSize::is_error()`；
+  错误状态中止或退化，不继续按预算发送
+- [ ] `PrintLine` 参数校验：`src/command/req/print_line.rs:62` 的 v0
+  `data_len as u16`、`:91` 的 v1 `dots as u16` 会静默截断
+  - 用 `try_from` 返回 `ParamOutOfRange`
+- [ ] `FeedLine` 避免超大分配：`src/command/req/feed_line.rs:40-52` 在
+  `lines = u32::MAX` 时会生成上千万段
+- [ ] USB 接口 detach 后 reattach：`src/backend/usb.rs:289-300` 没有
+  `attach_kernel_driver`
+  - 用 `set_auto_detach_kernel_driver(true)` 或 Drop 清理；
+    `Transport::reset`（`:186-190`）后重新 claim
+- [ ] 日志降噪：`src/frontend/mod.rs` 的 `try_send_batch` / `send_cmd_area`
+  在 debug 打印完整 9000 字节 hex，且两处重复
+  - debug 只打 `bytes` 和摘要，完整 hex 放 trace
+- [ ] 三处漏网的数组打印改 `simple_hex`：
+  - `src/planner/assembler.rs:121` `{bytes:02X?}`
+  - `src/planner/usb.rs:38` `{bytes:02X?}`
+  - `src/command/resp/gap_length.rs:45` `{raw:02X?}`
+
+### P2 死代码 / 依赖 / 文档
+
+- [ ] 处理全注释的 `src/bin/dzprint.rs`（207 行）和
+  `src/bin/dzprint_typst.rs`（762 行）
+  - 移到 `examples/`、加 feature gate 或删除；同时清掉 11 个未使用依赖
+    （`Cargo.toml` 的 `btleplug` / `bytebuffer` / `chrono` / `crossfire` /
+    `num-derive` / `strum` / `tar` / `tempfile` / `typst` / `typst-render` / `ureq`）
+- [ ] `src/bin/dzcli.rs` 只有空 `main_fn`，先实现 `List` 或标记未完成
+- [x] 删除 `_gen/`（生成脚本只解析不生成，避免继续误导）
+- [ ] 删除 `src/lib.rs` 末尾的空 dummy test
+- [x] 去掉 `#![feature(iter_map_windows)]`：
+  `src/rle.rs` 改为迭代器求游程边界，不再依赖 nightly feature
+- [ ] 删除或使用 `Bitmap::bits_mut`（`src/bitmap.rs:96`）和
+  `VarintMode::encode_into_safe`（`src/command/varint.rs:207`）
+- [ ] 补模块级文档：`rle.rs`、`settings.rs`、`command/mod.rs`、`command/envelope.rs`
+- [x] 修 `src/planner/mod.rs` 的 `[print]` 文档链接（模块/宏重名）
+- [ ] `TODO.md` 的「进行中」改成「已完成记录」，另开「下一步」
+- [ ] `README.md` 的 `bitmap.rs` 描述改成同时包含 `Bitmap` 和 `BitmapLine`
+- [ ] `protocol.md` / `flow-control.md` 考虑拆分「规范」和「实验记录」
+
+### 验收
+
+- [ ] `cargo test --lib` 不低于当前 326 passed
+- [ ] `cargo clippy --all-targets` 无 dead_code / 未使用依赖警告
+- [ ] `cargo fmt -- --check` 通过
+- [ ] `cargo doc --no-deps --lib` 无警告
 
 ## 文档同步规则
 

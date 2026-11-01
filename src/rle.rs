@@ -39,17 +39,20 @@ impl<'a> TryInto<Vec<Run<bool>>> for BitmapLine<'a> {
         shifted.shift_end(1);
         let xored = data.clone() ^ shifted;
         let prepend_zero = if !first_bit { Some(0) } else { None };
-        let res: Vec<Run<bool>> = prepend_zero
+        let mut points = prepend_zero
             .into_iter()
             .chain(xored.iter_ones())
-            .chain(std::iter::once(len))
-            .map_windows(|[a, b]| b - a)
+            .chain(std::iter::once(len));
+        let mut prev = points.next().expect("line is non-empty");
+        let res: Vec<Run<bool>> = points
             .enumerate()
-            .map(|(idx, num)| {
+            .map(|(idx, point)| {
+                let count = point - prev;
+                prev = point;
                 let bitval = (idx % 2 != 0) ^ first_bit;
                 Run {
                     value: bitval,
-                    count: num,
+                    count,
                 }
             })
             .collect();

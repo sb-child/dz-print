@@ -19,6 +19,7 @@
 //! 第一行按全白处理。
 
 use crate::bitmap::{Bitmap, BitmapError, BitmapLine};
+use crate::command::req::{self, ReqTrait};
 use crate::rle::{RleBitStream, RleBits, RleByteStream, RleTransformError};
 use thiserror::Error;
 
@@ -114,6 +115,103 @@ pub enum PrintCommand {
     },
     /// 走纸(打印空行)。[crate::command::req::feed_line::FeedLine]
     Feed { lines: u32 },
+}
+
+/// 把打印计划的每条命令翻译成命令层请求对象。
+///
+/// 这是 [`PrintCommand`] 在库内的唯一消费者；调用方拿到 `Vec<Box<dyn ReqTrait>>`
+/// 后交给 [`crate::planner::flow::FlowPlanner::push_commands`] 或
+/// [`crate::planner::Assembler::encode`]。
+pub fn into_reqs(commands: &[PrintCommand]) -> Vec<Box<dyn ReqTrait>> {
+    commands
+        .iter()
+        .map(|cmd| -> Box<dyn ReqTrait> {
+            match cmd {
+                PrintCommand::Line {
+                    repeats,
+                    skips,
+                    data,
+                } => Box::new(req::print_line::PrintLine {
+                    repeats: *repeats,
+                    skips: *skips,
+                    data: data.clone(),
+                }),
+                PrintCommand::Feed { lines } => {
+                    Box::new(req::feed_line::FeedLine { lines: *lines })
+                }
+                PrintCommand::RleByte {
+                    repeats,
+                    rle_byte_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Byte,
+                    count: *rle_byte_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle4x {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits4x,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle4d {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits4d,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle5x {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits5x,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle5d {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits5d,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle6x {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits6x,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+                PrintCommand::Rle6d {
+                    repeats,
+                    rle_runs_count,
+                    data,
+                } => Box::new(req::print_line_rle::PrintLineRle {
+                    repeats: *repeats,
+                    kind: req::print_line_rle::RleKind::Bits6d,
+                    count: *rle_runs_count,
+                    data: data.clone(),
+                }),
+            }
+        })
+        .collect()
 }
 
 /// 打印计划错误。
@@ -668,6 +766,34 @@ mod test {
             pages[0].lines + pages[1].lines,
             bm.height(),
             "pages must cover the whole bitmap"
+        );
+    }
+
+    #[test]
+    fn into_reqs_maps_line_and_rle_commands() {
+        let commands = vec![
+            PrintCommand::Line {
+                skips: 0,
+                repeats: 0,
+                data: vec![0x80],
+            },
+            PrintCommand::Rle5x {
+                repeats: 0,
+                rle_runs_count: 2,
+                data: vec![0x1F, 0xC0],
+            },
+        ];
+        let reqs = into_reqs(&commands);
+        let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|req| req.as_ref()).collect();
+        let bytes = crate::planner::Assembler::new(crate::command::ModelVersion::V2)
+            .encode(&refs)
+            .unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                0x1f, 0x21, 0x03, 0x00, 0x00, 0x80, 0x5b, // PrintLine
+                0x1f, 0x2c, 0x02, 0x1f, 0xc0, 0xf2, // RLE5X
+            ]
         );
     }
 
