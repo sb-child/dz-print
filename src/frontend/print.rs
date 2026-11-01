@@ -61,13 +61,39 @@ use tracing::{debug, info, warn};
 
 use super::{Device, FrontendError, RecvError};
 
+/// [`Device::print_bitmap_job_with`] 的页面参数。
+///
+/// 默认是连续纸，和 [`Device::print_bitmap_job`] 的行为一致。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrintJobOptions {
+    /// 每页 `StartPage` 里的纸张间隔类型。
+    pub gap_type: GapTypeSetting,
+    /// 纸张间隔长度，单位 `0.01mm`。
+    ///
+    /// 只在 `gap_type != GapTypeSetting::Continuous` 时生效；v2 要求
+    /// `50..=4194303`。
+    pub gap_length: u32,
+}
+
 impl Device {
-    /// 用 [`FlowPlanner`] 打印一整张位图。
+    /// 用 [`FlowPlanner`] 打印一整张位图，纸张间隔按连续纸处理。
+    ///
+    /// 等价于 [`Self::print_bitmap_job_with`] + [`PrintJobOptions::default`]。
+    pub async fn print_bitmap_job(
+        &self,
+        bm: &Bitmap,
+        rle: RleMode,
+    ) -> Result<FlowReport, FrontendError> {
+        self.print_bitmap_job_with(bm, rle, PrintJobOptions::default())
+            .await
+    }
+
+    /// 用 [`FlowPlanner`] 打印一整张位图，并指定纸张间隔。
     ///
     /// 位图高于 [`MAX_LINES_PER_PAGE`] 时自动拆成多页：每页发
     /// `StartPage` + `TotalLines`，再按预算分块发送行命令，最后 `EndPage`。
-    /// 页与页之间沿用 `Continuous`，不额外走纸。预算不足时发 `0x70` + `0x77`，
-    /// `0x77` 超时退化到固定 8 KiB。
+    /// 页与页之间沿用同一个 [`PrintJobOptions`]（默认连续纸），不额外走纸。
+    /// 预算不足时发 `0x70` + `0x77`，`0x77` 超时退化到固定 8 KiB。
     ///
     /// 最后一页的 `EndPage` 之后会调用 [`Device::wait_for_print_done`]，
     /// 等打印头真正走完再返回。
@@ -80,10 +106,11 @@ impl Device {
     ///
     /// 打印期间会占用 `0x70` / `0x77` 的响应；不要同时用 `try_recv_one` /
     /// `try_pop_raw` 从队头取帧，否则会抢走预算和状态的响应。
-    pub async fn print_bitmap_job(
+    pub async fn print_bitmap_job_with(
         &self,
         bm: &Bitmap,
         rle: RleMode,
+        options: PrintJobOptions,
     ) -> Result<FlowReport, FrontendError> {
         let _job = self
             .print_lock
@@ -116,8 +143,8 @@ impl Device {
                     page_idx,
                     print_sep_line: false,
                     data_pixel_width: width,
-                    printer_gap_type: GapTypeSetting::Continuous,
-                    printer_gap_length: 0,
+                    printer_gap_type: options.gap_type,
+                    printer_gap_length: options.gap_length,
                 },
                 &req::total_lines::TotalLines { lines },
             ])

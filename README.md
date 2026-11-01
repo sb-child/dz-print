@@ -39,10 +39,16 @@ Motherboard produced by DothanTech(dothantech.com)
 - 源代码里有很多未使用的垃圾，是逆向初期的残留，哪些是新的、哪些是旧的见下面的代码结构
 
 ```bash
-# 打印一张图片的示例代码
+# 打印一张 jpg / png 图片（会真的走纸）
+cargo run --bin dzprint_image -- --image /tmp/print.png
+cargo run --bin dzprint_image -- --image /tmp/print.png \
+  --device DP27P-Y4094C023 --raster floyd-steinberg \
+  --gap-type gap --gap-length 2.5 --darkness normal --speed max
+
+# 打印一张图片的示例代码（旧版，整体被注释）
 cargo run --bin dzprint
 
-# 打印 Typst 文档的示例代码
+# 打印 Typst 文档的示例代码（旧版，整体被注释）
 cargo run --bin dzprint_typst
 
 # TODO: 更完善的 CLI
@@ -64,6 +70,8 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
 
 - `asset/` 字体等资源文件，供示例代码使用
 - `bin/` 可执行的示例
+  - `dzprint_image` `[新]` 打印 jpg / png：查打印头点数、按需等比缩放、抖动成位图，
+    可选 `--gap-type` / `--gap-length` / `--darkness` / `--speed` / `--raster`
   - `dzprint` 打印图片、`dzprint_typst` 打印 Typst 文档：`[旧]` 实现整体被注释，目前 `main` 是空的
   - `dzcli` CLI 雏形（只有 `clap` 参数骨架，功能还没接）
   - `test_usb` `[新]` 真机 USB 测试平台：clap 参数选择设备 / `--phase` / `--rle` / `--rows`，覆盖查询 / 流控 / `0x80` 激活 / `0x7f` 探测 / 打印测试

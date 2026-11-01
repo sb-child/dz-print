@@ -100,6 +100,8 @@ use tracing::{debug, trace, warn};
 mod print;
 mod worker;
 
+pub use print::PrintJobOptions;
+
 /// 响应接收错误。
 #[derive(Debug, Snafu)]
 pub enum RecvError {
