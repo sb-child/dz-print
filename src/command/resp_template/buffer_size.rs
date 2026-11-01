@@ -19,7 +19,7 @@ pub struct BufferSizeV2V1V0Tl {
     /// size = 可用容量，单位 500 字节；`1` 按 1000 计。
     pub size: VarAuto,
     #[deku(endian = "little")]
-    /// status = `0` 正常，`0x0400_0000` 等待数据，其余为错误。
+    /// status = `0` 正常，`0x0400_0000` 等待数据，其余 SDK 只记日志。
     pub status: i32,
     #[deku(endian = "little")]
     /// sync_token = 疑似固件侧包序号，SDK 只用于日志。

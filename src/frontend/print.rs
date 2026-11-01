@@ -158,7 +158,7 @@ impl Device {
                                     status = bs.status,
                                     "buffer size"
                                 );
-                                flow.on_buffer_size(&bs)?;
+                                flow.on_buffer_size(&bs);
                             }
                             Ok(None) => {
                                 warn!("buffer size timed out, fall back to 8 KiB");

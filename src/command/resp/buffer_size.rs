@@ -18,7 +18,10 @@ pub const CMD: u8 = 0x77;
 pub struct BufferSize {
     /// 可用容量单位数。
     pub size: u16,
-    /// 状态：`0` 正常，`0x0400_0000` 等待数据，其余为错误。
+    /// 状态：`0` 正常，`0x0400_0000` 等待数据，其余按 SDK 记为错误。
+    ///
+    /// 只用于诊断；SDK 对未知状态只写日志，流控仍然按 `size` 继续。
+    /// DP27P 打印过程中实测会返回 `4`。
     pub status: i32,
     /// 疑似固件侧包序号，SDK 只用于日志。
     pub sync_token: i16,
@@ -42,10 +45,10 @@ impl BufferSize {
         self.status == 0x0400_0000
     }
 
-    /// 状态为错误。
+    /// 状态为 SDK 定义的错误。
     ///
-    /// SDK 的判定是「除 bit26 外必须全为 0」，所以除 `0` 和 `0x0400_0000`
-    /// 以外的取值都算错误。
+    /// SDK 的判定是「除 bit26 外必须全为 0」，但命中时只记日志、不中止发送。
+    /// 这里保留分类只供诊断，不要在流控里拿它当失败条件。
     pub fn is_error(&self) -> bool {
         !self.is_ok() && !self.is_waiting_data()
     }

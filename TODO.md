@@ -440,9 +440,11 @@ transport（USB HID / BLE 串口透传）
   - `to_wire` 改为 match，去掉 `#[repr(u8)]`
   - `is_error()` 仍然是 `>= 0x0c`，`Unknown(0x0c..)` 也按错误处理
   - `resp::status::Status::parse` 不再因为未知状态码失败，避免卡队列
-- [x] `FlowPlanner::on_buffer_size` 检查 `BufferSize::is_error()`
-  - 返回 `FlowError::BufferStatus { status }`，打印任务直接中止；
-    `0x0400_0000`（等待数据）不算错误
+- [x] `FlowPlanner::on_buffer_size` 不再因 `status` 中止
+  - 真机 DP27P 打印中会回 `status = 4`；SDK 对非 `0` / 非 `0x0400_0000`
+    也只写 ERROR 日志，流控始终只看 `size`
+  - `BufferSize::is_error()` 保留为诊断分类，`FlowError::BufferStatus` 删除
+  - 补 `unknown_buffer_status_still_uses_the_budget` 测试
 - [x] `PrintLine` 参数校验
   - v0 的 `data_len` 用 `u16::try_from`，v1 的 `dots` 用 `checked_mul(8)` +
     `u16::try_from`，溢出返回 `ParamOutOfRange`
