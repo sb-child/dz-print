@@ -25,105 +25,24 @@
 //!
 //! 纸张间隔同时写进每页的 `StartPage`，否则打印任务会用 `Continuous` 覆盖掉
 //! `--gap-type`。`--gap-length` 省略时用 0.5mm，和旧版 `GapSetting` 的默认值一致。
+//!
+//! 设备连接、设置、超时这些和 `dzprint_typst` 共用的部分在 [`common`]。
 
-use anyhow::{Context as _, anyhow, ensure};
-use clap::{Parser, ValueEnum};
+use anyhow::{Context as _, anyhow};
+use clap::Parser;
 use dz_print::{
-    backend::usb::UsbSelector,
     bitmap::Bitmap,
-    command::{
-        req::{self, ReqTrait},
-        resp,
-        settings::{DarknessSetting, GapTypeSetting, SpeedSetting},
-    },
-    frontend::{Device, DeviceConfig, PrintJobOptions},
-    planner::print::{MAX_DOTS_PER_LINE, RleMode},
+    frontend::Device,
     raster::{DitherMode, from_gray_image, from_pixmap},
 };
 use image::{DynamicImage, GrayImage, ImageReader, imageops::FilterType};
-use mytm::TaskManager;
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::path::{Path, PathBuf};
 use tiny_skia::Pixmap;
-use tracing::{error, info};
+use tracing::info;
 
-/// 退出前等 worker 线程真正停下（释放 USB 句柄）的超时。
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+mod common;
 
-/// `--gap-length` 省略时用的间隔长度，单位 `0.01mm`（0.5mm）。
-const DEFAULT_GAP_LENGTH: u32 = 50;
-
-/// 抖动方式。
-#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum RasterArg {
-    /// Floyd-Steinberg 误差扩散
-    #[default]
-    #[value(name = "floyd-steinberg")]
-    FloydSteinberg,
-    /// 亮度截断
-    #[value(name = "threshold")]
-    Threshold,
-}
-
-impl From<RasterArg> for DitherMode {
-    fn from(value: RasterArg) -> Self {
-        match value {
-            RasterArg::FloydSteinberg => DitherMode::FloydSteinberg,
-            RasterArg::Threshold => DitherMode::Threshold,
-        }
-    }
-}
-
-/// RLE 编码方案。
-///
-/// 默认 `off`：DP27P 上 RLE 对真实照片会打出白带，页计数也会异常；普通
-/// `0x21` 行命令是当前唯一在真机上稳定验证过的路径。简单线稿仍可显式选
-/// `byte` / `bits5x` / `bits6x` 做实验。
-#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum RleArg {
-    /// 不压缩
-    #[default]
-    #[value(name = "off")]
-    Off,
-    /// 字节级 RLE
-    #[value(name = "byte")]
-    Byte,
-    /// 4 位符号，自动 X / D
-    #[value(name = "bits4")]
-    Bits4,
-    /// 5 位符号，自动 X / D
-    #[value(name = "bits5")]
-    Bits5,
-    /// 6 位符号，自动 X / D
-    #[value(name = "bits6")]
-    Bits6,
-    /// 4 位符号，只用 X
-    #[value(name = "bits4x")]
-    Bits4x,
-    /// 5 位符号，只用 X
-    #[value(name = "bits5x")]
-    Bits5x,
-    /// 6 位符号，只用 X
-    #[value(name = "bits6x")]
-    Bits6x,
-}
-
-impl From<RleArg> for RleMode {
-    fn from(value: RleArg) -> Self {
-        match value {
-            RleArg::Off => RleMode::Off,
-            RleArg::Byte => RleMode::Byte,
-            RleArg::Bits4 => RleMode::Bits4,
-            RleArg::Bits5 => RleMode::Bits5,
-            RleArg::Bits6 => RleMode::Bits6,
-            RleArg::Bits4x => RleMode::Bits4XOnly,
-            RleArg::Bits5x => RleMode::Bits5XOnly,
-            RleArg::Bits6x => RleMode::Bits6XOnly,
-        }
-    }
-}
+use common::PrintArgs;
 
 /// 命令行参数。
 #[derive(Parser, Debug)]
@@ -133,108 +52,29 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     image: PathBuf,
 
-    /// 按 USB 设备名（`型号-序列号`）选择；省略时取第一台德佟设备
-    #[arg(long, value_name = "NAME")]
-    device: Option<String>,
-
-    /// 纸张间隔类型：continuous / hole / gap / black-mark / transparent，或 0..=4
-    #[arg(long, value_name = "TYPE", value_parser = parse_gap_type)]
-    gap_type: Option<GapTypeSetting>,
-
-    /// 纸张间隔长度，单位 mm，可带小数（例如 2 / 2.5 / 2.5mm）
-    #[arg(long, value_name = "MM", value_parser = parse_gap_length)]
-    gap_length: Option<u32>,
-
-    /// 打印浓度：min / normal / max，或用户面值 1..=15
-    #[arg(long, value_name = "VALUE", value_parser = parse_darkness)]
-    darkness: Option<DarknessSetting>,
-
-    /// 打印速度：min / normal / max，或用户面值 1..=5
-    #[arg(long, value_name = "VALUE", value_parser = parse_speed)]
-    speed: Option<SpeedSetting>,
-
-    /// 抖动方式
-    #[arg(long, value_enum, default_value = "floyd-steinberg")]
-    raster: RasterArg,
-
-    /// 行数据的 RLE 编码方案；默认不压缩
-    #[arg(long, value_enum, default_value = "off")]
-    rle: RleArg,
-
-    /// 等打印结束的总超时，单位秒
-    #[arg(long, value_name = "SECS", default_value_t = 600)]
-    print_timeout: u64,
-
-    /// 单条响应的等待超时，单位秒
-    ///
-    /// 固件卡住时 `0x70` 不会回包，这个值决定每次状态查询等多久；
-    /// 连续 5 次没有任何回应就会判定打印机失联并报错退出。
-    #[arg(long, value_name = "SECS", default_value_t = 3)]
-    recv_timeout: u64,
+    #[command(flatten)]
+    print: PrintArgs,
 }
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    // 默认 INFO；排查时可以用 `RUST_LOG=debug` / `RUST_LOG=dz_print=trace` 打开细节。
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_target(false)
-        .init();
-
-    // 错误要进日志，不只是打到 stdout 的 `Error: ...`；
-    // 打印中途开盖、缺纸这类设备错误也要带上原因。
-    match run().await {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(err) => {
-            error!("{err:#}");
-            std::process::ExitCode::FAILURE
-        }
-    }
-}
-
-async fn run() -> anyhow::Result<()> {
+    common::init_tracing();
     let cli = Cli::parse();
-    let selector = match cli.device.as_deref() {
-        Some(name) => {
-            info!("select device by name: {name}");
-            UsbSelector::DeviceName(name.to_owned())
+
+    common::exit_code(
+        async {
+            // 图片路径 / 格式错误要在连接打印机之前报出来。
+            let img = load_image(&cli.image)?;
+            let args = cli.print.clone();
+            common::with_device(&args, async |dev| print_image(dev, args.clone(), img).await).await
         }
-        None => UsbSelector::Auto,
-    };
-
-    let img = load_image(&cli.image)?;
-
-    let tm = TaskManager::new();
-    let dev = Device::new(
-        &tm,
-        DeviceConfig {
-            selector,
-            recv_timeout: Duration::from_secs(cli.recv_timeout.max(1)),
-            print_done_timeout: Duration::from_secs(cli.print_timeout.max(1)),
-            ..Default::default()
-        },
-    );
-
-    let result = async {
-        dev.ready().await.context("设备没有就绪")?;
-        print_image(&dev, &cli, img).await
-    }
-    .await;
-
-    // 无论打印成功与否，都要等 worker 线程退出后再让进程结束。
-    let stopped = dev.shutdown(SHUTDOWN_TIMEOUT).await;
-    tm.close();
-    result?;
-    stopped?;
-    Ok(())
+        .await,
+    )
 }
 
-async fn print_image(dev: &Device, cli: &Cli, img: DynamicImage) -> anyhow::Result<()> {
+async fn print_image(dev: &Device, args: PrintArgs, img: DynamicImage) -> anyhow::Result<()> {
     // 查询点数
-    let dots = print_head_dots(dev).await?;
+    let dots = common::print_head_dots(dev).await?;
     info!("print head dots = {dots}");
 
     // 转换位图
@@ -242,46 +82,20 @@ async fn print_image(dev: &Device, cli: &Cli, img: DynamicImage) -> anyhow::Resu
     let img = fit_to_print_head(img, dots);
     info!("image {width}x{height} -> {}x{}", img.width(), img.height());
 
-    let bitmap = to_bitmap(&img, cli.raster.into())?;
+    let bitmap = to_bitmap(&img, args.raster.into())?;
     info!(
         "bitmap {}x{}, dither = {:?}",
         bitmap.width(),
         bitmap.height(),
-        DitherMode::from(cli.raster)
+        DitherMode::from(args.raster)
     );
 
     // 发送设置
-    send_settings(dev, cli).await?;
+    args.send_settings(dev).await?;
 
     // 打印
-    let report = dev
-        .print_bitmap_job_with(&bitmap, cli.rle.into(), job_options(cli))
-        .await?;
-    info!(
-        chunks = report.chunks,
-        bytes = report.bytes,
-        budget_queries = report.budget_queries,
-        degraded = report.degraded,
-        "print finished"
-    );
+    args.print_bitmap(dev, &bitmap).await?;
     Ok(())
-}
-
-async fn print_head_dots(dev: &Device) -> anyhow::Result<u16> {
-    dev.try_send_batch(&[&req::print_width::PrintWidth {}])
-        .await?;
-    let width: resp::print_width::PrintWidth = dev.try_recv_one().await?;
-
-    ensure!(
-        width.print_width > 0,
-        "设备回报的打印头点数为 0, 无法确定缩放宽度"
-    );
-    ensure!(
-        usize::from(width.print_width) <= MAX_DOTS_PER_LINE,
-        "打印头点数 {} 超过协议上限 {MAX_DOTS_PER_LINE}",
-        width.print_width
-    );
-    Ok(width.print_width)
 }
 
 /// 图片宽度大于打印头点数时等比缩放到点数，否则原样返回。
@@ -336,46 +150,6 @@ fn over_white(value: u8, alpha: u8) -> u8 {
     ((u32::from(value) * alpha + 255 * (255 - alpha)) / 255) as u8
 }
 
-/// 只发送用户给出的设置，顺序固定为纸张类型 / 间隔 / 浓度 / 速度。
-async fn send_settings(dev: &Device, cli: &Cli) -> anyhow::Result<()> {
-    let mut reqs: Vec<Box<dyn ReqTrait>> = Vec::new();
-    if let Some(gap_type) = cli.gap_type {
-        reqs.push(Box::new(req::gap_type::GapType { gap_type }));
-    }
-    if let Some(gap) = cli.gap_length {
-        reqs.push(Box::new(req::gap_length::GapLength { gap }));
-    }
-    if let Some(darkness) = cli.darkness {
-        reqs.push(Box::new(req::darkness::Darkness { darkness }));
-    }
-    if let Some(speed) = cli.speed {
-        reqs.push(Box::new(req::speed::Speed { speed }));
-    }
-    if reqs.is_empty() {
-        return Ok(());
-    }
-
-    info!(count = reqs.len(), "send print settings");
-    let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|req| req.as_ref()).collect();
-    dev.try_send_batch(&refs).await?;
-    Ok(())
-}
-
-/// 把命令行里的纸张设置带进 `StartPage`。
-fn job_options(cli: &Cli) -> PrintJobOptions {
-    let gap_type = cli.gap_type.unwrap_or_default();
-    let gap_length = match cli.gap_length {
-        Some(gap) => gap,
-        // 只给了 `--gap-type` 时用 0.5mm，否则 v2 的 `printer_gap_length` 会校验失败。
-        None if gap_type != GapTypeSetting::Continuous => DEFAULT_GAP_LENGTH,
-        None => 0,
-    };
-    PrintJobOptions {
-        gap_type,
-        gap_length,
-    }
-}
-
 fn load_image(path: &Path) -> anyhow::Result<DynamicImage> {
     let reader = ImageReader::open(path)
         .with_context(|| format!("打开图片 {} 失败", path.display()))?
@@ -386,133 +160,10 @@ fn load_image(path: &Path) -> anyhow::Result<DynamicImage> {
         .with_context(|| format!("解码图片 {} 失败", path.display()))
 }
 
-fn parse_gap_type(value: &str) -> Result<GapTypeSetting, String> {
-    match value.to_ascii_lowercase().as_str() {
-        "continuous" | "ticket" => Ok(GapTypeSetting::Continuous),
-        "hole" => Ok(GapTypeSetting::Hole),
-        "gap" | "adhesive" => Ok(GapTypeSetting::Gap),
-        "black-mark" | "black_mark" | "cardpaper" => Ok(GapTypeSetting::BlackMark),
-        "transparent" => Ok(GapTypeSetting::Transparent),
-        other => other.parse::<u8>().map_or_else(
-            |_| {
-                Err(format!(
-                    "未知纸张间隔类型 `{value}`，可选 continuous / hole / gap / \
-                     black-mark / transparent 或 0..=4"
-                ))
-            },
-            |raw| GapTypeSetting::try_from(raw).map_err(|e| e.to_string()),
-        ),
-    }
-}
-
-/// 把 `2` / `2.5` / `2.5mm` 转成命令层用的 `0.01mm`。
-fn parse_gap_length(value: &str) -> Result<u32, String> {
-    let trimmed = value.trim();
-    let number = trimmed.strip_suffix("mm").map_or(trimmed, str::trim).trim();
-    let mm: f64 = number
-        .parse()
-        .map_err(|_| format!("无法解析间隔长度 `{value}`，请用 mm 数值，例如 2.5"))?;
-    if !mm.is_finite() {
-        return Err(format!("间隔长度 `{value}` 不是有限数值"));
-    }
-
-    let centi_mm = (mm * 100.0).round();
-    if !(50.0..=4_194_303.0).contains(&centi_mm) {
-        return Err(format!(
-            "间隔长度 {mm}mm 超出范围，应在 0.5mm..=41943.03mm 之间"
-        ));
-    }
-    Ok(centi_mm as u32)
-}
-
-fn parse_darkness(value: &str) -> Result<DarknessSetting, String> {
-    value
-        .parse()
-        .map_err(|e: dz_print::command::settings::PrintSettingError| {
-            format!("{e}（浓度可选 min / normal / max 或 1..=15）")
-        })
-}
-
-fn parse_speed(value: &str) -> Result<SpeedSetting, String> {
-    value
-        .parse()
-        .map_err(|e: dz_print::command::settings::PrintSettingError| {
-            format!("{e}（速度可选 min / normal / max 或 1..=5）")
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::RgbImage;
-
-    #[test]
-    fn cli_defaults() {
-        let cli = Cli::try_parse_from(["dzprint_image", "--image", "a.png"]).unwrap();
-        assert_eq!(cli.image, PathBuf::from("a.png"));
-        assert!(cli.device.is_none());
-        assert!(cli.gap_type.is_none());
-        assert!(cli.gap_length.is_none());
-        assert!(cli.darkness.is_none());
-        assert!(cli.speed.is_none());
-        assert_eq!(cli.raster, RasterArg::FloydSteinberg);
-        assert_eq!(cli.rle, RleArg::Off);
-    }
-
-    #[test]
-    fn cli_parses_all_options() {
-        let cli = Cli::try_parse_from([
-            "dzprint_image",
-            "--image",
-            "a.jpg",
-            "--device",
-            "DP27P-Y4094C023",
-            "--gap-type",
-            "gap",
-            "--gap-length",
-            "2.5mm",
-            "--darkness",
-            "12",
-            "--speed",
-            "max",
-            "--raster",
-            "threshold",
-        ])
-        .unwrap();
-
-        assert_eq!(cli.gap_type, Some(GapTypeSetting::Gap));
-        assert_eq!(cli.gap_length, Some(250));
-        assert_eq!(cli.darkness, Some(DarknessSetting::Darkness11));
-        assert_eq!(cli.speed, Some(SpeedSetting::Max));
-        assert_eq!(cli.raster, RasterArg::Threshold);
-    }
-
-    #[test]
-    fn gap_length_accepts_mm_and_decimals() {
-        assert_eq!(parse_gap_length("2").unwrap(), 200);
-        assert_eq!(parse_gap_length("2.5").unwrap(), 250);
-        assert_eq!(parse_gap_length("2.5mm").unwrap(), 250);
-        assert_eq!(parse_gap_length(" 0.5 mm ").unwrap(), 50);
-        assert!(parse_gap_length("0.4").is_err());
-        assert!(parse_gap_length("abc").is_err());
-        assert!(parse_gap_length("inf").is_err());
-    }
-
-    #[test]
-    fn gap_type_accepts_names_and_numbers() {
-        assert_eq!(
-            parse_gap_type("ticket").unwrap(),
-            GapTypeSetting::Continuous
-        );
-        assert_eq!(parse_gap_type("adhesive").unwrap(), GapTypeSetting::Gap);
-        assert_eq!(
-            parse_gap_type("black-mark").unwrap(),
-            GapTypeSetting::BlackMark
-        );
-        assert_eq!(parse_gap_type("4").unwrap(), GapTypeSetting::Transparent);
-        assert!(parse_gap_type("5").is_err());
-        assert!(parse_gap_type("unknown").is_err());
-    }
 
     #[test]
     fn fit_scales_only_when_wider_than_head() {
@@ -544,22 +195,5 @@ mod tests {
         let rgba = image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 0]));
         let bm = to_bitmap(&DynamicImage::ImageRgba8(rgba), DitherMode::Threshold).unwrap();
         assert!(!bm.line(0).unwrap().get(0).unwrap(), "透明像素应铺成白色");
-    }
-
-    #[test]
-    fn job_options_default_to_continuous() {
-        let cli = Cli::try_parse_from(["dzprint_image", "--image", "a.png"]).unwrap();
-        let options = job_options(&cli);
-        assert_eq!(options.gap_type, GapTypeSetting::Continuous);
-        assert_eq!(options.gap_length, 0);
-    }
-
-    #[test]
-    fn gap_type_without_length_uses_default() {
-        let cli = Cli::try_parse_from(["dzprint_image", "--image", "a.png", "--gap-type", "gap"])
-            .unwrap();
-        let options = job_options(&cli);
-        assert_eq!(options.gap_type, GapTypeSetting::Gap);
-        assert_eq!(options.gap_length, DEFAULT_GAP_LENGTH);
     }
 }

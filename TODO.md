@@ -538,12 +538,15 @@ transport（USB HID / BLE 串口透传）
 
 ### P2 死代码 / 依赖 / 文档
 
-- [ ] 处理全注释的 `src/bin/dzprint.rs`（207 行）和
-      `src/bin/dzprint_typst.rs`（762 行）
-  - 移到 `examples/`、加 feature gate 或删除；同时清掉未使用依赖
-    （当前是 `btleplug` / `bytebuffer` / `chrono` / `num-derive` / `strum` /
-    `tar` / `tempfile` / `typst` / `typst-render` / `ureq`；`crossfire` 已用于
-    frontend 的通道）
+- [x] `dzprint_typst` 复活：改用新命令层，和 `dzprint_image` 共用
+      `src/bin/common/`（参数、设置、打印、退出顺序）
+  - 逐页 `<print-settings>` 覆盖命令行参数；覆盖从该页开始生效并沿用
+  - 渲染按“打印头点数 / 页面宽度”缩放，页高按比例，不需要文档固定 48mm
+- [ ] 处理全注释的 `src/bin/dzprint.rs`（207 行）
+  - 移到 `examples/`、加 feature gate 或删除
+- [ ] 清掉仍未使用的依赖：`btleplug` / `bytebuffer` / `num-derive` / `strum` /
+      `ttf-parser`（`chrono` / `tempfile` / `tar` / `typst*` / `ureq` 已被
+      `dzprint_typst` 重新使用；`crossfire` 已用于 frontend 的通道）
 - [ ] `src/bin/dzcli.rs` 只有空 `main_fn`，先实现 `List` 或标记未完成
 - [x] 删除 `_gen/`（生成脚本只解析不生成，避免继续误导）
 - [ ] 删除 `src/lib.rs` 末尾的空 dummy test

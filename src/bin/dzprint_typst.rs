@@ -2,761 +2,747 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-// use std::{
-//     collections::HashMap,
-//     env,
-//     path::{Path, PathBuf},
-// };
+//! 打印 Typst 文档。
+//!
+//! ```text
+//! dzprint_typst <FILE.typ> [--font <FILE>] [--device <NAME>] [--raster <MODE>]
+//!               [--rle <MODE>] [--gap-type <TYPE>] [--gap-length <MM>]
+//!               [--darkness <VALUE>] [--speed <VALUE>]
+//!               [--print-timeout <SECS>] [--recv-timeout <SECS>]
+//! ```
+//!
+//! - 文档在连接打印机之前编译，编译错误不会碰设备。
+//! - 每页按“打印头点数 / 页面宽度”渲染，正好铺满打印头；页高按比例。
+//! - 每页单独发一个打印任务（`StartPage` … `EndPage`），打完再渲染下一页，
+//!   避免多页位图同时留在内存里。
+//! - 额外字体用 `--font` 加载，默认只内置两份 Unifont。
+//!
+//! # 每页覆盖设置
+//!
+//! 在文档里放 `metadata` 并打上 `<print-settings>` 标签，就可以覆盖命令行参数：
+//!
+//! ```typst
+//! #metadata((gap-type: "adhesive", gap: 2.5, darkness: 12, speed: "max")) <print-settings>
+//! ```
+//!
+//! 字段都可以省略；支持的字段和取值：
+//!
+//! | 字段                  | 取值                                                              |
+//! | --------------------- | ----------------------------------------------------------------- |
+//! | `gap-type` / `paper`  | `continuous` / `hole` / `gap` / `black-mark` / `transparent`，或 0..=4 |
+//! | `gap` / `gap-length`  | 数值按 mm 解释（`2.5`），或字符串 `"2.5mm"`                       |
+//! | `darkness`            | `min` / `normal` / `max`，或 1..=15                                |
+//! | `speed`               | `min` / `normal` / `max`，或 1..=5                                 |
+//! | `raster`              | `floyd-steinberg` / `threshold`                                   |
+//! | `rle`                 | `off` / `byte` / `bits4` / `bits5` / `bits6` / `bits4x` / `bits5x` / `bits6x` |
+//!
+//! 覆盖从它所在页开始生效，后续页沿用，直到下一次覆盖；相当于 Typst 的
+//! `#set` 规则。需要恢复就在后面的页里再写一次。
 
-// use chrono::Local;
-// use dz_print::{
-//     backend,
-//     command::{self, HostCommand},
-//     image_proc::{
-//         Bitmap, DitherMode,
-//         cmd_parser::{BitmapParser, PrintCommand},
-//     },
-// };
-// use tempfile::{TempDir, tempdir};
-// use tiny_skia::Pixmap;
-// use typst::{
-//     Library, LibraryExt, World,
-//     diag::{FileError, FileResult},
-//     foundations::{Bytes, Datetime, Duration, NativeFunc, NativeFuncData},
-//     introspection::Introspector as _,
-//     syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot, package::PackageSpec},
-//     text::{Font, FontBook, FontInfo},
-//     utils::{LazyHash, PicoStr},
-// };
-// use typst_layout::PagedDocument;
-// use typst_render::RenderOptions;
+mod common;
 
-// #[tokio::main]
-// async fn main() -> anyhow::Result<()> {
-//     tracing_subscriber::fmt::init();
-//     main_fn().await
-// }
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
-// async fn main_fn() -> anyhow::Result<()> {
-//     println!("dz-print for typst");
-//     let file_name = env::args()
-//         .nth(1)
-//         .ok_or(anyhow::anyhow!("please specify a filename"))?;
-//     let file_path = std::path::PathBuf::from(&file_name);
-//     println!("reading file");
-//     let file_content = tokio::fs::read_to_string(file_name).await?;
-//     println!("creating world");
-//     let package_cache_dir = tempdir()?;
-//     let world = Minecraft::new(&file_path, file_content, package_cache_dir);
-//     println!("compiling document");
-//     let doc = typst::compile::<PagedDocument>(&world);
-//     for w in doc.warnings {
-//         println!("warning: {w:?}");
-//     }
-//     let doc = doc
-//         .output
-//         .map_err(|e| anyhow::anyhow!("compile error: {e:?}"))?;
+use anyhow::{Context as _, anyhow, bail};
+use chrono::{Datelike as _, Local};
+use clap::Parser;
+use dz_print::{
+    command::settings::{DarknessSetting, GapTypeSetting, SpeedSetting},
+    frontend::Device,
+    planner::print::RleMode,
+    raster::{DitherMode, from_pixmap_over_white},
+};
+use tempfile::{TempDir, tempdir};
+use tiny_skia::Pixmap;
+use tracing::{info, warn};
+use typst::{
+    Library, LibraryExt as _, World,
+    diag::{FileError, FileResult},
+    foundations::{Bytes, Datetime, Dict, Label, Selector, Value},
+    introspection::Introspector as _,
+    syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot, package::PackageSpec},
+    text::{Font, FontBook},
+    utils::{LazyHash, PicoStr},
+};
+use typst_layout::PagedDocument;
+use typst_render::RenderOptions;
 
-//     let mut page_settings_map: HashMap<usize, PrintSettings> = HashMap::new();
-//     let page_settings_selector = typst::foundations::Selector::Label(
-//         typst::foundations::Label::new(PicoStr::intern("print-settings")).unwrap(),
-//     );
+use common::PrintArgs;
 
-//     println!("load page settings");
-//     for content in doc.introspector().query(&page_settings_selector) {
-//         if let Some(location) = content.location() {
-//             let page_num = doc
-//                 .introspector()
-//                 .page(location)
-//                 .expect("idk the page")
-//                 .get();
-//             println!("parsing page setting {page_num}");
-//             let values = content
-//                 .get_by_name("value")
-//                 .map_err(|e| anyhow::anyhow!("parse page setting: {e:?}"))?;
-//             let typst::foundations::Value::Dict(v) = values else {
-//                 continue;
-//             };
-//             let paper = match v.get("paper").ok() {
-//                 Some(typst::foundations::Value::Str(x)) => PaperSetting::try_from(x.as_str())
-//                     .map_err(|e| anyhow::anyhow!("parse paper setting: {e:?}"))?,
-//                 Some(e) => return Err(anyhow::anyhow!("parse paper setting: Invalid Type {e:?}")),
-//                 None => PaperSetting::default(),
-//             };
-//             macro_rules! parse_numeric_setting {
-//                 ($field_name:expr, $setting_type:ty, $cast_type:ty) => {
-//                     match v.get($field_name).ok() {
-//                         Some(typst::foundations::Value::Int(x)) => {
-//                             <$setting_type>::try_from(*x as $cast_type).map_err(|e| {
-//                                 anyhow::anyhow!("parse {} setting: {e:?}", $field_name)
-//                             })?
-//                         }
-//                         Some(typst::foundations::Value::Str(x)) => {
-//                             <$setting_type>::try_from(x.as_str()).map_err(|e| {
-//                                 anyhow::anyhow!("parse {} setting: {e:?}", $field_name)
-//                             })?
-//                         }
-//                         Some(_) => {
-//                             return Err(anyhow::anyhow!(
-//                                 "parse {} setting: InvalidType",
-//                                 $field_name
-//                             ))
-//                         }
-//                         None => <$setting_type>::default(),
-//                     }
-//                 };
-//             }
-//             let darkness = parse_numeric_setting!("darkness", DarknessSetting, u8);
-//             let speed = parse_numeric_setting!("speed", SpeedSetting, u8);
-//             let gap = parse_numeric_setting!("gap", GapSetting, u16);
-//             let ps = PrintSettings {
-//                 paper,
-//                 darkness,
-//                 speed,
-//                 gap,
-//             };
-//             page_settings_map.insert(page_num, ps);
-//         }
-//     }
+/// 每页覆盖设置用的标签名。
+const SETTINGS_LABEL: &str = "print-settings";
 
-//     println!("connecting to printer");
-//     let b = backend::USBBackend::new(backend::USBSelector::DeviceSerial(
-//         "DP27P-Y4094C023".to_string(),
-//     ))
-//     .await?;
-//     for p in doc.pages() {
-//         println!("rendering page {}", p.number);
-//         // 576px = 48mm
-//         let opts = RenderOptions {
-//             pixel_per_pt: (576.0 / (2.834_645_7 * 48.0)).into(),
-//             ..Default::default()
-//         };
-//         let r = typst_render::render(&p, &opts);
-//         let ps = page_settings_map
-//             .get(&(p.number as usize))
-//             .cloned()
-//             .unwrap_or_default();
-//         println!("printing page {}: {:?}, bp {}", p.number, ps, ps.bp());
-//         print_page(&b, r, ps).await?;
-//     }
-//     Ok(())
-// }
+/// 命令行参数。
+#[derive(Parser, Debug)]
+#[command(version, about = "打印一页或多页 Typst 文档")]
+struct Cli {
+    /// 要打印的 .typ 文件
+    #[arg(value_name = "FILE")]
+    document: PathBuf,
 
-// async fn print_page(b: &backend::USBBackend, pm: Pixmap, ps: PrintSettings) -> anyhow::Result<()> {
-//     assert_eq!(
-//         pm.width(),
-//         576,
-//         "please ensure your page width is 576px or 48mm"
-//     );
-//     println!("converting to bitmap");
-//     let bitmap = Bitmap::from_pixmap(&pm, DitherMode::FloydSteinberg);
-//     // 这个 bp 参数其实是 magic number，以下是建议值
-//     // 最慢 50 | 较慢 75 | 正常 100 | 较快 110 | 最快 120
-//     // 可能受打印浓度影响
-//     let parser = BitmapParser::new(bitmap, ps.bp());
-//     println!("set paper type");
-//     let (cmd, chan) = backend::Command::without_response(
-//         command::Command::new_host(HostCommand::GetSetPrintPaperType)
-//             .package(ps.paper_vec(), false),
-//     );
-//     b.push(cmd).await?;
-//     chan.await?;
-//     println!("set darkness");
-//     let (cmd, chan) = backend::Command::without_response(
-//         command::Command::new_host(HostCommand::GetSetPrintDarkness)
-//             .package(ps.darkness_vec(), false),
-//     );
-//     b.push(cmd).await?;
-//     chan.await?;
-//     println!("set speed");
-//     let (cmd, chan) = backend::Command::without_response(
-//         command::Command::new_host(HostCommand::GetSetPrintSpeed).package(ps.speed_vec(), false),
-//     );
-//     b.push(cmd).await?;
-//     chan.await?;
-//     println!("set gap");
-//     let (cmd, chan) = backend::Command::without_response(
-//         command::Command::new_host(HostCommand::GetSetPrintPaperGap).package(ps.gap_vec(), false),
-//     );
-//     b.push(cmd).await?;
-//     chan.await?;
-//     println!("get status");
-//     let (cmd, chan) = backend::Command::with_response(
-//         command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
-//     );
-//     b.push(cmd).await.ok();
-//     let resp = chan.await?.ok_or(anyhow::anyhow!("get status error"))?;
-//     println!("status: {:?}", resp.await?.get_command());
-//     println!("enable high command");
-//     let (cmd, chan) = backend::Command::with_response(
-//         command::Command::new_host(HostCommand::EnableHighCommand).package(vec![0x7f], false),
-//     );
-//     b.push(cmd).await?;
-//     let resp = chan
-//         .await?
-//         .ok_or(anyhow::anyhow!("enable high command error"))?;
-//     println!("enable high command: {:?}", resp.await?.get_command());
-//     println!("reset printer");
-//     let (cmd, chan) = backend::Command::without_response(
-//         PrintCommand::ResetPrinter
-//             .parse()
-//             .unwrap()
-//             .into_iter()
-//             .flatten()
-//             .collect::<Vec<_>>(),
-//     );
-//     b.push(cmd).await?;
-//     chan.await?;
-//     println!("printing");
-//     let mut errored = false;
-//     for c in parser {
-//         if let Some(c) = c.parse() {
-//             for c in c {
-//                 let (cmd, _ch) = backend::Command::without_response(c);
-//                 b.push(cmd).await?;
-//                 // 这是相当保守且恐怖的，我下次应该等待整个buffer变空? 我不知道
-//                 // ch.await?;
-//             }
-//         } else {
-//             let (cmd1, chan1) = backend::Command::with_response(
-//                 command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
-//             );
-//             b.push(cmd1).await.ok();
-//             let chan = chan1.await?;
-//             if let Some(chan) = chan {
-//                 let resp = chan.await;
-//                 let resp = if let Ok(resp) = resp {
-//                     resp
-//                 } else {
-//                     // 如果收不到东西，那一定是打印机 buffer 炸了
-//                     // 这是打印机固件写的烂，我没什么好办法
-//                     println!("receive error");
-//                     errored = true;
-//                     break;
-//                 };
-//                 let stat = resp.get_payload()[0];
-//                 println!("status: {:?}", stat);
-//                 if stat == 35 {
-//                     println!("no paper");
-//                     errored = true;
-//                     break;
-//                 }
-//             } else {
-//                 println!("print failed");
-//                 errored = true;
-//                 break;
-//             }
-//         }
-//     }
-//     if errored {
-//         println!("reset device...");
-//         let (cmd, chan) = backend::Command::reset();
-//         b.push(cmd).await?;
-//         chan.await?;
-//         let (cmd1, chan1) = backend::Command::with_response(
-//             command::Command::new_host(HostCommand::GetPrinterStatus).package(vec![], false),
-//         );
-//         b.push(cmd1).await?;
-//         let chan = chan1.await?;
-//         if let Some(chan) = chan {
-//             let resp = chan.await;
-//             let resp = if let Ok(resp) = resp {
-//                 resp
-//             } else {
-//                 unreachable!("炸了炸了，但我不知道怎么修")
-//             };
-//             let stat = resp.get_payload()[0];
-//             println!("status: {:?}", stat);
-//             if stat == 35 {
-//                 println!("no paper");
-//             }
-//         } else {
-//             println!("print failed");
-//         }
-//         panic!("print errored");
-//     }
-//     // println!("feed 2 lines");
-//     // let (cmd, _) = backend::Command::without_response(
-//     //     PrintCommand::FeedLines(2)
-//     //         .parse()
-//     //         .unwrap()
-//     //         .into_iter()
-//     //         .flatten()
-//     //         .collect::<Vec<_>>(),
-//     // );
-//     // b.push(cmd).await?;
-//     println!("next paper");
-//     let (cmd, _) = backend::Command::without_response(
-//         PrintCommand::NextPaper
-//             .parse()
-//             .unwrap()
-//             .into_iter()
-//             .flatten()
-//             .collect::<Vec<_>>(),
-//     );
-//     b.push(cmd).await?;
-//     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-//     Ok(())
-// }
+    /// 额外加载的字体文件（ttf / otf，可重复）；默认只用内置 Unifont
+    #[arg(long = "font", value_name = "FILE")]
+    font: Vec<PathBuf>,
 
-// fn load_builtin_fonts() -> (Vec<Font>, FontBook) {
-//     let mut fonts = Vec::new();
-//     let mut book = FontBook::new();
+    #[command(flatten)]
+    print: PrintArgs,
+}
 
-//     let font_sources: &[(&[u8], &str)] = &[
-//         (include_bytes!("../asset/unifont-16.0.04.ttf"), "Unifont"),
-//         (
-//             include_bytes!("../asset/UnifontExMono.ttf"),
-//             "UnifontExMono",
-//         ),
-//     ];
-//     for (bytes, family_override) in font_sources {
-//         let typst_bytes = Bytes::new(bytes);
-//         if let Some(font) = Font::new(typst_bytes, 0) {
-//             let mut info = font.info().clone();
-//             info.family = family_override.to_string();
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    common::init_tracing();
+    let cli = Cli::parse();
+    common::exit_code(run(cli).await)
+}
 
-//             book.push(info);
-//             fonts.push(font);
-//         }
-//     }
-//     (fonts, book)
-// }
+async fn run(cli: Cli) -> anyhow::Result<()> {
+    // 编译在连接打印机之前完成，语法 / 布局错误不会白白占着设备。
+    let world = TypstWorld::new(&cli)?;
+    let doc = compile(&world)?;
 
-// fn prepare_package(pkg: &PackageSpec, cache_dir: &Path) -> FileResult<PathBuf> {
-//     let package_dir = cache_dir.join(format!(
-//         "{}__{}__{}",
-//         pkg.namespace.as_str(),
-//         pkg.name.as_str(),
-//         pkg.version.to_string(),
-//     ));
-//     if package_dir.exists() {
-//         return Ok(package_dir);
-//     }
-//     if pkg.namespace == "preview" {
-//         let url = format!(
-//             "https://packages.typst.org/preview/{}-{}.tar.gz",
-//             pkg.name, pkg.version
-//         );
-//         println!("Downloading package: {url} to {}", package_dir.display());
-//         let response = ureq::get(&url).call().map_err(|e| {
-//             FileError::Other(Some(format!("Failed to download package: {e}").into()))
-//         })?;
-//         let mut body = response.into_body();
-//         let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(body.as_reader()));
-//         let dld_dir = cache_dir.with_extension("_downloading");
-//         if dld_dir.exists() {
-//             let _ = std::fs::remove_dir_all(&dld_dir);
-//         }
-//         std::fs::create_dir_all(&dld_dir).map_err(|e| FileError::from_io(e, &dld_dir))?;
-//         archive
-//             .unpack(&dld_dir)
-//             .map_err(|e| FileError::Other(Some(format!("Failed to unpack package: {e}").into())))?;
-//         std::fs::rename(&dld_dir, &package_dir).map_err(|e| FileError::from_io(e, &package_dir))?;
-//         Ok(package_dir)
-//     } else {
-//         Err(FileError::NotFound(PathBuf::from(format!(
-//             "@{}/{} version {}",
-//             pkg.namespace, pkg.name, pkg.version
-//         ))))
-//     }
-// }
+    // 每页的 <print-settings> 覆盖项；按页码索引。
+    let overrides = page_settings(&doc)?;
+    if !overrides.is_empty() {
+        info!(pages = overrides.len(), "found <print-settings> overrides");
+    }
 
-// /// 我的[世界](typst::World)
-// struct Minecraft {
-//     fontbook: LazyHash<FontBook>,
-//     library: LazyHash<Library>,
-//     main_fileid: FileId,
-//     main_content: String,
-//     root_path: PathBuf,
-//     fonts: Vec<Font>,
-//     package_cache_dir: TempDir,
-// }
+    let args = cli.print.clone();
+    common::with_device(&args, async |dev| {
+        print_document(dev, &cli.print, &doc, &overrides).await
+    })
+    .await
+}
 
-// impl Minecraft {
-//     fn new(main_file_path: &Path, main_content: String, package_cache_dir: TempDir) -> Self {
-//         let (fonts, fontbook) = load_builtin_fonts();
-//         let fontbook = LazyHash::new(fontbook);
-//         let library = LazyHash::new(make_library());
-//         let root_path = main_file_path
-//             .parent()
-//             .unwrap_or(Path::new(""))
-//             .to_path_buf();
-//         let root_path = root_path.canonicalize().unwrap_or(root_path);
-//         let main_filename = main_file_path
-//             .file_name()
-//             .unwrap_or_default()
-//             .to_string_lossy();
-//         let vpath = VirtualPath::new(format!("/{}", main_filename)).expect("no way");
-//         let p = RootedPath::new(VirtualRoot::Project, vpath);
-//         let main_fileid = FileId::unique(p);
-//         Self {
-//             fontbook,
-//             library,
-//             main_fileid,
-//             main_content,
-//             root_path,
-//             fonts,
-//             package_cache_dir,
-//         }
-//     }
+/// 编译文档，把编译警告 / 错误都打到日志里。
+fn compile(world: &TypstWorld) -> anyhow::Result<PagedDocument> {
+    let warned = typst::compile::<PagedDocument>(world);
+    for warning in &warned.warnings {
+        warn!("Typst: {}", warning.message);
+    }
+    warned.output.map_err(|errors| {
+        let details: Vec<String> = errors
+            .iter()
+            .map(|error| {
+                let hints: Vec<String> = error
+                    .hints
+                    .iter()
+                    .map(|hint| format!("  hint: {}", hint.v))
+                    .collect();
+                if hints.is_empty() {
+                    format!("- {}", error.message)
+                } else {
+                    format!("- {}\n{}", error.message, hints.join("\n"))
+                }
+            })
+            .collect();
+        anyhow!("Typst 编译失败：\n{}", details.join("\n"))
+    })
+}
 
-//     fn resolve_id(&self, id: FileId) -> FileResult<PathBuf> {
-//         if id == self.main_fileid {
-//             return Err(FileError::Other(Some("Main file is virtual".into())));
-//         }
-//         match id.root() {
-//             VirtualRoot::Project => {
-//                 let path = id
-//                     .vpath()
-//                     .realize(&self.root_path)
-//                     .map_err(FileError::Realize)?;
+/// 渲染并打印所有页。
+///
+/// 覆盖设置是“粘性”的：一页的 `<print-settings>` 会一直沿用到下一处覆盖。
+async fn print_document(
+    dev: &Device,
+    base: &PrintArgs,
+    doc: &PagedDocument,
+    overrides: &HashMap<usize, PageSettings>,
+) -> anyhow::Result<()> {
+    let dots = common::print_head_dots(dev).await?;
+    info!("print head dots = {dots}, pages = {}", doc.pages().len());
 
-//                 if !path.starts_with(&self.root_path) {
-//                     return Err(FileError::AccessDenied);
-//                 }
-//                 Ok(path)
-//             }
-//             VirtualRoot::Package(package_spec) => {
-//                 let pkg_dir = prepare_package(package_spec, self.package_cache_dir.path())?;
-//                 id.vpath().realize(&pkg_dir).map_err(FileError::Realize)
-//             }
-//         }
-//     }
-// }
+    let mut args = base.clone();
+    // 上一次真正发给打印机的设置，用来避免每页都重复发一遍。
+    let mut sent: Option<SendableSettings> = None;
 
-// impl World for Minecraft {
-//     fn library(&self) -> &LazyHash<Library> {
-//         &self.library
-//     }
+    for (index, page) in doc.pages().iter().enumerate() {
+        let page_no = index + 1;
+        if let Some(settings) = overrides.get(&page_no) {
+            info!(page = page_no, ?settings, "apply <print-settings>");
+            settings.apply_to(&mut args);
+        }
 
-//     fn book(&self) -> &LazyHash<FontBook> {
-//         &self.fontbook
-//     }
+        let pixmap = render_page(page, dots)?;
+        info!(
+            page = page_no,
+            width = pixmap.width(),
+            height = pixmap.height(),
+            "rendered page"
+        );
+        let bitmap = from_pixmap_over_white(&pixmap, args.raster.into())?;
 
-//     fn main(&self) -> FileId {
-//         self.main_fileid
-//     }
+        let current = SendableSettings::from(&args);
+        if sent.as_ref() != Some(&current) {
+            args.send_settings(dev).await?;
+            sent = Some(current);
+        }
 
-//     fn source(&self, id: FileId) -> FileResult<Source> {
-//         if id == self.main_fileid {
-//             return Ok(Source::new(id, self.main_content.clone()));
-//         }
-//         let path = self.resolve_id(id)?;
-//         let content = std::fs::read_to_string(&path).map_err(|e| FileError::from_io(e, &path))?;
-//         Ok(Source::new(id, content))
-//     }
+        info!(
+            page = page_no,
+            rle = ?args.rle,
+            "printing page"
+        );
+        args.print_bitmap(dev, &bitmap).await?;
+    }
+    Ok(())
+}
 
-//     fn file(&self, id: FileId) -> FileResult<Bytes> {
-//         let path = self.resolve_id(id)?;
-//         let content = std::fs::read(&path).map_err(|e| FileError::from_io(e, &path))?;
-//         Ok(Bytes::new(content))
-//     }
+/// 把一页按打印头宽度渲染。
+///
+/// `pixel_per_pt` 由页面实际宽度算出，所以不同纸张 / 页面宽度都能铺满打印头。
+/// 四舍五入偶尔会多出 1 个像素，超出打印头时退一点再渲染一次。
+fn render_page(page: &typst_layout::Page, dots: u16) -> anyhow::Result<Pixmap> {
+    let width_pt = page.frame.size().x.to_pt();
+    if !(width_pt.is_finite() && width_pt > 0.0) {
+        bail!("页面宽度 {width_pt}pt 无效，无法渲染");
+    }
 
-//     fn font(&self, index: usize) -> Option<Font> {
-//         self.fonts.get(index).cloned()
-//     }
+    let dots_f = f64::from(dots);
+    let options = |scale: f64| RenderOptions {
+        pixel_per_pt: scale.into(),
+        ..Default::default()
+    };
 
-//     fn today(&self, _offset: Option<Duration>) -> Option<Datetime> {
-//         let _now = Local::now();
-//         // todo
-//         None
-//     }
-// }
+    let mut pixmap = typst_render::render(page, &options(dots_f / width_pt));
+    if pixmap.width() > u32::from(dots) {
+        pixmap = typst_render::render(page, &options((dots_f - 1.0) / width_pt));
+    }
+    Ok(pixmap)
+}
 
-// #[derive(Snafu, Debug)]
-// enum PrintSettingError {
-//     #[snafu(display("Invalid value `{0}`"))]
-//     InvalidU8(u8),
-//     #[snafu(display("Invalid value `{0}`"))]
-//     InvalidU16(u16),
-//     #[snafu(display("Invalid string `{0}`"))]
-//     InvalidString(String),
-// }
+/// 真正需要发给打印机的设置；用来判断这一页要不要重发。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SendableSettings {
+    gap_type: Option<GapTypeSetting>,
+    gap_length: Option<u32>,
+    darkness: Option<DarknessSetting>,
+    speed: Option<SpeedSetting>,
+}
 
-// #[derive(Debug, Clone, Copy, Default)]
-// enum SpeedSetting {
-//     /// 最慢(1)
-//     Min,
-//     /// 稍慢(2)
-//     Speed1,
-//     /// 正常(3)
-//     #[default]
-//     Normal,
-//     /// 稍快(4)
-//     Speed3,
-//     /// 最快(5)
-//     Max,
-// }
+impl From<&PrintArgs> for SendableSettings {
+    fn from(args: &PrintArgs) -> Self {
+        Self {
+            gap_type: args.gap_type,
+            gap_length: args.gap_length,
+            darkness: args.darkness,
+            speed: args.speed,
+        }
+    }
+}
 
-// impl TryFrom<u8> for SpeedSetting {
-//     type Error = PrintSettingError;
+/// 一页的 `<print-settings>` 覆盖项。
+#[derive(Debug, Clone, Default)]
+struct PageSettings {
+    gap_type: Option<GapTypeSetting>,
+    gap_length: Option<u32>,
+    darkness: Option<DarknessSetting>,
+    speed: Option<SpeedSetting>,
+    raster: Option<DitherMode>,
+    rle: Option<RleMode>,
+}
 
-//     fn try_from(value: u8) -> Result<Self, Self::Error> {
-//         match value {
-//             1 => Ok(Self::Min),
-//             2 => Ok(Self::Speed1),
-//             3 => Ok(Self::Normal),
-//             4 => Ok(Self::Speed3),
-//             5 => Ok(Self::Max),
-//             _ => Err(Self::Error::InvalidU8 { value }),
-//         }
-//     }
-// }
+impl PageSettings {
+    fn apply_to(&self, args: &mut PrintArgs) {
+        if let Some(gap_type) = self.gap_type {
+            args.gap_type = Some(gap_type);
+        }
+        if let Some(gap_length) = self.gap_length {
+            args.gap_length = Some(gap_length);
+        }
+        if let Some(darkness) = self.darkness {
+            args.darkness = Some(darkness);
+        }
+        if let Some(speed) = self.speed {
+            args.speed = Some(speed);
+        }
+        if let Some(raster) = self.raster {
+            args.raster = match raster {
+                DitherMode::FloydSteinberg => common::RasterArg::FloydSteinberg,
+                DitherMode::Threshold => common::RasterArg::Threshold,
+            };
+        }
+        if let Some(rle) = self.rle {
+            args.rle = match rle {
+                RleMode::Off => common::RleArg::Off,
+                RleMode::Byte => common::RleArg::Byte,
+                RleMode::Bits4 => common::RleArg::Bits4,
+                RleMode::Bits5 => common::RleArg::Bits5,
+                RleMode::Bits6 => common::RleArg::Bits6,
+                RleMode::Bits4XOnly => common::RleArg::Bits4x,
+                RleMode::Bits5XOnly => common::RleArg::Bits5x,
+                RleMode::Bits6XOnly => common::RleArg::Bits6x,
+            };
+        }
+    }
 
-// impl TryFrom<&str> for SpeedSetting {
-//     type Error = PrintSettingError;
+    fn apply_dict(&mut self, dict: &Dict, page: usize) -> anyhow::Result<()> {
+        for (key, value) in dict.iter() {
+            let name = key.as_str();
+            match name {
+                "paper" | "gap-type" => {
+                    self.gap_type =
+                        Some(common::parse_gap_type(&string(value, page, name)?).map_err(
+                            |error| anyhow!("第 {page} 页 <print-settings> 的 `{name}`: {error}"),
+                        )?);
+                }
+                "gap" | "gap-length" => {
+                    self.gap_length = Some(gap_length(value, page)?);
+                }
+                "darkness" => {
+                    self.darkness = Some(darkness(value, page)?);
+                }
+                "speed" => {
+                    self.speed = Some(speed(value, page)?);
+                }
+                "raster" => {
+                    let raw = string(value, page, name)?;
+                    self.raster = Some(parse_raster(&raw).ok_or_else(|| {
+                        anyhow!(
+                            "第 {page} 页 <print-settings> 的 `raster`: 未知取值 `{raw}`，\
+                             可选 floyd-steinberg / threshold"
+                        )
+                    })?);
+                }
+                "rle" => {
+                    let raw = string(value, page, name)?;
+                    self.rle = Some(parse_rle(&raw).ok_or_else(|| {
+                        anyhow!(
+                            "第 {page} 页 <print-settings> 的 `rle`: 未知取值 `{raw}`，\
+                             可选 off / byte / bits4 / bits5 / bits6 / bits4x / bits5x / bits6x"
+                        )
+                    })?);
+                }
+                other => bail!(
+                    "第 {page} 页 <print-settings> 有未知字段 `{other}`，\
+                     可用 gap-type / gap / darkness / speed / raster / rle"
+                ),
+            }
+        }
+        Ok(())
+    }
+}
 
-//     fn try_from(value: &str) -> Result<Self, Self::Error> {
-//         match value {
-//             "min" | "1" => Ok(Self::Min),
-//             "2" => Ok(Self::Speed1),
-//             "normal" | "3" => Ok(Self::Normal),
-//             "4" => Ok(Self::Speed3),
-//             "max" | "5" => Ok(Self::Max),
-//             _ => Err(Self::Error::InvalidString(value.to_string())),
-//         }
-//     }
-// }
+fn string(value: &Value, page: usize, key: &str) -> anyhow::Result<String> {
+    match value {
+        Value::Str(raw) => Ok(raw.as_str().to_owned()),
+        other => bail!("第 {page} 页 <print-settings> 的 `{key}` 应该是字符串，实际是 {other:?}"),
+    }
+}
 
-// #[derive(Debug, Clone, Copy, Default)]
-// enum DarknessSetting {
-//     /// 最浅(1)
-//     Min,
-//     Darkness1,
-//     Darkness2,
-//     Darkness3,
-//     Darkness4,
-//     /// 正常(6)
-//     #[default]
-//     Normal,
-//     Darkness6,
-//     Darkness7,
-//     Darkness8,
-//     Darkness9,
-//     Darkness10,
-//     Darkness11,
-//     Darkness12,
-//     Darkness13,
-//     /// 最深(15)
-//     Max,
-// }
+/// `gap` 数值按 mm 解释；字符串走和命令行一样的解析。
+fn gap_length(value: &Value, page: usize) -> anyhow::Result<u32> {
+    let mm = match value {
+        Value::Int(mm) => *mm as f64,
+        Value::Float(mm) => *mm,
+        Value::Str(raw) => {
+            return common::parse_gap_length(raw.as_str())
+                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `gap`: {error}"));
+        }
+        other => bail!(
+            "第 {page} 页 <print-settings> 的 `gap` 应该是数值（mm）或字符串，实际是 {other:?}"
+        ),
+    };
+    common::parse_gap_length(&mm.to_string())
+        .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `gap`: {error}"))
+}
 
-// impl TryFrom<u8> for DarknessSetting {
-//     type Error = PrintSettingError;
+fn darkness(value: &Value, page: usize) -> anyhow::Result<DarknessSetting> {
+    let raw = match value {
+        Value::Int(raw) => {
+            let raw = u8::try_from(*raw)
+                .map_err(|_| anyhow!("第 {page} 页 <print-settings> 的 `darkness` 超出 1..=15"))?;
+            DarknessSetting::from_user(raw)
+                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `darkness`: {error}"))?
+        }
+        Value::Str(raw) => common::parse_darkness(raw.as_str())
+            .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `darkness`: {error}"))?,
+        other => bail!(
+            "第 {page} 页 <print-settings> 的 `darkness` 应该是整数或字符串，实际是 {other:?}"
+        ),
+    };
+    Ok(raw)
+}
 
-//     fn try_from(value: u8) -> Result<Self, Self::Error> {
-//         match value {
-//             1 => Ok(Self::Min),
-//             2 => Ok(Self::Darkness1),
-//             3 => Ok(Self::Darkness2),
-//             4 => Ok(Self::Darkness3),
-//             5 => Ok(Self::Darkness4),
-//             6 => Ok(Self::Normal),
-//             7 => Ok(Self::Darkness6),
-//             8 => Ok(Self::Darkness7),
-//             9 => Ok(Self::Darkness8),
-//             10 => Ok(Self::Darkness9),
-//             11 => Ok(Self::Darkness10),
-//             12 => Ok(Self::Darkness11),
-//             13 => Ok(Self::Darkness12),
-//             14 => Ok(Self::Darkness13),
-//             15 => Ok(Self::Max),
-//             _ => Err(Self::Error::InvalidU8 { value }),
-//         }
-//     }
-// }
+fn speed(value: &Value, page: usize) -> anyhow::Result<SpeedSetting> {
+    let raw = match value {
+        Value::Int(raw) => {
+            let raw = u8::try_from(*raw)
+                .map_err(|_| anyhow!("第 {page} 页 <print-settings> 的 `speed` 超出 1..=5"))?;
+            SpeedSetting::from_user(raw)
+                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `speed`: {error}"))?
+        }
+        Value::Str(raw) => common::parse_speed(raw.as_str())
+            .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `speed`: {error}"))?,
+        other => {
+            bail!("第 {page} 页 <print-settings> 的 `speed` 应该是整数或字符串，实际是 {other:?}")
+        }
+    };
+    Ok(raw)
+}
 
-// impl TryFrom<&str> for DarknessSetting {
-//     type Error = PrintSettingError;
+fn parse_raster(raw: &str) -> Option<DitherMode> {
+    match raw.to_ascii_lowercase().as_str() {
+        "floyd-steinberg" | "floyd" | "fs" => Some(DitherMode::FloydSteinberg),
+        "threshold" | "none" => Some(DitherMode::Threshold),
+        _ => None,
+    }
+}
 
-//     fn try_from(value: &str) -> Result<Self, Self::Error> {
-//         match value {
-//             "min" | "1" => Ok(Self::Min),
-//             "2" => Ok(Self::Darkness1),
-//             "3" => Ok(Self::Darkness2),
-//             "4" => Ok(Self::Darkness3),
-//             "5" => Ok(Self::Darkness4),
-//             "normal" | "6" => Ok(Self::Normal),
-//             "7" => Ok(Self::Darkness6),
-//             "8" => Ok(Self::Darkness7),
-//             "9" => Ok(Self::Darkness8),
-//             "10" => Ok(Self::Darkness9),
-//             "11" => Ok(Self::Darkness10),
-//             "12" => Ok(Self::Darkness11),
-//             "13" => Ok(Self::Darkness12),
-//             "14" => Ok(Self::Darkness13),
-//             "max" | "15" => Ok(Self::Max),
-//             _ => Err(Self::Error::InvalidString(value.to_string())),
-//         }
-//     }
-// }
+fn parse_rle(raw: &str) -> Option<RleMode> {
+    match raw.to_ascii_lowercase().as_str() {
+        "off" | "none" => Some(RleMode::Off),
+        "byte" => Some(RleMode::Byte),
+        "bits4" => Some(RleMode::Bits4),
+        "bits5" => Some(RleMode::Bits5),
+        "bits6" => Some(RleMode::Bits6),
+        "bits4x" => Some(RleMode::Bits4XOnly),
+        "bits5x" => Some(RleMode::Bits5XOnly),
+        "bits6x" => Some(RleMode::Bits6XOnly),
+        _ => None,
+    }
+}
 
-// #[derive(Debug, Clone, Copy, Default)]
-// enum PaperSetting {
-//     /// 小票纸
-//     #[default]
-//     Ticket = 0,
-//     /// 不干胶
-//     Adhesive = 2,
-//     /// 卡纸
-//     CardPaper = 3,
-//     /// 透明贴
-//     Transparent = 4,
-// }
+/// 从文档里收集每页的 `<print-settings>`。
+///
+/// 同一页出现多个 `metadata` 时按出现顺序合并，后者覆盖前者。
+fn page_settings(doc: &PagedDocument) -> anyhow::Result<HashMap<usize, PageSettings>> {
+    let Some(label) = Label::new(PicoStr::intern(SETTINGS_LABEL)) else {
+        return Ok(HashMap::new());
+    };
+    let selector = Selector::Label(label);
+    let introspector = doc.introspector();
 
-// impl TryFrom<&str> for PaperSetting {
-//     type Error = PrintSettingError;
+    let mut overrides: HashMap<usize, PageSettings> = HashMap::new();
+    for content in introspector.query(&selector) {
+        let Some(location) = content.location() else {
+            continue;
+        };
+        let Some(page) = introspector.page(location) else {
+            continue;
+        };
+        let page = page.get();
 
-//     fn try_from(value: &str) -> Result<Self, Self::Error> {
-//         match value {
-//             "ticket" => Ok(Self::Ticket),
-//             "adhesive" => Ok(Self::Adhesive),
-//             "cardpaper" => Ok(Self::CardPaper),
-//             "transparent" => Ok(Self::Transparent),
-//             _ => Err(Self::Error::InvalidString(value.to_string())),
-//         }
-//     }
-// }
+        let value = content.get_by_name("value").map_err(|error| {
+            anyhow!("第 {page} 页 <{SETTINGS_LABEL}> 无法读取 value: {error:?}")
+        })?;
+        let Value::Dict(dict) = value else {
+            bail!(
+                "第 {page} 页 <{SETTINGS_LABEL}> 必须是字典，\
+                 例如 #metadata((gap: 2.5)) <{SETTINGS_LABEL}>"
+            );
+        };
+        overrides.entry(page).or_default().apply_dict(&dict, page)?;
+    }
+    Ok(overrides)
+}
 
-// #[derive(Debug, Clone, Copy)]
-// struct GapSetting(u16);
+/// 文档里 `World` 的简化实现：只挂内置 / `--font` 字体，包从 preview 源下载。
+struct TypstWorld {
+    library: LazyHash<Library>,
+    book: LazyHash<FontBook>,
+    main: FileId,
+    main_source: String,
+    root: PathBuf,
+    fonts: Vec<Font>,
+    package_cache: TempDir,
+}
 
-// impl Default for GapSetting {
-//     fn default() -> Self {
-//         Self(50)
-//     }
-// }
+impl TypstWorld {
+    fn new(cli: &Cli) -> anyhow::Result<Self> {
+        let path = cli
+            .document
+            .canonicalize()
+            .with_context(|| format!("找不到 Typst 文档 {}", cli.document.display()))?;
+        let main_source = std::fs::read_to_string(&path)
+            .with_context(|| format!("读取 Typst 文档 {} 失败", path.display()))?;
+        let root = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let vpath = VirtualPath::new(format!("/{filename}"))
+            .map_err(|error| anyhow!("Typst 路径 `/{filename}` 无效: {error:?}"))?;
+        let main = FileId::unique(RootedPath::new(VirtualRoot::Project, vpath));
 
-// impl TryFrom<u16> for GapSetting {
-//     type Error = PrintSettingError;
+        let (fonts, book) = load_fonts(&cli.font)?;
+        Ok(Self {
+            library: LazyHash::new(Library::builder().build()),
+            book: LazyHash::new(book),
+            main,
+            main_source,
+            root,
+            fonts,
+            package_cache: tempdir().context("创建 Typst 包缓存目录失败")?,
+        })
+    }
 
-//     fn try_from(value: u16) -> Result<Self, Self::Error> {
-//         if value < 50 {
-//             Err(Self::Error::InvalidU16(value))
-//         } else {
-//             Ok(Self(value))
-//         }
-//     }
-// }
+    fn resolve_id(&self, id: FileId) -> FileResult<PathBuf> {
+        if id == self.main {
+            return Err(FileError::Other(Some("main file is virtual".into())));
+        }
+        match id.root() {
+            VirtualRoot::Project => {
+                let path = id.vpath().realize(&self.root).map_err(FileError::Realize)?;
+                if !path.starts_with(&self.root) {
+                    return Err(FileError::AccessDenied);
+                }
+                Ok(path)
+            }
+            VirtualRoot::Package(package) => {
+                let dir = prepare_package(package, self.package_cache.path())?;
+                id.vpath().realize(&dir).map_err(FileError::Realize)
+            }
+        }
+    }
+}
 
-// impl TryFrom<&str> for GapSetting {
-//     type Error = PrintSettingError;
+impl World for TypstWorld {
+    fn library(&self) -> &LazyHash<Library> {
+        &self.library
+    }
 
-//     fn try_from(value: &str) -> Result<Self, Self::Error> {
-//         let lower = value.trim().to_lowercase();
-//         let num_str = lower.strip_suffix("mm").unwrap_or(&lower).trim();
-//         let val_f: f64 = num_str
-//             .parse()
-//             .map_err(|_| PrintSettingError::InvalidString(value.to_string()))?;
-//         let val_rounded = (val_f * 100.0).round();
-//         if val_rounded < 0.0 || val_rounded > u16::MAX as f64 {
-//             return Err(PrintSettingError::InvalidU16(val_rounded as u16));
-//         }
-//         let val_u16 = val_rounded as u16;
-//         Self::try_from(val_u16)
-//     }
-// }
+    fn book(&self) -> &LazyHash<FontBook> {
+        &self.book
+    }
 
-// #[derive(Debug, Clone, Copy, Default)]
-// struct PrintSettings {
-//     paper: PaperSetting,
-//     darkness: DarknessSetting,
-//     speed: SpeedSetting,
-//     gap: GapSetting,
-// }
+    fn main(&self) -> FileId {
+        self.main
+    }
 
-// impl PrintSettings {
-//     fn bp(&self) -> u32 {
-//         let basic_bp = match self.speed {
-//             SpeedSetting::Min => 50,
-//             SpeedSetting::Speed1 => 75,
-//             SpeedSetting::Normal => 100,
-//             SpeedSetting::Speed3 => 110,
-//             SpeedSetting::Max => 120,
-//         };
-//         let normal_darkness = 5;
-//         let step = 3;
-//         let adjustment = (normal_darkness - self.darkness as i32) * step;
-//         let final_bp = basic_bp as i32 + adjustment;
-//         final_bp.max(0) as u32
-//     }
+    fn source(&self, id: FileId) -> FileResult<Source> {
+        if id == self.main {
+            return Ok(Source::new(id, self.main_source.clone()));
+        }
+        let path = self.resolve_id(id)?;
+        let content = std::fs::read_to_string(&path).map_err(|e| FileError::from_io(e, &path))?;
+        Ok(Source::new(id, content))
+    }
 
-//     fn paper_vec(&self) -> Vec<u8> {
-//         let v = self.paper as u8;
-//         v.to_be_bytes().to_vec()
-//     }
+    fn file(&self, id: FileId) -> FileResult<Bytes> {
+        if id == self.main {
+            return Ok(Bytes::new(self.main_source.clone()));
+        }
+        let path = self.resolve_id(id)?;
+        let content = std::fs::read(&path).map_err(|e| FileError::from_io(e, &path))?;
+        Ok(Bytes::new(content))
+    }
 
-//     fn speed_vec(&self) -> Vec<u8> {
-//         let v = self.speed as u8;
-//         v.to_be_bytes().to_vec()
-//     }
+    fn font(&self, index: usize) -> Option<Font> {
+        self.fonts.get(index).cloned()
+    }
 
-//     fn darkness_vec(&self) -> Vec<u8> {
-//         let v = self.darkness as u8;
-//         v.to_be_bytes().to_vec()
-//     }
+    fn today(&self, _offset: Option<typst::foundations::Duration>) -> Option<Datetime> {
+        let now = Local::now();
+        Datetime::from_ymd(now.year(), now.month() as u8, now.day() as u8)
+    }
+}
 
-//     fn gap_vec(&self) -> Vec<u8> {
-//         let v = self.gap.0;
-//         v.to_be_bytes().to_vec()
-//     }
-// }
+/// 内置 Unifont + `--font` 指定的字体。
+fn load_fonts(extra: &[PathBuf]) -> anyhow::Result<(Vec<Font>, FontBook)> {
+    let mut fonts = Vec::new();
+    let mut book = FontBook::new();
 
-// fn make_library() -> Library {
-//     let mut library = Library::builder().build();
-//     #[allow(unused_variables)]
-//     let scope = library.global.scope_mut();
-//     // scope.define_func::<QrCodeFunc>();
-//     library
-// }
+    // 内置字体，保证离线也能排中文。
+    for bytes in [
+        &include_bytes!("../asset/unifont-16.0.04.ttf")[..],
+        &include_bytes!("../asset/UnifontExMono.ttf")[..],
+    ] {
+        push_font(Bytes::new(bytes), &mut fonts, &mut book)?;
+    }
 
-// pub struct QrCodeFunc {}
+    for path in extra {
+        let data =
+            std::fs::read(path).with_context(|| format!("读取字体 {} 失败", path.display()))?;
+        push_font(Bytes::new(data), &mut fonts, &mut book)
+            .with_context(|| format!("加载字体 {} 失败", path.display()))?;
+    }
+    Ok((fonts, book))
+}
 
-// impl NativeFunc for QrCodeFunc {
-//     #[allow(unreachable_code, unused_variables)]
-//     fn data() -> &'static NativeFuncData {
-//         let data = NativeFuncData {
-//             function: typst_library::foundations::NativeFuncPtr(&Self::f),
-//             name: "qrcode",
-//             title: todo!(),
-//             docs: todo!(),
-//             keywords: todo!(),
-//             contextual: todo!(),
-//             scope: todo!(),
-//             params: todo!(),
-//             returns: todo!(),
-//             def_site: None,
-//         };
-//         todo!();
-//         // &data
-//     }
-// }
+fn push_font(bytes: Bytes, fonts: &mut Vec<Font>, book: &mut FontBook) -> anyhow::Result<()> {
+    let font = Font::new(bytes, 0).ok_or_else(|| anyhow!("不是可用的字体文件"))?;
+    book.push(font.info().clone());
+    fonts.push(font);
+    Ok(())
+}
 
-// // Fn(&mut Engine, Tracked<Context>, &mut Args) -> SourceResult<Value> + Send + Sync;
+/// 把 `@preview/...` 包下载到临时目录。已存在就直接复用。
+fn prepare_package(pkg: &PackageSpec, cache_dir: &Path) -> FileResult<PathBuf> {
+    let package_dir = cache_dir.join(format!(
+        "{}__{}__{}",
+        pkg.namespace.as_str(),
+        pkg.name.as_str(),
+        pkg.version,
+    ));
+    if package_dir.exists() {
+        return Ok(package_dir);
+    }
+    if pkg.namespace != "preview" {
+        return Err(FileError::NotFound(PathBuf::from(format!(
+            "@{}/{} version {}",
+            pkg.namespace, pkg.name, pkg.version
+        ))));
+    }
 
-// impl QrCodeFunc {
-//     #[allow(unreachable_code, unused_variables)]
-//     pub fn f(
-//         engine: &mut typst_library::engine::Engine,
-//         context: typst::comemo::Tracked<typst_library::foundations::Context>,
-//         args: &mut typst_library::foundations::Args,
-//     ) -> typst_library::diag::SourceResult<typst_library::foundations::Value> {
-//         todo!()
-//     }
-// }
+    let url = format!(
+        "https://packages.typst.org/preview/{}-{}.tar.gz",
+        pkg.name, pkg.version
+    );
+    info!("downloading Typst package: {url}");
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|e| FileError::Other(Some(format!("下载 {url} 失败: {e}").into())))?;
+    let mut body = response.into_body();
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(body.as_reader()));
 
-// fn make_fontbook() -> FontBook {
-//     let mut fb = FontBook::new();
-//     let font_unifont_bin = include_bytes!("../asset/unifont-16.0.04.ttf");
-//     let mut font_unifont_info = FontInfo::new(font_unifont_bin, 0).unwrap();
-//     font_unifont_info.family = "Unifont".to_string();
-//     fb.push(font_unifont_info);
-//     let font_unifontex_bin = include_bytes!("../asset/UnifontExMono.ttf");
-//     let mut font_unifontex_info = FontInfo::new(font_unifontex_bin, 0).unwrap();
-//     font_unifontex_info.family = "UnifontExMono".to_string();
-//     fb.push(font_unifontex_info);
-//     fb
-// }
+    let downloading = cache_dir.join(format!(
+        "{}__{}__{}__downloading",
+        pkg.namespace.as_str(),
+        pkg.name.as_str(),
+        pkg.version,
+    ));
+    if downloading.exists() {
+        let _ = std::fs::remove_dir_all(&downloading);
+    }
+    std::fs::create_dir_all(&downloading).map_err(|e| FileError::from_io(e, &downloading))?;
+    archive
+        .unpack(&downloading)
+        .map_err(|e| FileError::Other(Some(format!("解压 {url} 失败: {e}").into())))?;
+    std::fs::rename(&downloading, &package_dir).map_err(|e| FileError::from_io(e, &package_dir))?;
+    Ok(package_dir)
+}
 
-fn main() {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dict(pairs: &[(&str, Value)]) -> Dict {
+        let mut dict = Dict::new();
+        for (key, value) in pairs {
+            dict.insert((*key).into(), value.clone());
+        }
+        dict
+    }
+
+    fn base_args() -> PrintArgs {
+        Cli::try_parse_from(["dzprint_typst", "doc.typ"])
+            .unwrap()
+            .print
+    }
+
+    #[test]
+    fn metadata_overrides_every_field() {
+        let dict = dict(&[
+            ("gap-type", Value::Str("adhesive".into())),
+            ("gap", Value::Float(2.5)),
+            ("darkness", Value::Int(12)),
+            ("speed", Value::Str("max".into())),
+            ("raster", Value::Str("threshold".into())),
+            ("rle", Value::Str("bits6x".into())),
+        ]);
+        let mut settings = PageSettings::default();
+        settings.apply_dict(&dict, 1).unwrap();
+
+        let mut args = base_args();
+        settings.apply_to(&mut args);
+        assert_eq!(args.gap_type, Some(GapTypeSetting::Gap));
+        assert_eq!(args.gap_length, Some(250));
+        assert_eq!(args.darkness, Some(DarknessSetting::Darkness11));
+        assert_eq!(args.speed, Some(SpeedSetting::Max));
+        assert_eq!(args.raster, common::RasterArg::Threshold);
+        assert_eq!(args.rle, common::RleArg::Bits6x);
+    }
+
+    #[test]
+    fn metadata_accepts_mm_strings_and_old_key_names() {
+        let dict = dict(&[
+            ("paper", Value::Str("continuous".into())),
+            ("gap-length", Value::Str("2.5mm".into())),
+        ]);
+        let mut settings = PageSettings::default();
+        settings.apply_dict(&dict, 1).unwrap();
+        assert_eq!(settings.gap_type, Some(GapTypeSetting::Continuous));
+        assert_eq!(settings.gap_length, Some(250));
+    }
+
+    #[test]
+    fn metadata_gap_number_means_millimetres() {
+        let dict = dict(&[("gap", Value::Int(2))]);
+        let mut settings = PageSettings::default();
+        settings.apply_dict(&dict, 1).unwrap();
+        assert_eq!(settings.gap_length, Some(200));
+    }
+
+    #[test]
+    fn metadata_rejects_bad_values() {
+        for (key, value) in [
+            ("gap", Value::Float(0.4)),
+            ("darkness", Value::Int(16)),
+            ("speed", Value::Int(6)),
+            ("raster", Value::Str("bayer".into())),
+            ("rle", Value::Str("bits9".into())),
+            ("unknown", Value::Int(1)),
+        ] {
+            let mut settings = PageSettings::default();
+            let error = settings.apply_dict(&dict(&[(key, value)]), 2).unwrap_err();
+            assert!(error.to_string().contains("第 2 页"), "{key}: {error}");
+        }
+    }
+
+    #[test]
+    fn compiles_document_and_reads_page_settings() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("doc.typ");
+        std::fs::write(
+            &path,
+            "#set page(width: 48mm, height: 30mm)\n\
+             Page one\n\
+             #pagebreak()\n\
+             #metadata((gap: 2)) <print-settings>\n\
+             Page two\n",
+        )
+        .unwrap();
+
+        let cli = Cli::try_parse_from(["dzprint_typst", path.to_str().unwrap()]).unwrap();
+        let world = TypstWorld::new(&cli).unwrap();
+        let doc = compile(&world).unwrap();
+        assert_eq!(doc.pages().len(), 2);
+
+        let overrides = page_settings(&doc).unwrap();
+        assert_eq!(
+            overrides.get(&2).and_then(|settings| settings.gap_length),
+            Some(200)
+        );
+        assert!(!overrides.contains_key(&1));
+
+        let pixmap = render_page(&doc.pages()[0], 576).unwrap();
+        assert_eq!(pixmap.width(), 576);
+    }
+
+    #[test]
+    fn render_never_exceeds_the_print_head() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("doc.typ");
+        // 7.3mm 这种宽度容易在四舍五入后多出 1 像素。
+        std::fs::write(&path, "#set page(width: 7.3mm, height: 5mm)\nx\n").unwrap();
+        let cli = Cli::try_parse_from(["dzprint_typst", path.to_str().unwrap()]).unwrap();
+        let world = TypstWorld::new(&cli).unwrap();
+        let doc = compile(&world).unwrap();
+        let pixmap = render_page(&doc.pages()[0], 12).unwrap();
+        assert!(pixmap.width() <= 12, "rendered {} px", pixmap.width());
+        assert!(pixmap.width() > 0);
+    }
+
+    #[test]
+    fn metadata_must_be_complete_string_for_enum_names() {
+        let mut settings = PageSettings::default();
+        let error = settings
+            .apply_dict(&dict(&[("gap-type", Value::Int(1))]), 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("应该是字符串"), "{error}");
+    }
+}

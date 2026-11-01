@@ -81,6 +81,30 @@ pub fn from_pixmap(im: &Pixmap, mode: DitherMode) -> Result<Bitmap, BitmapError>
     build_bitmap(gray, width, height)
 }
 
+/// 把 `tiny-skia` 画布转成位图，半透明像素先合成到白底。
+///
+/// [`from_pixmap`] 直接按 `demultiply()` 取色，alpha 为 0 的像素会算成黑色；
+/// Typst 之类渲染出来的画布可能有透明区域，用这个函数可以避免整块透明区域
+/// 被当成黑底。
+pub fn from_pixmap_over_white(im: &Pixmap, mode: DitherMode) -> Result<Bitmap, BitmapError> {
+    let width = im.width() as usize;
+    let height = im.height() as usize;
+    let mut gray: Vec<u8> = im
+        .pixels()
+        .iter()
+        .map(|px| {
+            let px = px.demultiply();
+            let alpha = u32::from(px.alpha());
+            let blend = |value: u8| ((u32::from(value) * alpha + 255 * (255 - alpha)) / 255) as u8;
+            (0.299 * blend(px.red()) as f32
+                + 0.587 * blend(px.green()) as f32
+                + 0.114 * blend(px.blue()) as f32) as u8
+        })
+        .collect();
+    process_dither(&mut gray, width, height, mode);
+    build_bitmap(gray, width, height)
+}
+
 /// 抖动后的灰度缓冲 → 位图。`gray` 长度必须等于 `width * height`。
 fn build_bitmap(gray: Vec<u8>, width: usize, height: usize) -> Result<Bitmap, BitmapError> {
     let bits: BitVec<u8, Msb0> = gray.into_iter().map(|px| px < 128).collect();
@@ -133,6 +157,19 @@ mod tests {
     use super::*;
     use image::Luma;
     use tiny_skia::PremultipliedColorU8;
+
+    #[test]
+    fn transparent_pixels_become_white() {
+        let mut pixmap = Pixmap::new(2, 1).unwrap();
+        // 默认的透明黑；右边放一个不透明白像素做对比。
+        pixmap.pixels_mut()[1] = PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap();
+        let bm = from_pixmap_over_white(&pixmap, DitherMode::Threshold).unwrap();
+        assert!(
+            !bm.line(0).unwrap().get(0).unwrap(),
+            "透明像素应铺成白色，而不是 demultiply 之后的黑色"
+        );
+        assert!(!bm.line(0).unwrap().get(1).unwrap());
+    }
 
     #[test]
     fn gray_line_covers_whole_width() {

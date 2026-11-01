@@ -55,8 +55,13 @@ RUST_LOG=debug cargo run --bin dzprint_image -- --image /tmp/print.png
 # 打印一张图片的示例代码（旧版，整体被注释）
 cargo run --bin dzprint
 
-# 打印 Typst 文档的示例代码（旧版，整体被注释）
-cargo run --bin dzprint_typst
+# 打印 Typst 文档：每页按打印头宽度渲染，页与页之间各发一个打印任务
+cargo run --bin dzprint_typst -- /tmp/doc.typ
+cargo run --bin dzprint_typst -- /tmp/doc.typ --device DP27P-Y4094C023 \
+  --font /usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc
+
+# 文档里可以逐页覆盖命令行参数（从该页开始生效，后续页沿用）
+#   #metadata((gap-type: "adhesive", gap: 2.5, darkness: 12)) <print-settings>
 
 # TODO: 更完善的 CLI
 cargo run --bin dzcli
@@ -77,9 +82,13 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
 
 - `asset/` 字体等资源文件，供示例代码使用
 - `bin/` 可执行的示例
+  - `common/` 两个打印 bin 共用：clap 参数（设备 / 纸张 / 浓度 / 速度 / 抖动 / RLE /
+    超时）、发送设置、打印任务和退出顺序
   - `dzprint_image` `[新]` 打印 jpg / png：查打印头点数、按需等比缩放、抖动成位图，
     可选 `--gap-type` / `--gap-length` / `--darkness` / `--speed` / `--raster`
-  - `dzprint` 打印图片、`dzprint_typst` 打印 Typst 文档：`[旧]` 实现整体被注释，目前 `main` 是空的
+  - `dzprint_typst` `[新]` 编译 Typst 文档、逐页渲染打印；文档里的
+    `<print-settings>` metadata 可以按页覆盖命令行参数
+  - `dzprint` `[旧]` 打印图片的逆向初期实现，整体被注释
   - `dzcli` CLI 雏形（只有 `clap` 参数骨架，功能还没接）
   - `test_usb` `[新]` 真机 USB 测试平台：clap 参数选择设备 / `--phase` / `--rle` / `--rows`，覆盖查询 / 流控 / `0x80` 激活 / `0x7f` 探测 / 打印测试
 - `bitmap/` `[新]` 以 bit 为单位的位图（`mod.rs`），行视图供 RLE 和命令层使用；测试在 `tests.rs`

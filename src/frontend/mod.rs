@@ -515,12 +515,21 @@ impl Device {
                 // 单次查询超时、或只收到 `0x7b` 之类的推送，不代表打印结束。
                 Ok(None) => {
                     silent_polls += 1;
-                    warn!(
-                        silent_polls,
-                        limit = self.config.print_silent_limit,
-                        timeout = ?self.config.recv_timeout,
-                        "printer did not answer the status poll"
-                    );
+                    // 页面刚结束时固件偶尔会漏答一次，不算异常；连续两次再警告。
+                    if silent_polls == 1 {
+                        debug!(
+                            limit = self.config.print_silent_limit,
+                            timeout = ?self.config.recv_timeout,
+                            "printer did not answer the first status poll"
+                        );
+                    } else {
+                        warn!(
+                            silent_polls,
+                            limit = self.config.print_silent_limit,
+                            timeout = ?self.config.recv_timeout,
+                            "printer did not answer the status poll"
+                        );
+                    }
                     if silent_polls >= self.config.print_silent_limit {
                         return Err(FrontendError::PrinterSilent {
                             polls: silent_polls,
