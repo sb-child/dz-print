@@ -372,6 +372,9 @@ transport（USB HID / BLE 串口透传）
     前台用 `AsyncRx` 接收
   - ack：`crossfire::oneshot`，worker 侧 `send` 不返回 `Result`（接收端消失时静默丢弃）
   - `ready` 已经不用通道，不受影响
+  - 真机复测（DP27P）：`device-info` / `flow-control` /
+    `--phase print --rle bits5x --rows 200` 均正常，`print completed` 后
+    worker 在 100 ms 内取消退出、无 IO 错误
 
 ### P1 拆分长文件 / 命名
 
