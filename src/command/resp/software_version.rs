@@ -12,7 +12,7 @@ use crate::command::{
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SoftwareVersion {
     /// 软件版本。
-    /// - 格式 `x.y yyyymmdd` 或 `x.y.yyyymmdd`。
+    /// - 格式 `x.y.yyyymmdd`。
     pub software_version: Box<str>,
 }
 

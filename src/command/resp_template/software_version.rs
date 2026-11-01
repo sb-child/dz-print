@@ -10,7 +10,7 @@ use super::der;
 
 /// 解析软件版本: v2,v1,v0机型: `1f 7c`
 ///
-/// 载荷是 `x.y yyyymmdd` 格式、`0x00` 结尾的字符串。模板只保留原始字节，
+/// 载荷是 `x.y.yyyymmdd` 格式、`0x00` 结尾的字符串。模板只保留原始字节，
 /// 解码交给 [`resp::software_version`](crate::command::resp::software_version)。
 #[der(..RespTemplate)]
 pub struct SoftwareVersionV2V1V0Tl {

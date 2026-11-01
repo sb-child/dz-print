@@ -351,7 +351,7 @@
     - 主机不应主动发送 `0x7b`：SDK 里没有构造该请求的代码，只有响应分支。它可能是固件主动推送的精简流控通道。
   - `0x7c` 软件版本 `rust:SoftwareVersionV2V1V0Tl` [代码](src/command/req_template/software_version.rs)
     - 返回: `<SoftwareVersion:string>`
-      - `SoftwareVersion`: 软件版本，格式 `x.y yyyymmdd` / `x.y.yyyymmdd`，`0x00` 结尾。
+      - `SoftwareVersion`: 软件版本，格式 `x.y.yyyymmdd`，`0x00` 结尾。
       - 解析: `resp::SoftwareVersion` 解码为 `Box<str>`。
   - `0x7d` 蓝牙mac地址 `rust:BluetoothMacV2V1V0Tl` [代码](src/command/req_template/bluetooth_mac.rs)
     - 返回: `10 <BtMacAddr:6bytes> 14 <BtMacAddr:6bytes>`
@@ -596,7 +596,7 @@ if (dataPackageReader.getRemainingLength() >= 4) {
 - (已验证) 读取软件版本 `主机->设备` `0x7c`
   - 无参数
 - (已验证) 软件版本 `设备->主机` `0x7c`
-  - `[..]` 以 `0x00` 结尾的软件版本 `x.y yyyymmdd`
+  - `[..]` 以 `0x00` 结尾的软件版本 `x.y.yyyymmdd`
 
 #### 制造商
 
