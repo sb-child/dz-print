@@ -4,6 +4,53 @@
 
 当前主线：frontend / 设备线程已落地（`src/frontend/`），下一步补 BLE、断连处理和完整 CLI。命令实现状态见 [cmd-impl-status.md](./cmd-impl-status.md)。
 
+## 接口可用度
+
+> 截至 2026-11-01，真机 DP27P（USB，软件版本 `3.1.20230620`），单测 348 个。
+> “稳定”只表示当前实现可用且有回归测试，不代表跨机型 / 跨固件承诺。
+
+### 已可用
+
+| 接口                                                              | 证据        | 说明                                                                     |
+| ----------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------ |
+| `Device::new` / `ready` / `shutdown`                              | 真机        | 退出顺序、USB 驱动 reattach、worker 线程回收                             |
+| 查询 `0x70` ~ `0x7d`                                              | 真机        | DP27P 上逐条实测                                                         |
+| `FlowPlanner` / `0x77` 流控                                       | 真机        | 9000 字节分块、50 ms 间隔、超时退 8 KiB；`status` 只做诊断               |
+| `0x7f` / `0x80`                                                   | 真机        | 激活 / 结束激活                                                          |
+| `print_bitmap_job` + `Off` / `Byte` / `Bits5XOnly` / `Bits6XOnly` | 真机        | 含超过 16383 行自动拆页                                                  |
+| 无纸 / 开盖                                                       | 真机 + 单测 | 返回 `FrontendError::PrinterStatus`，不再循环查预算                      |
+| 拔线 / worker 卡死                                                | 单测        | 预算查询收到 `Closed` 直接返回；`send_cmd_area` 超时返回 `WorkerTimeout` |
+| `print_bitmap_job` 单任务锁                                       | 单测        | 第二个任务立即返回 `FrontendError::PrintBusy`                            |
+
+### 可用但有限制 / 未验证
+
+- `RleMode::Bits4` / `Bits5` / `Bits6`（自动 X/D）：DP27P 上会周期性断层，
+  真机请用 `*XOnly`
+- `Bits4XOnly` / `0x3a`：DP27P 纸面空白，疑似固件不支持或码本不同
+- `ModelVersion`：只能调用方手动指定，默认 `V2`；其它机型未验证
+- 蓝牙：协议已确认，后端未实现（issue #3）
+- 异常路径只做过单次真机 / 单测，没有长时间压测
+- `0x48` / `0x52` / `0x57` / `0x59` / `0x5b` / `0x7a`：有抓包，未落成 req/resp
+- `0x66`：DP27P USB 上多种变体均无响应
+- `0x77` 的 `status` 其它位、`0x73` 计数器、`0x7f` 16 字节载荷等语义仍未知
+
+### 并发约定
+
+- `send_cmd_area` / `try_send_batch`：可以在多个 task 里同时调用；worker
+  串行写，每次调用是一个完整写任务，单次内部不会和其它调用交叉。不同调用
+  的先后顺序不保证。
+- `print_bitmap_job`：**只允许一个**，第二个调用立即返回
+  `FrontendError::PrintBusy`。
+- `recv_cmd_timeout`：按命令字节取帧，可以多个 task 同时等不同命令；同一命令
+  的帧只会交给其中一个调用者。
+- `try_recv_one` / `try_recv_one_timeout` / `try_pop_raw` / `recv_matching`：
+  从队头消费，不要和其它接收接口并发，否则可能抢走别人的帧。
+- `wait_for_print_done`：只由结束打印的一方调用；`print_bitmap_job` 内部已经
+  调用，外部不要并发调用。
+- `shutdown`：可重复调用；会让正在进行的打印返回错误。
+- `Transport`：`&mut self`，只给 worker 单个阻塞线程使用；`Device` 本身
+  `Send + Sync`，但不要绕过 `Device` 并发调用同一个 transport。
+
 ## 进行中
 
 - [x] `varint.rs` 的 `DekuReader` 按 `VarintMode` 解码
@@ -348,7 +395,7 @@ transport（USB HID / BLE 串口透传）
 > 完成时两边一起勾选。当前两边已同步。
 
 - [x] 把 `TestFrontend` / `RecvState` / `bg` / `drain_frames` / `wait_for_print_done`
-  从 `src/bin/test_usb.rs` 搬到 `src/frontend/`
+      从 `src/bin/test_usb.rs` 搬到 `src/frontend/`
   - 拆分：`frontend/mod.rs`（`Device` / `DeviceConfig` / 收发 / 等待完成）、
     `frontend/worker.rs`（worker / 切帧 / `OutJob`）、
     `frontend/print.rs`（`print_bitmap_job`）
@@ -357,7 +404,7 @@ transport（USB HID / BLE 串口透传）
 - [x] 把 `print_commands_to_reqs` 搬进库：`planner::print::into_reqs`
   - `PrintCommand` 现在由库内统一翻译成 `Box<dyn ReqTrait>`
 - [x] `test_usb` 的阶段选择改用 clap：`--phase` / `--rle` / `--rows`，
-  不再读取环境变量，12 个 dead_code 警告已消除
+      不再读取环境变量，12 个 dead_code 警告已消除
 - [x] worker 改用 `mytm` 托管（不再裸用 `tokio::task::spawn_blocking`）
   - `TaskManager` 由调用方在最外层创建，通过 `Device::new(&tm, config)`
     传给 worker；退出前 `tm.close()`
@@ -383,10 +430,10 @@ transport（USB HID / BLE 串口透传）
 ### P1 拆分长文件 / 命名
 
 - [x] `src/planner/print.rs` 拆成 `print/mod.rs`（`RleMode` / `PrintCommand` /
-  `PrintPage` / `PrintError` / 分页 / `into_reqs`）、`print/rle.rs`（`select_rle`）、
-  `print/tests.rs`
+      `PrintPage` / `PrintError` / 分页 / `into_reqs`）、`print/rle.rs`（`select_rle`）、
+      `print/tests.rs`
 - [x] `src/rle.rs` 拆成 `rle/mod.rs`（`Run` / `RleTransformError`）、`rle/bit.rs`
-  （RLE4/5/6 码表、位级 X/D）、`rle/byte.rs`（字节级）、`rle/tests.rs`
+      （RLE4/5/6 码表、位级 X/D）、`rle/byte.rs`（字节级）、`rle/tests.rs`
   - `rle/mod.rs` 补模块级 `//!` 和用法示例
   - `TryInto<Vec<Run<_>>>` 改成命名方法 `BitmapLine::runs_bits()` / `runs_bytes()`，
     不再有隐式 `try_into`
@@ -404,11 +451,11 @@ transport（USB HID / BLE 串口透传）
 ### P1 机械重复
 
 - [ ] `EnvelopeKind` 的 20 处 `match mv` 收敛成
-  `impl From<ModelVersion> for EnvelopeKind`
+      `impl From<ModelVersion> for EnvelopeKind`
 - [ ] 46 处 `to_bytes().context(EncodeSnafu { cmd_name })` 用宏或 helper 收敛
 - [ ] RLE 的 7 处映射（`RleMode`、`PrintCommand`、`RleKind`、`select_rle`、
-  `PrintLineRle::pack`、`req_template`、`planner::print::into_reqs`）用宏生成，
-  新增变体只改一处
+      `PrintLineRle::pack`、`req_template`、`planner::print::into_reqs`）用宏生成，
+      新增变体只改一处
 - [x] 16 份 `fn hexdec` 合并到 `#[cfg(test)] test_util`
   - 新增 `src/test_util.rs`（`#[cfg(test)] mod test_util`），严格解析两位 hex token
   - `req_template` / `resp_template` 的 `test_toolkits` 改为 `pub(crate) use`
@@ -416,7 +463,7 @@ transport（USB HID / BLE 串口透传）
 - [ ] `_tail: ()` 41 处：只在需要尾部 magic 时保留，其余删掉或改名
 - [ ] `VarintMode::encode_into_safe` 复用 `encode_into`；当前无人使用
 - [ ] `SpeedSetting` / `DarknessSetting` 的 `from_user` / `to_wire` / `from_wire`
-  可抽公共宏
+      可抽公共宏
 
 ### P1 正确性 / 健壮性
 
@@ -474,14 +521,14 @@ transport（USB HID / BLE 串口透传）
     `Transport::reset` 之后重新 claim
   - DP27P 实测进程退出后接口 1 仍绑定 `usbhid`
 - [x] 日志降噪：`try_send_batch` 只记命令数和字节数，`send_cmd_area` 的完整
-  hex 降到 trace
+      hex 降到 trace
 - [x] 三处漏网的数组打印改 `simple_hex`：`planner/assembler.rs`、
-  `usb_frame.rs`、`command/resp/gap_length.rs`
+      `usb_frame.rs`、`command/resp/gap_length.rs`
 
 ### P2 死代码 / 依赖 / 文档
 
 - [ ] 处理全注释的 `src/bin/dzprint.rs`（207 行）和
-  `src/bin/dzprint_typst.rs`（762 行）
+      `src/bin/dzprint_typst.rs`（762 行）
   - 移到 `examples/`、加 feature gate 或删除；同时清掉未使用依赖
     （当前是 `btleplug` / `bytebuffer` / `chrono` / `num-derive` / `strum` /
     `tar` / `tempfile` / `typst` / `typst-render` / `ureq`；`crossfire` 已用于
@@ -490,9 +537,9 @@ transport（USB HID / BLE 串口透传）
 - [x] 删除 `_gen/`（生成脚本只解析不生成，避免继续误导）
 - [ ] 删除 `src/lib.rs` 末尾的空 dummy test
 - [x] 去掉 `#![feature(iter_map_windows)]`：
-  `src/rle.rs` 改为迭代器求游程边界，不再依赖 nightly feature
+      `src/rle.rs` 改为迭代器求游程边界，不再依赖 nightly feature
 - [ ] 删除或使用 `Bitmap::bits_mut`（`src/bitmap.rs:96`）和
-  `VarintMode::encode_into_safe`（`src/command/varint.rs:207`）
+      `VarintMode::encode_into_safe`（`src/command/varint.rs:207`）
 - [x] 补模块级文档和 `# 用法` 示例
   - crate 入口：分层说明 + 打印整张位图 / 只生成字节两个例子
   - `bitmap` / `rle` / `raster`：构造、行视图、RLE 编码、灰度图抖动

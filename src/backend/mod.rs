@@ -95,6 +95,8 @@ pub enum ReadStatus {
 ///   让调用方先去读。
 /// - [`Transport::read_chunk`] 追加的字节可能不对应任何请求（例如 `0x7b`
 ///   的主动上报），切帧和分发由 worker 负责。
+/// - 所有方法都取 `&mut self`，一个 transport 只给 worker 的单个阻塞线程使用；
+///   `Device` 的并发由通道和 worker 串行化，不要在多个线程里共享同一个实例。
 pub trait Transport: Send + 'static {
     /// 写一段已编码的命令区（不含传输层封包）。
     fn write(&mut self, cmd_area: &[u8]) -> Result<WriteOutcome, TransportError>;

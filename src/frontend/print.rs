@@ -77,6 +77,9 @@ impl Device {
     ///
     /// 预算查询会顺带读 `0x70`：无纸、开盖等错误状态立刻返回
     /// [`FrontendError::PrinterStatus`]，不会一边报错一边继续查预算。
+    ///
+    /// 打印期间会占用 `0x70` / `0x77` 的响应；不要同时用 `try_recv_one` /
+    /// `try_pop_raw` 从队头取帧，否则会抢走预算和状态的响应。
     pub async fn print_bitmap_job(
         &self,
         bm: &Bitmap,

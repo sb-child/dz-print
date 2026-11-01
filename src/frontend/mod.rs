@@ -58,6 +58,25 @@
 //! - `DeviceConfig::default()` 用 `UsbSelector::Auto` 选第一台德佟设备
 //! - 打印整张位图用 [`Device::print_bitmap_job`]，见 `print` 模块
 //! - `shutdown` 之后 USB 句柄才释放；只 drop `Device` 不会等线程退出
+//!
+//! # 并发
+//!
+//! `Device` 是 `Send + Sync`，可以放进 `Arc` 跨 task 共享，但不同接口的并发
+//! 约束不一样：
+//!
+//! - [`Device::try_send_batch`] / [`Device::send_cmd_area`]：可以并发；worker
+//!   串行写，每个调用是一个完整写任务，内部不会和其它调用交叉，但调用之间的
+//!   先后顺序不保证。
+//! - [`Device::print_bitmap_job`]：同一时刻只允许一个，第二个调用返回
+//!   [`FrontendError::PrintBusy`]。
+//! - [`Device::recv_cmd_timeout`]：按命令字节取帧，可以多个 task 同时等不同
+//!   命令；同一命令的帧只会交给其中一个调用者。
+//! - [`Device::try_recv_one`] / [`Device::try_recv_one_timeout`] /
+//!   [`Device::try_pop_raw`] / [`Device::recv_matching`]：从队列头部消费，
+//!   不要和别的接收接口并发，否则会抢走别人的帧。
+//! - [`Device::wait_for_print_done`]：只由结束打印的一方调用；
+//!   `print_bitmap_job` 内部已经调用，外部不要再并发调用。
+//! - [`Device::shutdown`]：可以重复调用；会让正在进行的打印返回错误。
 
 use crate::{
     backend::usb::UsbSelector,
@@ -199,6 +218,14 @@ impl Default for DeviceConfig {
 }
 
 /// 一台打印机。
+///
+/// `Device` 是 `Send + Sync`，可以放进 `Arc` 跨 task 共享；各接口的并发约束
+/// 见模块文档的「并发」一节。简单说：
+///
+/// - 发送接口（`try_send_batch` / `send_cmd_area`）可以并发，worker 串行写；
+/// - [`Device::print_bitmap_job`] 同一时刻只允许一个；
+/// - 接收接口只有 [`Device::recv_cmd_timeout`] 适合多 task 并发，
+///   `try_recv_one` / `try_pop_raw` 会从队头消费，不要和别的接收接口同时用。
 pub struct Device {
     mv: ModelVersion,
     assembler: Assembler,
@@ -343,6 +370,9 @@ impl Device {
     /// 阻塞线程返回后 USB 句柄才释放，所以退出程序前应该调用一次。等待超过
     /// `timeout` 会返回 [`FrontendError::ShutdownTimeout`]；worker 已经因为
     /// IO 错误或 panic 停下时，只记日志并视为已停止。
+    ///
+    /// 可以重复调用。正在进行的 [`Device::print_bitmap_job`] 会因为通道关闭
+    /// 返回错误，不会在 shutdown 之后继续往设备写。
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), FrontendError> {
         self.worker.cancel();
         match tokio::time::timeout(timeout, self.worker.wait_terminal()).await {
@@ -363,6 +393,9 @@ impl Device {
     ///
     /// 所有命令会被 [`Assembler::encode`] 拼成一段命令区，再交给设备线程按
     /// `Transport::write` 发出；写失败会立即返回错误。
+    ///
+    /// 可以在多个 task 里并发调用：worker 串行写，每批是一个完整写任务，
+    /// 内部不会和别的调用交叉；不同批之间的先后顺序不保证。
     pub async fn try_send_batch(&self, cmds: &[&dyn ReqTrait]) -> Result<(), FrontendError> {
         let cmd_area = self.assembler.encode(cmds)?;
         debug!(
@@ -378,6 +411,9 @@ impl Device {
     /// 写任务在 [`DeviceConfig::recv_timeout`] 内没有完成时返回
     /// [`FrontendError::WorkerTimeout`]：worker 卡在 USB 清理或设备掉线时，
     /// 前台不能无限等 ack。
+    ///
+    /// 和 [`Device::try_send_batch`] 一样可以并发调用；每次调用是一个完整
+    /// 写任务，和别的调用之间不会交叉。
     pub async fn send_cmd_area(&self, cmd_area: Vec<u8>) -> Result<(), FrontendError> {
         if cmd_area.is_empty() {
             return Ok(());
@@ -420,6 +456,10 @@ impl Device {
     /// - 只认命令字节为 `0x70` 的帧，`0x7b` 之类的主动推送会被跳过。
     ///
     /// 只应在最后一页的 `EndPage` 之后调用；不要在行数据中间插 `0x70`。
+    ///
+    /// 只由结束打印的一方调用。[`Device::print_bitmap_job`] 内部已经调用，
+    /// 外部不要再并发调用；也不要在这期间用 `try_recv_one` / `try_pop_raw`
+    /// 从队头取帧，否则会抢走 `0x70` 的响应。
     pub async fn wait_for_print_done(
         &self,
         timeout: Duration,
@@ -488,12 +528,19 @@ impl Device {
     /// 接收指定类型的回复。
     ///
     /// 解析失败时不会弹出缓冲区里的 payload，方便换一个类型重试。
+    ///
+    /// 从队列头部消费，不按命令字节匹配。多个 task 同时调用时谁先拿到锁谁
+    /// 取队头，可能拿走别人要的响应；需要多 task 并发接收时用
+    /// [`Self::recv_cmd_timeout`]。
     pub async fn try_recv_one<T: RespTrait>(&self) -> Result<T, RecvError> {
         self.try_recv_one_timeout::<T>(self.config.recv_timeout)
             .await
     }
 
     /// 带超时的 [`Self::try_recv_one`]。
+    ///
+    /// 并发约束和 [`Self::try_recv_one`] 相同：从队头消费，不要和其它接收
+    /// 接口并发。
     pub async fn try_recv_one_timeout<T: RespTrait>(
         &self,
         timeout: Duration,
@@ -537,6 +584,10 @@ impl Device {
     ///
     /// 找不到时等到 `timeout`，返回 `Ok(None)`；worker 已经退出时返回
     /// [`RecvError::Closed`]。
+    ///
+    /// 可以多个 task 并发等待不同命令；同一命令的帧只会交给其中一个调用者。
+    /// [`Self::try_recv_one`] / [`Self::try_pop_raw`] 会从队头消费，和这里并发
+    /// 时可能抢走帧。
     pub async fn recv_cmd_timeout<T: RespTrait>(
         &self,
         cmd: u8,
@@ -573,7 +624,8 @@ impl Device {
 
     /// 丢弃并返回缓冲区头部的一条原始 payload。
     ///
-    /// 只用于解析失败后恢复对齐；正常业务不应该依赖它。
+    /// 只用于解析失败后恢复对齐；正常业务不应该依赖它。会消费队头，不要和
+    /// 其它接收接口并发。
     pub async fn try_pop_raw(&self) -> Option<Vec<u8>> {
         let mut state = self.recv.lock().await;
         while let Ok(payload) = state.rx.try_recv() {
@@ -585,6 +637,8 @@ impl Device {
     /// 等一条命令字节匹配的原始响应；前面不匹配的帧会被丢弃并记录。
     ///
     /// 用来在解析失败或晚到时恢复缓冲区对齐，也用来跳过 `0x7b` 这类主动推送。
+    /// 内部走 [`Self::try_recv_one_timeout`]，会消费/丢弃队头帧，不要和其它
+    /// 接收接口并发。
     pub async fn recv_matching(
         &self,
         cmd: u8,
