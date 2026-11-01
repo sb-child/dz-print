@@ -19,6 +19,7 @@
 //! USB 包头，本模块只用于 USB。
 
 use crate::command::varint::VarintMode;
+use pretty_hex::simple_hex;
 use snafu::Snafu;
 
 /// HID 报告号。
@@ -35,7 +36,7 @@ pub enum UsbError {
     PayloadTooLong { len: usize, max: usize },
     #[snafu(display("Invalid USB report id: {actual:#04X}, expected {expected:#04X}."))]
     BadReportId { expected: u8, actual: u8 },
-    #[snafu(display("Invalid USB length field: {bytes:02X?}."))]
+    #[snafu(display("Invalid USB length field: {}.", simple_hex(bytes)))]
     InvalidLength { bytes: Vec<u8> },
 }
 

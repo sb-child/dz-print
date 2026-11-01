@@ -8,121 +8,151 @@
 //! - <https://github.com/wx-dev/DzPrinterCsharpSDK/blob/master/DzPrinter.Printer/PrinterCommand.cs#L84>
 //! - <https://github.com/Brick-web/SMKT/blob/main/Print%20SDK/lib/LPAUtils.d.ts#L327>
 
-use crate::command::settings::PrintSettingError;
-
 /// 打印机状态码。
 ///
 /// `0x00..=0x0b` 视为可继续打印，`0x0c` 及以上是任务取消、环境或硬件错误。
+/// 未列出的值保留在 [`PrinterStatus::Unknown`] 里，避免新固件的错误码把整个
+/// 响应解析打回去（那样会卡住响应队列）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[repr(u8)]
 pub enum PrinterStatus {
     /// 当前可以打印（`0x00`）
     #[default]
-    Printable = 0,
+    Printable,
     /// 当前正在打印（`0x01`）
-    Printing = 1,
+    Printing,
     /// 当前正在转动马达（`0x02`）
-    Rotating = 2,
+    Rotating,
     /// 当前没有打印任务（`0x0a`）
-    NoJob = 10,
+    NoJob,
     /// 有打印任务，但页面数据还没有接收完全（`0x0b`）
-    PageNotReady = 11,
+    PageNotReady,
     /// 当前打印任务被取消（`0x0c`）
-    JobCanceled = 12,
+    JobCanceled,
     /// 当前不具备打印环境（`0x14`）
-    EnvNotReady = 20,
+    EnvNotReady,
     /// 打印电压太低（`0x1e`）
-    VolTooLow = 30,
+    VolTooLow,
     /// 打印电压太高（`0x1f`）
-    VolTooHigh = 31,
+    VolTooHigh,
     /// 没有检测到打印头（`0x20`）
-    TphNotFound = 32,
+    TphNotFound,
     /// 打印头温度太高（`0x21`）
-    TphTooHot = 33,
+    TphTooHot,
     /// 打印机盖子打开（`0x22`）
-    CoverOpened = 34,
+    CoverOpened,
     /// 未检测到纸张（`0x23`）
-    NoPaper = 35,
+    NoPaper,
     /// 碳带盒未锁紧（`0x24`）
-    RibbonCanOpened = 36,
+    RibbonCanOpened,
     /// 未检测到碳带（`0x25`）
-    NoRibbon = 37,
+    NoRibbon,
     /// 不匹配的碳带（`0x26`）
-    UnmatchedRibbon = 38,
+    UnmatchedRibbon,
     /// 环境温度过低（`0x27`）
-    TphTooCold = 39,
+    TphTooCold,
     /// 用完的碳带（`0x28`）
-    UsedupRibbon = 40,
+    UsedupRibbon,
     /// 用完的色带（`0x29`）
-    UsedupRibbon2 = 41,
+    UsedupRibbon2,
     /// 未检测到标签纸卷（`0x2a`）
-    NoLabel = 42,
+    NoLabel,
     /// 不匹配的标签纸卷（`0x2b`）
-    UnmatchedLabel = 43,
+    UnmatchedLabel,
     /// 用完的标签纸卷（`0x2c`）
-    UsedupLabel = 44,
+    UsedupLabel,
     /// 未检测到色带（`0x2d`）
-    NoRibbon2 = 45,
+    NoRibbon2,
     /// 不匹配的色带（`0x2e`）
-    UnmatchedRibbon2 = 46,
+    UnmatchedRibbon2,
     /// 标签盒未锁紧（`0x32`）
-    LabelCanOpened = 50,
+    LabelCanOpened,
+    /// 未定义的状态码，保留线上值。
+    ///
+    /// 判定规则仍然是「`0x0c` 及以上算错误」，与 SDK 一致。
+    Unknown(u8),
 }
 
 impl PrinterStatus {
-    /// 线上值
+    /// 线上值。
     pub const fn to_wire(self) -> u8 {
-        self as u8
+        match self {
+            Self::Printable => 0,
+            Self::Printing => 1,
+            Self::Rotating => 2,
+            Self::NoJob => 10,
+            Self::PageNotReady => 11,
+            Self::JobCanceled => 12,
+            Self::EnvNotReady => 20,
+            Self::VolTooLow => 30,
+            Self::VolTooHigh => 31,
+            Self::TphNotFound => 32,
+            Self::TphTooHot => 33,
+            Self::CoverOpened => 34,
+            Self::NoPaper => 35,
+            Self::RibbonCanOpened => 36,
+            Self::NoRibbon => 37,
+            Self::UnmatchedRibbon => 38,
+            Self::TphTooCold => 39,
+            Self::UsedupRibbon => 40,
+            Self::UsedupRibbon2 => 41,
+            Self::NoLabel => 42,
+            Self::UnmatchedLabel => 43,
+            Self::UsedupLabel => 44,
+            Self::NoRibbon2 => 45,
+            Self::UnmatchedRibbon2 => 46,
+            Self::LabelCanOpened => 50,
+            Self::Unknown(value) => value,
+        }
     }
 
-    /// 从线上值解析
-    pub fn from_wire(value: u8) -> Result<Self, PrintSettingError> {
-        Self::try_from(value)
+    /// 从线上值解析。
+    ///
+    /// 未知值不会报错，而是变成 [`PrinterStatus::Unknown`]。
+    pub const fn from_wire(value: u8) -> Self {
+        match value {
+            0 => Self::Printable,
+            1 => Self::Printing,
+            2 => Self::Rotating,
+            10 => Self::NoJob,
+            11 => Self::PageNotReady,
+            12 => Self::JobCanceled,
+            20 => Self::EnvNotReady,
+            30 => Self::VolTooLow,
+            31 => Self::VolTooHigh,
+            32 => Self::TphNotFound,
+            33 => Self::TphTooHot,
+            34 => Self::CoverOpened,
+            35 => Self::NoPaper,
+            36 => Self::RibbonCanOpened,
+            37 => Self::NoRibbon,
+            38 => Self::UnmatchedRibbon,
+            39 => Self::TphTooCold,
+            40 => Self::UsedupRibbon,
+            41 => Self::UsedupRibbon2,
+            42 => Self::NoLabel,
+            43 => Self::UnmatchedLabel,
+            44 => Self::UsedupLabel,
+            45 => Self::NoRibbon2,
+            46 => Self::UnmatchedRibbon2,
+            50 => Self::LabelCanOpened,
+            other => Self::Unknown(other),
+        }
     }
 
     /// SDK 注释：`DZIP_PRINTABLE..=DZIP_PAGENOTREADY`（`0..=11`）视为可继续打印
     pub const fn is_printable(self) -> bool {
-        (self as u8) <= 11
+        self.to_wire() <= 11
     }
 
     /// `0x0c` 及以上是任务取消、环境或硬件错误
     pub const fn is_error(self) -> bool {
-        (self as u8) >= 12
+        self.to_wire() >= 12
     }
 }
 
-impl TryFrom<u8> for PrinterStatus {
-    type Error = PrintSettingError;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Printable),
-            1 => Ok(Self::Printing),
-            2 => Ok(Self::Rotating),
-            10 => Ok(Self::NoJob),
-            11 => Ok(Self::PageNotReady),
-            12 => Ok(Self::JobCanceled),
-            20 => Ok(Self::EnvNotReady),
-            30 => Ok(Self::VolTooLow),
-            31 => Ok(Self::VolTooHigh),
-            32 => Ok(Self::TphNotFound),
-            33 => Ok(Self::TphTooHot),
-            34 => Ok(Self::CoverOpened),
-            35 => Ok(Self::NoPaper),
-            36 => Ok(Self::RibbonCanOpened),
-            37 => Ok(Self::NoRibbon),
-            38 => Ok(Self::UnmatchedRibbon),
-            39 => Ok(Self::TphTooCold),
-            40 => Ok(Self::UsedupRibbon),
-            41 => Ok(Self::UsedupRibbon2),
-            42 => Ok(Self::NoLabel),
-            43 => Ok(Self::UnmatchedLabel),
-            44 => Ok(Self::UsedupLabel),
-            45 => Ok(Self::NoRibbon2),
-            46 => Ok(Self::UnmatchedRibbon2),
-            50 => Ok(Self::LabelCanOpened),
-            _ => Err(Self::Error::InvalidU8(value)),
-        }
+impl From<u8> for PrinterStatus {
+    fn from(value: u8) -> Self {
+        Self::from_wire(value)
     }
 }
 
@@ -161,22 +191,19 @@ mod test {
     #[test]
     fn wire_values_roundtrip() {
         for (wire, status) in ALL {
-            assert_eq!(status as u8, wire);
             assert_eq!(status.to_wire(), wire);
-            assert_eq!(PrinterStatus::from_wire(wire).unwrap(), status);
+            assert_eq!(PrinterStatus::from_wire(wire), status);
+            assert_eq!(PrinterStatus::from(wire), status);
         }
     }
 
     #[test]
-    fn unknown_value_is_invalid() {
+    fn unknown_value_is_kept() {
         for value in [3, 9, 13, 19, 21, 29, 47, 49, 51, 255] {
-            assert!(
-                matches!(
-                    PrinterStatus::from_wire(value),
-                    Err(PrintSettingError::InvalidU8(v)) if v == value
-                ),
-                "value={value}"
-            );
+            let status = PrinterStatus::from_wire(value);
+            assert_eq!(status, PrinterStatus::Unknown(value), "value={value}");
+            assert_eq!(status.to_wire(), value);
+            assert_eq!(status.is_error(), value >= 12, "value={value}");
         }
     }
 

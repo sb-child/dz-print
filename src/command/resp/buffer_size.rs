@@ -8,6 +8,9 @@ use crate::command::{
     resp_template::buffer_size::BufferSizeV2V1V0Tl,
 };
 
+/// 命令字节（`0x77`）。
+pub const CMD: u8 = 0x77;
+
 /// 剩余缓冲容量（`0x77`）。
 ///
 /// 预算是 `size × 500` 字节，`size == 1` 时按 1000 字节计。

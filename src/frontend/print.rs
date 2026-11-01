@@ -92,29 +92,42 @@ impl Device {
                             &req::buffer_size::BufferSize {},
                         ])
                         .await?;
-                        // 先 0x70 后 0x77，按顺序取。
-                        let _ = self
-                            .try_recv_one_timeout::<resp::status::Status>(
-                                flow.config().budget_timeout,
-                            )
-                            .await;
+                        // 两条查询的应答按命令字节分别取，顺序和中间夹的推送都不影响。
+                        let timeout = flow.config().budget_timeout;
                         match self
-                            .try_recv_one_timeout::<resp::buffer_size::BufferSize>(
-                                flow.config().budget_timeout,
+                            .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, timeout)
+                            .await
+                        {
+                            Ok(Some(status)) => debug!(
+                                status = ?status.status,
+                                page_key = status.page_key,
+                                "status before budget"
+                            ),
+                            Ok(None) => debug!("status before budget timed out"),
+                            Err(e) => debug!("status before budget failed: {e}"),
+                        }
+                        match self
+                            .recv_cmd_timeout::<resp::buffer_size::BufferSize>(
+                                resp::buffer_size::CMD,
+                                timeout,
                             )
                             .await
                         {
-                            Ok(bs) => {
+                            Ok(Some(bs)) => {
                                 debug!(
                                     size = bs.size,
                                     budget = bs.budget(),
                                     status = bs.status,
                                     "buffer size"
                                 );
-                                flow.on_buffer_size(&bs);
+                                flow.on_buffer_size(&bs)?;
+                            }
+                            Ok(None) => {
+                                warn!("buffer size timed out, fall back to 8 KiB");
+                                flow.on_budget_timeout();
                             }
                             Err(e) => {
-                                warn!("buffer size timeout, fall back to 8 KiB: {e}");
+                                warn!("buffer size failed, fall back to 8 KiB: {e}");
                                 flow.on_budget_timeout();
                             }
                         }

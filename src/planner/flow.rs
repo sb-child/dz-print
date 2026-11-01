@@ -88,6 +88,8 @@ pub enum ChunkDecision {
 pub enum FlowError {
     #[error("print job exceeded its {0:?} deadline")]
     Timeout(Duration),
+    #[error("printer reported buffer status {status:#010x}")]
+    BufferStatus { status: i32 },
 }
 
 /// 一次发送任务的统计，可用于和 `0x73` 的计数器对账。
@@ -210,9 +212,19 @@ impl FlowPlanner {
     }
 
     /// 收到 `0x77` 回包后更新预算。
-    pub fn on_buffer_size(&mut self, resp: &BufferSize) {
+    ///
+    /// 返回错误状态时中止整个任务：设备已经报错，继续按预算发送只会把
+    /// 后面的行数据写坏或写丢。`0x0400_0000`（等待数据）不是错误，
+    /// 仍然按 `size` 换算预算。
+    pub fn on_buffer_size(&mut self, resp: &BufferSize) -> Result<(), FlowError> {
+        if resp.is_error() {
+            return Err(FlowError::BufferStatus {
+                status: resp.status,
+            });
+        }
         self.budget = resp.budget();
         self.querying = false;
+        Ok(())
     }
 
     /// `0x77` 超时：按保守预算继续，不让整页卡死。
@@ -301,7 +313,7 @@ mod tests {
         for _ in 0..20 {
             p.push(vec![0u8; 1000]);
         }
-        p.on_buffer_size(&buffer(100)); // 50000
+        p.on_buffer_size(&buffer(100)).unwrap(); // 50000
         let chunks = drain(&mut p);
         assert_eq!(
             chunks.iter().map(Vec::len).collect::<Vec<_>>(),
@@ -318,7 +330,7 @@ mod tests {
         for _ in 0..20 {
             p.push(vec![0u8; 1000]);
         }
-        p.on_buffer_size(&buffer(10)); // 5000 < 20000
+        p.on_buffer_size(&buffer(10)).unwrap(); // 5000 < 20000
 
         // 预算不够整页，但足够发一块：先把这 5000 发完。
         assert!(matches!(p.step(), ChunkDecision::Send(c) if c.len() == 5000));
@@ -328,7 +340,7 @@ mod tests {
         assert!(matches!(p.step(), ChunkDecision::Wait));
         assert!(matches!(p.step(), ChunkDecision::Wait));
 
-        p.on_buffer_size(&buffer(100));
+        p.on_buffer_size(&buffer(100)).unwrap();
         assert!(matches!(p.step(), ChunkDecision::Send(c) if c.len() == 9000));
         assert_eq!(p.report().budget_queries, 1);
     }
@@ -337,7 +349,7 @@ mod tests {
     fn never_splits_a_single_command() {
         let mut p = planner();
         p.push(vec![0u8; 12_000]);
-        p.on_buffer_size(&buffer(100));
+        p.on_buffer_size(&buffer(100)).unwrap();
         assert!(matches!(p.step(), ChunkDecision::Send(c) if c.len() == 12_000));
         assert!(matches!(p.step(), ChunkDecision::Done));
     }
@@ -354,15 +366,46 @@ mod tests {
     }
 
     #[test]
+    fn error_buffer_status_aborts() {
+        let mut p = planner();
+        p.push(vec![0u8; 1000]);
+        let err = p
+            .on_buffer_size(&BufferSize {
+                size: 50,
+                status: 1,
+                sync_token: 0,
+                tail: Vec::new(),
+            })
+            .unwrap_err();
+        assert_eq!(err, FlowError::BufferStatus { status: 1 });
+        // 不更新预算，也不认为查询已经结束。
+        assert!(matches!(p.step(), ChunkDecision::QueryBudget));
+    }
+
+    #[test]
+    fn waiting_data_status_is_not_an_error() {
+        let mut p = planner();
+        p.push(vec![0u8; 1000]);
+        p.on_buffer_size(&BufferSize {
+            size: 4,
+            status: 0x0400_0000,
+            sync_token: 0,
+            tail: Vec::new(),
+        })
+        .unwrap();
+        assert!(matches!(p.step(), ChunkDecision::Send(c) if c.len() == 1000));
+    }
+
+    #[test]
     fn gap_is_needed_only_when_budget_is_short_and_data_remains() {
         let mut p = planner();
         assert!(!p.needs_gap());
 
         p.push(vec![0u8; 1000]);
-        p.on_buffer_size(&buffer(100));
+        p.on_buffer_size(&buffer(100)).unwrap();
         assert!(!p.needs_gap(), "50000 >= 9000");
 
-        p.on_buffer_size(&buffer(4)); // 2000
+        p.on_buffer_size(&buffer(4)).unwrap(); // 2000
         assert!(p.needs_gap(), "2000 < 9000 and data remains");
 
         let _ = p.step();
@@ -389,7 +432,7 @@ mod tests {
             &crate::command::req::buffer_size::BufferSize {},
         ];
         p.push_commands(&assembler, &cmds).unwrap();
-        p.on_buffer_size(&buffer(100));
+        p.on_buffer_size(&buffer(100)).unwrap();
         let chunks = drain(&mut p);
         assert_eq!(chunks.len(), 1);
         // 两条命令编码后拼成一块，校验和在每条命令内部。

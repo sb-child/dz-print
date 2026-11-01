@@ -15,8 +15,12 @@
 //! [`MAX_LINES_PER_PAGE`] 时用 [`print_bitmap_pages`] 先拆页，
 //! 发送时的预算和分块见 [`crate::planner::flow`]。
 //!
-//! 位级 D 模式假定设备保留上一行（包括普通 [`PrintCommand::Line`]）的解码结果，
-//! 第一行按全白处理。
+//! 位级 D 模式假定设备把上一条 **D 命令**的解码结果留作下一行的基准；
+//! 每页第一行、以及 [`PrintCommand::Feed`] 之后的第一行都按全白处理（只用 X）。
+//!
+//! DP27P 实测 X / D 不能混用：X 行之后的第一条 D 会基于错误的上一行。因此
+//! [`RleMode::Bits4`] / `Bits5` / `Bits6`（自动 X/D）不要用于该机型，
+//! 真机请用 [`RleMode::Bits4XOnly`] / `Bits5XOnly` / `Bits6XOnly`。
 
 use crate::bitmap::{Bitmap, BitmapError, BitmapLine};
 use crate::command::req::{self, ReqTrait};
@@ -41,6 +45,9 @@ pub const MAX_LINES_PER_PAGE: usize = 16383;
 /// 只描述“用哪一族 RLE”；位级模式默认同时算 X 和 D，取字节数更小的那个。
 /// `*XOnly` 变体只用 X，用于验证设备是否支持 X / D 混用。
 /// 如果 RLE 编码后不比直接发一行小，仍然回退到 [`PrintCommand::Line`]。
+///
+/// **DP27P 实测 X / D 不能混用**，自动模式在该机型上会出现周期性断层，
+/// 真机请用 `Bits4XOnly` / `Bits5XOnly` / `Bits6XOnly`。详见 `rle.md`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RleMode {
     /// 不压缩。
@@ -335,6 +342,9 @@ fn print_bitmap_range(
 
     let mut out = Vec::new();
     let mut y = start;
+    // 上一行是否真的作为行数据发出去了。空白行被合并成 `Feed`，
+    // 之后的第一行不能拿“位图里的上一行”当 D 的基准。
+    let mut prev_is_line = false;
     while y < end {
         let line = bm.line(y)?;
         let Some(first) = line.first_one() else {
@@ -344,6 +354,7 @@ fn print_bitmap_range(
                 count += 1;
             }
             push_feed(&mut out, count);
+            prev_is_line = false;
             y += count;
             continue;
         };
@@ -361,14 +372,15 @@ fn print_bitmap_range(
         }
         let repeats = repeats as u16;
 
-        // D 模式需要上一行的解码结果；每页第一行按全白处理。
-        let prev = if y == start {
+        // D 模式需要上一行的解码结果；每页第一行和 Feed 之后按全白处理。
+        let prev = if y == start || !prev_is_line {
             None
         } else {
             Some(bm.line(y - 1)?)
         };
         if let Some(cmd) = select_rle(&line, prev, raw_len, repeats, rle)? {
             out.push(cmd);
+            prev_is_line = true;
             y += 1 + repeats as usize;
             continue;
         }
@@ -382,6 +394,7 @@ fn print_bitmap_range(
             repeats,
             data,
         });
+        prev_is_line = true;
         y += 1 + repeats as usize;
     }
     Ok(out)
@@ -808,6 +821,36 @@ mod test {
             matches!(pages[1].commands[0], PrintCommand::Rle5x { .. }),
             "the first line of a page must not XOR against the previous page, got {:?}",
             pages[1].commands[0]
+        );
+    }
+
+    #[test]
+    fn d_is_not_used_after_feed() {
+        // 第 0 行整行黑；中间两行空白合并成 Feed；第 3 行只差最后一个点。
+        // 如果拿位图里的空白行当 D 基准，或跨 Feed 引用第 0 行，都会算错。
+        let mut bm = Bitmap::new(64, 4).unwrap();
+        bm.line_mut(0).unwrap().fill(true);
+        bm.line_mut(3).unwrap().fill(true);
+        bm.line_mut(3).unwrap().set(63, false);
+
+        let cmds = print_bitmap(&bm, RleMode::Bits4).unwrap();
+        assert!(
+            matches!(cmds[1], PrintCommand::Feed { lines: 2 }),
+            "{cmds:?}"
+        );
+        assert!(
+            matches!(cmds[2], PrintCommand::Rle4x { .. }),
+            "feed must reset the D base, got {:?}",
+            cmds[2]
+        );
+        assert!(
+            !cmds.iter().any(|c| matches!(
+                c,
+                PrintCommand::Rle4d { .. }
+                    | PrintCommand::Rle5d { .. }
+                    | PrintCommand::Rle6d { .. }
+            )),
+            "{cmds:?}"
         );
     }
 

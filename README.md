@@ -76,7 +76,7 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
   - `resp_template/` `[新]` 每个响应的字节布局模板（deku），保留 `magic` 做命令头校验
   - `varint.rs` `[新]` 协议里的 4 种变长整数编解码
   - `settings.rs` `[新]` 打印设置（速度、浓度、纸张间隔类型）枚举和字符串解析
-  - `status.rs` `[新]` `0x70` 打印机状态码 `PrinterStatus`（25 个线上值）
+  - `status.rs` `[新]` `0x70` 打印机状态码 `PrinterStatus`（25 个已知线上值 + `Unknown(raw)`）。`Unknown(0x0c..)` 仍然按错误处理
 - `derive_alias.rs` `[新]` deku derive 的别名 `CmdTemplate` / `RespTemplate`
 - `backend/` `[新]` 传输层
   - `mod.rs`：`Transport` trait（`write` / `read_chunk` / `reset`），只搬字节，不解析命令

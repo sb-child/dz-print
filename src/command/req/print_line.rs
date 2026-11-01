@@ -53,13 +53,20 @@ impl ReqTrait for PrintLine {
         match mv {
             ModelVersion::V0 => {
                 // 要打印的数据
-                let mut full_data = Vec::with_capacity(self.skips as usize + self.data.len());
+                let full_len = self.skips as usize + self.data.len();
+                let data_len =
+                    u16::try_from(full_len).map_err(|_| PackReqError::ParamOutOfRange {
+                        param: "data_len".into(),
+                        value: i64::try_from(full_len).unwrap_or(i64::MAX),
+                        range: (Some(0), Some(u16::MAX as i64)),
+                    })?;
+                let mut full_data = Vec::with_capacity(full_len);
                 // 向右偏移填充
                 full_data.resize(self.skips as usize, 0x00);
                 // 加上传入的数据
                 full_data.extend_from_slice(&self.data);
                 let cmd = PrintLineV0Tl {
-                    data_len: full_data.len() as u16,
+                    data_len,
                     data: full_data,
                     ..Default::default()
                 }
@@ -87,8 +94,19 @@ impl ReqTrait for PrintLine {
                         ek,
                     ));
                 } else {
+                    let dots = self
+                        .data
+                        .len()
+                        .checked_mul(8)
+                        .and_then(|dots| u16::try_from(dots).ok())
+                        .ok_or_else(|| PackReqError::ParamOutOfRange {
+                            param: "dots".into(),
+                            value: i64::try_from(self.data.len().saturating_mul(8))
+                                .unwrap_or(i64::MAX),
+                            range: (Some(0), Some(u16::MAX as i64)),
+                        })?;
                     let first_cmd = PrintLineV1Tl {
-                        dots: (self.data.len() * 8) as u16,
+                        dots,
                         data: self.data.clone(),
                         ..Default::default()
                     };
@@ -154,4 +172,44 @@ pub(crate) fn append_repeat_lines(
         remaining_lines -= count;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v0_rejects_data_len_overflow() {
+        let line = PrintLine {
+            data: vec![0; 65_536],
+            ..Default::default()
+        };
+        let err = line.pack(ModelVersion::V0).unwrap_err();
+        assert!(
+            matches!(&err, PackReqError::ParamOutOfRange { param, .. } if param == "data_len"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn v1_rejects_dots_overflow() {
+        let line = PrintLine {
+            data: vec![0; 8_192],
+            ..Default::default()
+        };
+        let err = line.pack(ModelVersion::V1).unwrap_err();
+        assert!(
+            matches!(&err, PackReqError::ParamOutOfRange { param, .. } if param == "dots"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn v1_accepts_max_dots() {
+        let line = PrintLine {
+            data: vec![0; 8_191],
+            ..Default::default()
+        };
+        assert!(!line.pack(ModelVersion::V1).unwrap().is_empty());
+    }
 }

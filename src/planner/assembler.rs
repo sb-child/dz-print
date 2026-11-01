@@ -9,6 +9,7 @@
 //! - 编码：[`Assembler::encode`] 调用 [`ReqTrait::pack`]，再按 [`EnvelopeKind`] 补长度字段和校验和。
 //! - 解码：[`Assembler::decode_one`] 每次解出缓冲区头部的一条响应，返回响应和已消费字节数。
 
+use pretty_hex::simple_hex;
 use snafu::{ResultExt, Snafu};
 
 use crate::command::{
@@ -118,7 +119,7 @@ impl Assembler {
 /// 响应切帧或解析错误。
 #[derive(Debug, Snafu)]
 pub enum DecodeError {
-    #[snafu(display("Invalid response length field: {bytes:02X?}."))]
+    #[snafu(display("Invalid response length field: {}.", simple_hex(bytes)))]
     InvalidLength { bytes: Vec<u8> },
     #[snafu(display("Bad checksum: expected {expected:#04X}, got {actual:#04X}."))]
     BadChecksum { expected: u8, actual: u8 },

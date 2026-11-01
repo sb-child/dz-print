@@ -56,7 +56,7 @@
 
 - [x] `status.rs` 重写
   - `PrinterErrorCode` 改为 `PrinterStatus`，按线上值映射 25 个状态码
-  - 补 `to_wire` / `from_wire` / `TryFrom<u8>` / `is_printable` / `is_error`
+  - 补 `to_wire` / `from_wire` / `is_printable` / `is_error`（后来未知值改为 `Unknown(u8)`，去掉了 `TryFrom`）
   - 修正 `36 = RibbonCanOpened`（原 `TphOpened` 有误）
   - `print-status.md` 同步为完整状态表和实测帧
   - 3 个用例；`cargo test --lib`: 120 passed
@@ -258,7 +258,7 @@ transport（USB HID / BLE 串口透传）
 - [x] `0x7c` 软件版本（NUL 结尾字符串 → `Box<str>`）
 - [x] `0x7d` 蓝牙 MAC（`0x10 <6B>` + `0x14 <6B>`）
 - [x] GBK 方案：`encoding_rs`；`resp_template` 保留 `Vec<u8>`，`resp` 输出 `Box<str>`
-- [x] `status.rs` 重写为 `PrinterStatus`（25 个线上值 + `TryFrom` / `to_wire` / `from_wire` / `is_printable` / `is_error`）
+- [x] `status.rs` 重写为 `PrinterStatus`（25 个已知线上值 + `Unknown(u8)`、`to_wire` / `from_wire` / `is_printable` / `is_error`）
 
 ### P4 流控（2）
 
@@ -337,6 +337,10 @@ transport（USB HID / BLE 串口透传）
 >
 > 通道迁移（2026-11-01）：`out_tx` / payload / ack 换成 `crossfire` 后仍是
 > 332 lib + 2 bin passed；`clippy --all-targets` 无源码警告，`doc` 0 warning。
+>
+> P1 正确性 / 健壮性（2026-11-01）：完成下面整节后 `cargo test --all-targets`
+> 345 lib + 2 bin passed；`clippy` / `doc` / `fmt` 均干净。真机复测
+> `device-info` / `flow-control` / `--phase print --rle bits5x --rows 200` 正常。
 
 ### P0 结构：frontend 与 test_usb
 
@@ -407,39 +411,44 @@ transport（USB HID / BLE 串口透传）
 
 ### P1 正确性 / 健壮性
 
-- [ ] 响应队列按命令字节分发
-  - `Device::recv_matching` 已搬进 `src/frontend/mod.rs`，但
-    `frontend/print.rs` 的预算查询和 `wait_for_print_done` 仍用 `try_recv_one`
-  - `0x7b` 或未知状态仍可能卡在队首，导致预算查询退化或等待完成报错
-  - 方案：两处都改用 `recv_matching`，不匹配的帧丢弃并记录
-- [ ] `wait_for_print_done` 跳过非 `0x70` 帧，不因 `0x7b` 推送退出
-- [ ] D 模式在 `Feed` 之后强制只用 X：`src/planner/print.rs` 的
-  `prev = bm.line(y - 1)` 可能取到已合并成 `Feed` 的空白行
-  - 补「空白行后接 D 行」的测试
-- [ ] 修正文档矛盾：`src/planner/print.rs:18-19` 说 D 保留普通 Line，
-  `rle.md:21-24` 说 X / D 不能混用
-  - `RleMode::Bits4/5/6` 改名 `*Auto`，或加「DP27P 不可用」警告
-- [ ] `PrinterStatus` 支持未知值：`Unknown(u8)` 或
-  `Status { raw, status: Option<_> }`
-  - 避免 `0x0c+` 新错误码变成 `ParseRespError::InvalidValue` 并卡队列
-- [ ] `FlowPlanner::on_buffer_size` 检查 `BufferSize::is_error()`；
-  错误状态中止或退化，不继续按预算发送
-- [ ] `PrintLine` 参数校验：`src/command/req/print_line.rs:62` 的 v0
-  `data_len as u16`、`:91` 的 v1 `dots as u16` 会静默截断
-  - 用 `try_from` 返回 `ParamOutOfRange`
-- [ ] `FeedLine` 避免超大分配：`src/command/req/feed_line.rs:40-52` 在
-  `lines = u32::MAX` 时会生成上千万段
-- [ ] USB 接口 detach 后 reattach：`src/backend/usb.rs:289-300` 没有
-  `attach_kernel_driver`
-  - 用 `set_auto_detach_kernel_driver(true)` 或 Drop 清理；
-    `Transport::reset`（`:186-190`）后重新 claim
-- [ ] 日志降噪：`src/frontend/mod.rs` 的 `try_send_batch` / `send_cmd_area`
-  在 debug 打印完整 9000 字节 hex，且两处重复
-  - debug 只打 `bytes` 和摘要，完整 hex 放 trace
-- [ ] 三处漏网的数组打印改 `simple_hex`：
-  - `src/planner/assembler.rs:121` `{bytes:02X?}`
-  - `src/planner/usb.rs:38` `{bytes:02X?}`
-  - `src/command/resp/gap_length.rs:45` `{raw:02X?}`
+- [x] 响应队列按命令字节分发
+  - 新增 `Device::recv_cmd_timeout<T>(cmd, timeout)`：在整个队列里找
+    `payload[1] == cmd` 的帧，不消费其它命令的帧
+  - `wait_for_print_done` 和 `frontend/print.rs` 的预算查询都改用它，
+    `0x7b` 主动推送不会再卡住 `0x70` / `0x77`
+  - 队列超过 64 帧时丢掉最旧的一帧并记录，避免长任务里无限增长
+  - 补 3 个测试：跳过推送帧、等待完成时夹推送、预算查询时夹推送
+- [x] `wait_for_print_done` 跳过非 `0x70` 帧，不因 `0x7b` 推送退出
+- [x] D 模式在 `Feed` 之后强制只用 X
+  - `print_bitmap_range` 记录上一行是否真的作为行命令发出；`Feed` 之后
+    `prev = None`，不再拿位图里的空白行当 D 基准
+  - 补「空白行后接 D 行」的测试 `d_is_not_used_after_feed`
+- [x] 修正文档矛盾
+  - `planner/print.rs` 模块文档和 `RleMode` 注明：DP27P 实测 X / D 不能混用，
+    `Bits4/5/6` 不要用于真机，改用 `*XOnly`
+  - 改名 `*Auto` 留给后续统一命名时一起做
+- [x] `PrinterStatus` 支持未知值：新增 `Unknown(u8)`，`from_wire` 不再返回错误
+  - `to_wire` 改为 match，去掉 `#[repr(u8)]`
+  - `is_error()` 仍然是 `>= 0x0c`，`Unknown(0x0c..)` 也按错误处理
+  - `resp::status::Status::parse` 不再因为未知状态码失败，避免卡队列
+- [x] `FlowPlanner::on_buffer_size` 检查 `BufferSize::is_error()`
+  - 返回 `FlowError::BufferStatus { status }`，打印任务直接中止；
+    `0x0400_0000`（等待数据）不算错误
+- [x] `PrintLine` 参数校验
+  - v0 的 `data_len` 用 `u16::try_from`，v1 的 `dots` 用 `checked_mul(8)` +
+    `u16::try_from`，溢出返回 `ParamOutOfRange`
+- [x] `FeedLine` 避免超大分配
+  - 单次最多拆 `MAX_FEED_SEGMENTS`（4096）段，超出返回 `ParamOutOfRange`
+- [x] USB 接口 detach 后 reattach
+  - `claim_interfaces` 先 `set_auto_detach_kernel_driver(true)`，并记录真正
+    detach 过的接口
+  - `Drop` 里 `release_interface` + `attach_kernel_driver`；
+    `Transport::reset` 之后重新 claim
+  - DP27P 实测进程退出后接口 1 仍绑定 `usbhid`
+- [x] 日志降噪：`try_send_batch` 只记命令数和字节数，`send_cmd_area` 的完整
+  hex 降到 trace
+- [x] 三处漏网的数组打印改 `simple_hex`：`planner/assembler.rs`、
+  `planner/usb.rs`、`command/resp/gap_length.rs`
 
 ### P2 死代码 / 依赖 / 文档
 
@@ -464,7 +473,7 @@ transport（USB HID / BLE 串口透传）
 
 ### 验收
 
-- [ ] `cargo test --lib` 不低于当前 332 passed
+- [ ] `cargo test --lib` 不低于当前 345 passed
 - [ ] `cargo clippy --all-targets` 无 dead_code / 未使用依赖警告
 - [ ] `cargo fmt -- --check` 通过
 - [ ] `cargo doc --no-deps --lib` 无警告

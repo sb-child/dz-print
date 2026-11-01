@@ -20,6 +20,12 @@ pub struct FeedLine {
     pub lines: u32,
 }
 
+/// 单次 `FeedLine` 最多拆成多少段。
+///
+/// `lines` 是 `u32`，直接按段展开的话 `u32::MAX` 在 v0/v1 上会生成上千万条
+/// 命令。这里限制单次调用的段数，正常打印（每页最多 16383 行）远低于上限。
+pub const MAX_FEED_SEGMENTS: usize = 4096;
+
 impl ReqTrait for FeedLine {
     fn pack(&self, mv: ModelVersion) -> Result<Vec<Envelope>, PackReqError> {
         let ek = match mv {
@@ -36,6 +42,18 @@ impl ReqTrait for FeedLine {
         }
         if self.lines == 0 {
             return Ok(Default::default());
+        }
+        let chunk_size = match mv {
+            ModelVersion::V1 | ModelVersion::V0 => 255u32,
+            ModelVersion::V2 => 16384,
+        };
+        let max_lines = chunk_size * MAX_FEED_SEGMENTS as u32;
+        if self.lines > max_lines {
+            return Err(PackReqError::ParamOutOfRange {
+                param: "lines".into(),
+                value: self.lines as i64,
+                range: (Some(1), Some(max_lines as i64)),
+            });
         }
         let make_segs = |chunk_size: usize, make_seg: fn(usize) -> Seg| -> Vec<Seg> {
             let count = self.lines / chunk_size as u32;
@@ -73,5 +91,54 @@ impl ReqTrait for FeedLine {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(buf.into_iter().map(|p| Envelope::new(p, ek)).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_lines_is_noop() {
+        assert!(
+            FeedLine { lines: 0 }
+                .pack(ModelVersion::V2)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rejects_too_many_lines() {
+        let err = FeedLine { lines: u32::MAX }
+            .pack(ModelVersion::V0)
+            .unwrap_err();
+        assert!(
+            matches!(&err, PackReqError::ParamOutOfRange { param, .. } if param == "lines"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_max_segments() {
+        let lines = 255 * MAX_FEED_SEGMENTS as u32;
+        let cmds = FeedLine { lines }.pack(ModelVersion::V1).unwrap();
+        assert_eq!(cmds.len(), MAX_FEED_SEGMENTS);
+
+        let lines = 16_384 * MAX_FEED_SEGMENTS as u32;
+        let cmds = FeedLine { lines }.pack(ModelVersion::V2).unwrap();
+        assert_eq!(cmds.len(), MAX_FEED_SEGMENTS);
+    }
+
+    #[test]
+    fn splits_into_protocol_chunks() {
+        let cmds = FeedLine { lines: 300 }.pack(ModelVersion::V2).unwrap();
+        assert_eq!(cmds.len(), 1);
+
+        let cmds = FeedLine { lines: 16_385 }.pack(ModelVersion::V2).unwrap();
+        assert_eq!(cmds.len(), 2);
+
+        let cmds = FeedLine { lines: 300 }.pack(ModelVersion::V1).unwrap();
+        assert_eq!(cmds.len(), 2);
     }
 }

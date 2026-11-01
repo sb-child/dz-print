@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+use pretty_hex::simple_hex;
+
 use crate::command::{
     ModelVersion,
     resp::{ParseRespError, RespTrait, decode_resp},
@@ -42,7 +44,7 @@ fn decode_gap(raw: &[u8]) -> Result<u32, ParseRespError> {
         .decode(raw)
         .ok_or_else(|| ParseRespError::InvalidValue {
             param: "gap",
-            value: format!("invalid {mode:?} varint: {raw:02X?}"),
+            value: format!("invalid {mode:?} varint: {}", simple_hex(&raw)),
         })?;
     debug_assert_eq!(used, raw.len());
 

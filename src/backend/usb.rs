@@ -55,6 +55,8 @@ struct Endpoints {
 pub struct UsbTransport {
     handle: DeviceHandle<Context>,
     endpoints: Endpoints,
+    /// 打开时从内核驱动手里 detach 过的接口，Drop 时要还回去。
+    detached: Vec<u8>,
     read_timeout: Duration,
     write_timeout: Duration,
 }
@@ -98,7 +100,7 @@ impl UsbTransport {
                 continue;
             };
 
-            claim_interfaces(&handle, endpoints)?;
+            let detached = claim_interfaces(&handle, endpoints)?;
 
             info!(
                 vid = format!("{:#06x}", desc.vendor_id()),
@@ -111,6 +113,7 @@ impl UsbTransport {
             return Ok(Self {
                 handle,
                 endpoints,
+                detached,
                 read_timeout: READ_TIMEOUT,
                 write_timeout: WRITE_TIMEOUT,
             });
@@ -186,7 +189,34 @@ impl Transport for UsbTransport {
     fn reset(&mut self) -> Result<(), TransportError> {
         self.handle.reset().map_err(map_usb_error)?;
         std::thread::sleep(RESET_DELAY);
+        // reset 之后接口声明可能丢失，重新 claim 一次；失败只记录，
+        // 保持和以前一样的“reset 本身成功就返回”语义。
+        match claim_interfaces(&self.handle, self.endpoints) {
+            Ok(detached) => self.detached = detached,
+            Err(e) => warn!("re-claim interfaces after reset failed: {e}"),
+        }
         Ok(())
+    }
+}
+
+impl Drop for UsbTransport {
+    fn drop(&mut self) {
+        // 先释放接口，再把内核驱动接回去，避免下一次打开时设备被占用。
+        let mut seen = Vec::new();
+        for iface in [self.endpoints.out_iface, self.endpoints.in_iface] {
+            if seen.contains(&iface) {
+                continue;
+            }
+            seen.push(iface);
+            if let Err(e) = self.handle.release_interface(iface) {
+                debug!("release USB interface {iface} failed: {e:?}");
+            }
+        }
+        for iface in &self.detached {
+            if let Err(e) = self.handle.attach_kernel_driver(*iface) {
+                debug!("attach kernel driver to interface {iface} failed: {e:?}");
+            }
+        }
     }
 }
 
@@ -277,7 +307,13 @@ fn find_endpoints(device: &Device<Context>) -> Result<Option<Endpoints>, Transpo
 fn claim_interfaces(
     handle: &DeviceHandle<Context>,
     endpoints: Endpoints,
-) -> Result<(), TransportError> {
+) -> Result<Vec<u8>, TransportError> {
+    // 优先让 libusb 在释放接口时自动接回内核驱动；不支持时 Drop 里手动 attach。
+    if let Err(e) = handle.set_auto_detach_kernel_driver(true) {
+        debug!("set_auto_detach_kernel_driver failed: {e:?}");
+    }
+
+    let mut detached: Vec<u8> = Vec::new();
     let mut claimed: Vec<(u8, u8)> = Vec::new();
     for (iface, setting) in [
         (endpoints.out_iface, endpoints.out_setting),
@@ -290,6 +326,9 @@ fn claim_interfaces(
             handle
                 .detach_kernel_driver(iface)
                 .map_err(|e| TransportError::Io(e.to_string()))?;
+            if !detached.contains(&iface) {
+                detached.push(iface);
+            }
         }
         handle
             .claim_interface(iface)
@@ -299,7 +338,7 @@ fn claim_interfaces(
             .map_err(|e| TransportError::Io(e.to_string()))?;
         claimed.push((iface, setting));
     }
-    Ok(())
+    Ok(detached)
 }
 
 /// 读取设备上所有可用的 USB 字符串：产品名 + 各接口字符串。

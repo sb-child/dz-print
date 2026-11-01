@@ -26,7 +26,7 @@ use mytm::{TypedTaskState, TypedTaskStateRef};
 use pretty_hex::simple_hex;
 use thiserror::Error;
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use crate::{
     backend::usb::UsbSelector,
@@ -91,6 +91,26 @@ pub enum FrontendError {
 struct RecvState {
     rx: worker::RecvRx,
     queue: VecDeque<Vec<u8>>,
+}
+
+/// 响应队列的上限。
+///
+/// 按命令字节取响应时，不匹配的帧会留在队列里（例如 `0x7b` 主动推送）。
+/// 数量超过这个值就丢掉最旧的一帧并记录，避免长任务里无限增长。
+const MAX_QUEUED_FRAMES: usize = 64;
+
+impl RecvState {
+    fn push(&mut self, payload: Vec<u8>) {
+        if self.queue.len() >= MAX_QUEUED_FRAMES
+            && let Some(dropped) = self.queue.pop_front()
+        {
+            warn!(
+                "response queue is full, drop the oldest frame: {}",
+                simple_hex(&dropped)
+            );
+        }
+        self.queue.push_back(payload);
+    }
 }
 
 /// 任意 payload，用于按命令字节过滤响应。
@@ -300,8 +320,7 @@ impl Device {
         debug!(
             commands = cmds.len(),
             bytes = cmd_area.len(),
-            "encoded command area: {}",
-            simple_hex(&cmd_area)
+            "encoded command area"
         );
         self.send_cmd_area(cmd_area).await
     }
@@ -311,11 +330,8 @@ impl Device {
         if cmd_area.is_empty() {
             return Ok(());
         }
-        debug!(
-            bytes = cmd_area.len(),
-            "write command area: {}",
-            simple_hex(&cmd_area)
-        );
+        debug!(bytes = cmd_area.len(), "write command area");
+        trace!("write command area: {}", simple_hex(&cmd_area));
 
         let (ack_tx, ack_rx) = oneshot::oneshot();
         self.out_tx
@@ -340,7 +356,8 @@ impl Device {
     /// - 至少观察到一次忙，之后回到 `Printable` / `NoJob` 才返回；
     /// - 如果打印很快就结束了，则等过 [`DeviceConfig::print_start_grace`] 后
     ///   再接受空闲状态；
-    /// - `0x0c` 及以上的错误状态直接返回错误。
+    /// - `0x0c` 及以上的错误状态直接返回错误；
+    /// - 只认命令字节为 `0x70` 的帧，`0x7b` 之类的主动推送会被跳过。
     ///
     /// 只应在最后一页的 `EndPage` 之后调用；不要在行数据中间插 `0x70`。
     pub async fn wait_for_print_done(
@@ -367,14 +384,15 @@ impl Device {
             self.try_send_batch(&[&req::status::Status {}]).await?;
 
             let status = match self
-                .try_recv_one_timeout::<resp::status::Status>(
+                .recv_cmd_timeout::<resp::status::Status>(
+                    resp::status::CMD,
                     remaining.min(self.config.recv_timeout),
                 )
                 .await
             {
-                Ok(status) => status,
-                // 单次查询超时不代表打印结束，继续等到总超时。
-                Err(RecvError::Timeout(_)) => continue,
+                Ok(Some(status)) => status,
+                // 单次查询超时、或只收到 `0x7b` 之类的推送，不代表打印结束。
+                Ok(None) => continue,
                 Err(e) => return Err(e.into()),
             };
             debug!(
@@ -421,7 +439,7 @@ impl Device {
         let mut state = self.recv.lock().await;
         loop {
             while let Ok(payload) = state.rx.try_recv() {
-                state.queue.push_back(payload);
+                state.push(payload);
             }
 
             if let Some(payload) = state.queue.front() {
@@ -440,9 +458,53 @@ impl Device {
             }
 
             match tokio::time::timeout(timeout, state.rx.recv()).await {
-                Ok(Ok(payload)) => state.queue.push_back(payload),
+                Ok(Ok(payload)) => state.push(payload),
                 Ok(Err(_)) => return Err(RecvError::Closed),
                 Err(_) => return Err(RecvError::Timeout(timeout)),
+            }
+        }
+    }
+
+    /// 按命令字节接收并解析响应。
+    ///
+    /// 和 [`Self::try_recv_one_timeout`] 不同，这里会在整个队列里找
+    /// `payload[1] == cmd` 的帧，**不消费**其它命令的帧：
+    ///
+    /// - `0x70` / `0x77` 这类查询的应答可能被 `0x7b` 主动推送插在中间；
+    /// - 预算查询同一帧里带两条命令，应答顺序也不保证。
+    ///
+    /// 找不到时等到 `timeout`，返回 `Ok(None)`；worker 已经退出时返回
+    /// [`RecvError::Closed`]。
+    pub async fn recv_cmd_timeout<T: RespTrait>(
+        &self,
+        cmd: u8,
+        timeout: Duration,
+    ) -> Result<Option<T>, RecvError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut state = self.recv.lock().await;
+        loop {
+            while let Ok(payload) = state.rx.try_recv() {
+                state.push(payload);
+            }
+
+            if let Some(index) = state.queue.iter().position(|p| p.get(1) == Some(&cmd)) {
+                let payload = state.queue.remove(index).expect("index from position()");
+                return T::parse(&payload, self.mv)
+                    .map(Some)
+                    .map_err(|source| RecvError::Parse {
+                        expected: std::any::type_name::<T>(),
+                        source,
+                    });
+            }
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            match tokio::time::timeout(remaining, state.rx.recv()).await {
+                Ok(Ok(payload)) => state.push(payload),
+                Ok(Err(_)) => return Err(RecvError::Closed),
+                Err(_) => return Ok(None),
             }
         }
     }
@@ -453,7 +515,7 @@ impl Device {
     pub async fn try_pop_raw(&self) -> Option<Vec<u8>> {
         let mut state = self.recv.lock().await;
         while let Ok(payload) = state.rx.try_recv() {
-            state.queue.push_back(payload);
+            state.push(payload);
         }
         state.queue.pop_front()
     }
@@ -713,6 +775,68 @@ mod tests {
             matches!(&err, FrontendError::NotReady(msg) if msg.contains("no matching device")),
             "{err:?}"
         );
+    }
+
+    /// 按命令字节取响应：前面的 `0x7b` 推送不消费、也不影响解析。
+    #[tokio::test]
+    async fn recv_cmd_timeout_skips_other_frames() {
+        let (device, _transport) = device_with(&[frame(0x7b, &[0x01]), status_frame(0x00)]);
+        device.ready().await.unwrap();
+
+        let status = device
+            .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, Duration::from_millis(200))
+            .await
+            .unwrap()
+            .expect("status frame");
+        assert_eq!(status.status, PrinterStatus::Printable);
+
+        // 推送帧还在队列里。
+        let raw = device
+            .recv_matching(0x7b, Duration::from_millis(50))
+            .await
+            .unwrap();
+        assert!(raw.is_some());
+    }
+
+    /// `0x7b` 主动推送插在 `0x70` 应答之间时，等待打印完成不能失败。
+    #[tokio::test]
+    async fn wait_for_print_done_ignores_pushed_frames() {
+        let (device, _transport) = device_with(&[
+            frame(0x7b, &[0x00]),
+            status_frame(0x01),
+            frame(0x7b, &[0x00]),
+            status_frame(0x00),
+        ]);
+        device.ready().await.unwrap();
+
+        let status = device
+            .wait_for_print_done(Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert_eq!(status.status, PrinterStatus::Printable);
+    }
+
+    /// 预算查询时混入推送帧，仍然能按命令字节取到 `0x70` / `0x77`。
+    #[tokio::test]
+    async fn budget_query_ignores_pushed_frames() {
+        let (device, _transport) = device_with(&[
+            frame(0x7b, &[0x00]),
+            status_frame(0x00),
+            frame(0x7b, &[0x00]),
+            buffer_frame(50),
+            status_frame(0x00),
+        ]);
+
+        let mut bitmap = Bitmap::new(8, 1).unwrap();
+        bitmap.line_mut(0).unwrap().set(0, true);
+
+        let report = device
+            .print_bitmap_job(&bitmap, RleMode::Off)
+            .await
+            .unwrap();
+        assert_eq!(report.chunks, 1);
+        assert_eq!(report.budget_queries, 1);
+        assert!(!report.degraded);
     }
 
     #[tokio::test]

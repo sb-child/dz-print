@@ -9,6 +9,9 @@ use crate::command::{
     status::PrinterStatus,
 };
 
+/// 命令字节（`0x70`）。
+pub const CMD: u8 = 0x70;
+
 /// 打印机状态。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Status {
@@ -23,13 +26,9 @@ pub struct Status {
 impl RespTrait for Status {
     fn parse(payload: &[u8], _mv: ModelVersion) -> Result<Self, ParseRespError> {
         let raw: StatusV2V1V0Tl = decode_resp(payload)?;
-        let status =
-            PrinterStatus::from_wire(raw.status).map_err(|e| ParseRespError::InvalidValue {
-                param: "status",
-                value: e.to_string(),
-            })?;
         Ok(Self {
-            status,
+            // 未知状态码保留为 `PrinterStatus::Unknown`，不在这里报解析错误。
+            status: PrinterStatus::from_wire(raw.status),
             page_key: raw.page_key,
             tail: raw._tail,
         })
@@ -79,18 +78,16 @@ mod test {
     }
 
     #[test]
-    fn unknown_status_is_invalid_value() {
-        let err = Status::parse(&payload(&[0x09, 0x00, 0x01]), ModelVersion::V2).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                ParseRespError::InvalidValue {
-                    param: "status",
-                    ..
-                }
-            ),
-            "{err:?}"
-        );
+    fn unknown_status_is_kept() {
+        let s = Status::parse(&payload(&[0x09, 0x00, 0x01]), ModelVersion::V2).unwrap();
+        assert_eq!(s.status, PrinterStatus::Unknown(0x09));
+        assert_eq!(s.status.to_wire(), 0x09);
+        assert!(!s.status.is_error());
+        assert_eq!(s.page_key, 0x0001);
+
+        let s = Status::parse(&payload(&[0x77, 0x00, 0x01]), ModelVersion::V2).unwrap();
+        assert_eq!(s.status, PrinterStatus::Unknown(0x77));
+        assert!(s.status.is_error());
     }
 
     #[test]
