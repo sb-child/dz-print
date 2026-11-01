@@ -72,7 +72,6 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
 
 - 公开模块的 `//!` 文档都带 `# 用法` 示例，可以 `cargo doc --no-deps --open` 查看，
   用 `cargo test --doc` 跑其中的示例
-- `src/` 里还有 `[旧]` 的逆向初期残留，看代码时注意别用错，说明见下面的代码结构
 
 ## 代码结构
 
@@ -80,36 +79,35 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
 
 - `asset/`：内置字体，供 `dzprint_typst` 使用
 - `bin/`
-  - `common/` `[新]` 两个打印 bin 共用：clap 参数、发送设置、打印任务和退出顺序
-  - `dzprint_image` `[新]` 打印 jpg / png：查打印头点数、按需缩放、抖动成位图
-  - `dzprint_typst` `[新]` 编译 Typst 文档、逐页渲染打印，支持 `<print-settings>` 按页覆盖
-  - `dzprint` `[旧]` 打印图片的逆向初期实现，整体被注释
-  - `dzcli` `[新]` CLI 雏形，只有参数骨架
-  - `test_usb` `[新]` 真机测试平台：`--phase` / `--rle` / `--rows`
-- `bitmap/` `[新]` 以 bit 为单位的位图，行视图供 RLE 和命令层借用
-- `rle/` `[新]` 行程编码：`bit.rs`（RLE4 / RLE5 / RLE6 码表和位级 X/D）、`byte.rs`（字节级）
+  - `common/` 两个打印 bin 共用：clap 参数、发送设置、打印任务和退出顺序
+  - `dzprint_image` 打印 jpg / png：查打印头点数、按需缩放、抖动成位图
+  - `dzprint_typst` 编译 Typst 文档、逐页渲染打印，支持 `<print-settings>` 按页覆盖
+  - `dzcli` CLI 雏形，只有参数骨架
+  - `test_usb` 真机测试平台：`--phase` / `--rle` / `--rows`
+- `bitmap/` 以 bit 为单位的位图，行视图供 RLE 和命令层借用
+- `rle/` 行程编码：`bit.rs`（RLE4 / RLE5 / RLE6 码表和位级 X/D）、`byte.rs`（字节级）
 - `command/` 通讯协议
   - `mod.rs`：`ModelVersion`（`V0` / `V1` / `V2`）和校验码
-  - `envelope.rs` `[新]` 命令载荷封包：自动校验和 / 固定 `0x88` / 手动打包 / 裸字节
-  - `high_command.rs` `[新]` `0x80` 的激活模式 `HighCommandMode`
-  - `req/` `[新]` 请求对象：实现 `ReqTrait`，按机型编码成一组 `Envelope`
-  - `req_template/` `[新]` 每个请求的 deku 字节布局，同一命令的不同机型各一个模板
-  - `resp/` `[新]` 响应对象：实现 `RespTrait`，把模板解析结果按机型归一化
-  - `resp_template/` `[新]` 每个响应的 deku 字节布局，保留 `magic` 做命令头校验
-  - `varint/` `[新]` 协议里的 4 种变长整数编解码
-  - `settings/` `[新]` 速度 / 浓度 / 纸张间隔类型枚举和字符串解析
-  - `status.rs` `[新]` `0x70` 状态码 `PrinterStatus`，未定义值保留在 `Unknown(raw)`
-- `derive_alias.rs` `[新]` deku derive 的别名 `CmdTemplate` / `RespTemplate`
-- `backend/` `[新]` 传输层
+  - `envelope.rs` 命令载荷封包：自动校验和 / 固定 `0x88` / 手动打包 / 裸字节
+  - `high_command.rs` `0x80` 的激活模式 `HighCommandMode`
+  - `req/` 请求对象：实现 `ReqTrait`，按机型编码成一组 `Envelope`
+  - `req_template/` 每个请求的 deku 字节布局，同一命令的不同机型各一个模板
+  - `resp/` 响应对象：实现 `RespTrait`，把模板解析结果按机型归一化
+  - `resp_template/` 每个响应的 deku 字节布局，保留 `magic` 做命令头校验
+  - `varint/` 协议里的 4 种变长整数编解码
+  - `settings/` 速度 / 浓度 / 纸张间隔类型枚举和字符串解析
+  - `status.rs` `0x70` 状态码 `PrinterStatus`，未定义值保留在 `Unknown(raw)`
+- `derive_alias.rs` deku derive 的别名 `CmdTemplate` / `RespTemplate`
+- `backend/` 传输层
   - `mod.rs`：`Transport` trait（`write` / `read_chunk` / `reset`），只搬字节
   - `usb.rs`：`UsbTransport` / `UsbSelector`，`rusb` 中断端点读写
   - `usb_frame.rs`：USB 外层 `1e <长度>` 的打包 / 解包，按 64 字节 HID 报告切片
-- `raster.rs` `[新]` 灰度图 / `tiny-skia` 画布 → `bitmap::Bitmap` 的抖动转换
-- `planner/` `[新]` 命令组装和传输层封包
+- `raster.rs` 灰度图 / `tiny-skia` 画布 → `bitmap::Bitmap` 的抖动转换
+- `planner/` 命令组装和传输层封包
   - `assembler/`：`Assembler` 按机型编码请求、解析响应
   - `flow.rs`：`FlowPlanner`，`0x77` 预算感知的分块发送计划，不做 IO
   - `print/`：位图 → 打印计划；`mod.rs` 放 `RleMode` / 分页 / `into_reqs`，`rle.rs` 放 `select_rle`
-- `frontend/` `[新]` 设备 frontend
+- `frontend/` 设备 frontend
   - `mod.rs`：`Device` / `DeviceConfig` / 错误类型，批量发送、按类型接收、`wait_for_print_done`、`shutdown`
   - `worker.rs`：阻塞线程里的 USB 读写和切帧，由 `mytm::TaskManager` 托管
   - `print.rs`：`print_bitmap_job`，分页 + 流控 + 页末等待打印完成

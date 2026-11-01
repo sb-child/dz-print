@@ -542,8 +542,7 @@ transport（USB HID / BLE 串口透传）
       `src/bin/common/`（参数、设置、打印、退出顺序）
   - 逐页 `<print-settings>` 覆盖命令行参数；覆盖从该页开始生效并沿用
   - 渲染按“打印头点数 / 页面宽度”缩放，页高按比例，不需要文档固定 48mm
-- [ ] 处理全注释的 `src/bin/dzprint.rs`（207 行）
-  - 移到 `examples/`、加 feature gate 或删除
+- [x] 删除全注释的 `src/bin/dzprint.rs`（207 行）
 - [ ] 清掉仍未使用的依赖：`btleplug` / `bytebuffer` / `num-derive` / `strum` /
       `ttf-parser`（`chrono` / `tempfile` / `tar` / `typst*` / `ureq` 已被
       `dzprint_typst` 重新使用；`crossfire` 已用于 frontend 的通道）
