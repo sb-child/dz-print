@@ -88,9 +88,24 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
   - `print.rs`：位图 → 打印计划；`into_reqs` 把 `PrintCommand` 翻译成命令层请求对象
   - `usb.rs`：USB 外层 `1e <长度>` 的打包 / 解包，以及按 64 字节 HID 报告切片
 - `frontend/` `[新]` 设备 frontend
-  - `mod.rs`：`Device` / `DeviceConfig` / `RecvError` / `FrontendError`，批量发送、按类型接收、`recv_matching`、`wait_for_print_done`
-  - `worker.rs`：阻塞线程里的 USB 读写、命令区切帧、原始 payload 队列
+  - `mod.rs`：`Device` / `DeviceConfig` / `RecvError` / `FrontendError`，批量发送、按类型接收、`recv_matching`、`wait_for_print_done`、`shutdown`
+  - `worker.rs`：阻塞线程里的 USB 读写、命令区切帧、原始 payload 队列；worker 由 `mytm::TaskManager` 托管，可取消、可等待线程真正退出
   - `print.rs`：`Device::print_bitmap_job`，分页 + `FlowPlanner` 流控 + 页末等待打印完成
+
+`Device` 的生命周期：
+
+```rust
+let tm = TaskManager::new();          // 整个程序共用一个，放在最外层
+let dev = Device::new(&tm, config);   // worker 挂到 tm 下面
+dev.ready().await?;                   // 等 worker 打开设备（TaskState::Running）
+// ... 收发 / 打印
+dev.shutdown(timeout).await?;         // 取消 worker 并等阻塞线程返回
+tm.close();                           // 退出前统一关闭所有任务
+```
+
+- `shutdown(timeout)` 返回后 USB 句柄才释放
+- 直接 drop 只会关闭通道，worker 会在下一次读取超时后自行退出，但不等它结束
+- `TaskManager::close()` 之后再 spawn 的任务会直接变成 `Cancelled`
 
 ## TODO
 

@@ -75,3 +75,6 @@
 
 不要在逐行发送数据的过程中查 `0x70`，数据流中断会在热敏纸上留下白带；
 页末查询不受影响。实现见 `frontend::Device::wait_for_print_done`。
+
+打印完成后进程退出前还要调用 `Device::shutdown(timeout)`：它取消 worker 并等
+阻塞线程真正返回，USB 句柄释放后进程才结束。只 drop `Device` 不会等线程退出。

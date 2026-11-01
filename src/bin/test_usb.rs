@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::{Parser, ValueEnum};
+use mytm::TaskManager;
 use pretty_hex::simple_hex;
 use tracing::{info, warn};
 
@@ -40,6 +41,8 @@ use dz_print::{
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// 被动监听 `0x7b` 的时间。
 const PUSH_TIMEOUT: Duration = Duration::from_secs(1);
+/// 退出前等 worker 线程真正停下（释放 USB 句柄）的超时。
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// 测试阶段。
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,16 +185,36 @@ async fn main() -> anyhow::Result<()> {
         None => UsbSelector::Auto,
     };
 
-    let dev = Device::new(DeviceConfig {
-        selector,
-        ..Default::default()
-    });
-    dev.ready().await?;
-    info!("device ready (model version: {:?})", dev.model_version());
+    // 整个程序共用一个 TaskManager：worker 挂在它下面，退出前统一 close。
+    let tm = TaskManager::new();
+    let dev = Device::new(
+        &tm,
+        DeviceConfig {
+            selector,
+            ..Default::default()
+        },
+    );
 
+    let result = async {
+        dev.ready().await?;
+        info!("device ready (model version: {:?})", dev.model_version());
+        run_phases(&dev, &cli).await
+    }
+    .await;
+
+    // 无论阶段成功与否，都要等 worker 线程退出后再让进程结束。
+    let stopped = dev.shutdown(SHUTDOWN_TIMEOUT).await;
+    tm.close();
+    result?;
+    stopped?;
+    Ok(())
+}
+
+/// 按顺序执行命令行里所有阶段。
+async fn run_phases(dev: &Device, cli: &Cli) -> Result<()> {
     for &phase in &cli.phase {
         info!(?phase, "running phase");
-        run_phase(&dev, phase, &cli).await?;
+        run_phase(dev, phase, cli).await?;
     }
     Ok(())
 }

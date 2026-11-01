@@ -4,22 +4,26 @@
 
 //! 设备 frontend。
 //!
-//! [`Device`] 对调用方暴露连接、批量发送、按类型接收和等待打印完成；真正的
-//! USB 读写与切帧在 `worker` 的阻塞线程里。前台只拿到原始 payload，解析失败
-//! 时不会消费队列，可以换一个响应类型重试。
+//! [`Device`] 对调用方暴露连接、批量发送、按类型接收、等待打印完成和关闭；
+//! 真正的 USB 读写与切帧在 `worker` 的阻塞线程里。前台只拿到原始 payload，
+//! 解析失败时不会消费队列，可以换一个响应类型重试。
 //!
 //! ```text
 //! 调用方 --try_send_batch--> Assembler::encode --> worker --> Transport
 //! 调用方 <--try_recv_one--- payload 队列 <-- worker::drain_frames <-- Transport
 //! ```
 //!
+//! worker 由 [`mytm`] 托管：[`Device::ready`] 等它的 `Running` 状态，
+//! [`Device::shutdown`] 取消它并等阻塞线程真正退出（USB 句柄释放）。
+//!
 //! 打印任务的流控和分页见 `print` 模块（[`Device::print_bitmap_job`]）。
 
 use std::{collections::VecDeque, time::Duration};
 
+use mytm::{TypedTaskState, TypedTaskStateRef};
 use pretty_hex::simple_hex;
 use thiserror::Error;
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, warn};
 
 use crate::{
@@ -77,6 +81,8 @@ pub enum FrontendError {
     PrinterStatus(PrinterStatus),
     #[error("print did not finish within {0:?}")]
     PrintTimeout(Duration),
+    #[error("device worker did not stop within {0:?}")]
+    ShutdownTimeout(Duration),
 }
 
 /// 前台状态：响应队列 + 未取走的原始 payload。
@@ -134,67 +140,89 @@ pub struct Device {
     config: DeviceConfig,
     out_tx: mpsc::Sender<worker::OutJob>,
     recv: Mutex<RecvState>,
-    ready_rx: watch::Receiver<worker::ReadyStatus>,
-    _bg: tokio::task::JoinHandle<()>,
+    worker: worker::WorkerHandle,
 }
 
 impl Device {
     /// 按配置连接设备。
-    pub fn new(config: DeviceConfig) -> Self {
+    ///
+    /// `tm` 是调用方在最外层持有的 [`mytm::TaskManager`]，worker 会挂到它下面；
+    /// 退出前调用 `tm.close()` 可以统一取消所有任务。
+    ///
+    /// 必须在 tokio runtime 里调用：worker 内部仍用 `spawn_blocking`。
+    pub fn new(tm: &mytm::TaskManager, config: DeviceConfig) -> Self {
         let (out_tx, out_rx) = mpsc::channel(8);
         let (recv_tx, recv_rx) = mpsc::unbounded_channel();
-        let (ready_tx, ready_rx) = watch::channel(worker::ReadyStatus::Pending);
 
-        let bg = worker::spawn_usb(
+        let worker = worker::spawn_usb(
+            tm,
             config.selector.clone(),
             config.model_version,
             out_rx,
             recv_tx,
-            ready_tx,
         );
 
-        Self::from_parts(config, out_tx, recv_rx, ready_rx, bg)
+        Self::from_parts(config, out_tx, recv_rx, worker)
     }
 
     /// 按 USB 设备名（`型号-序列号`）连接，按 `v2` 机型处理。
-    pub fn new_by_name(name: impl Into<String>) -> Self {
-        Self::new(DeviceConfig {
-            selector: UsbSelector::DeviceName(name.into()),
-            ..Default::default()
-        })
+    pub fn new_by_name(tm: &mytm::TaskManager, name: impl Into<String>) -> Self {
+        Self::new(
+            tm,
+            DeviceConfig {
+                selector: UsbSelector::DeviceName(name.into()),
+                ..Default::default()
+            },
+        )
     }
 
     /// 指定设备选择和机型版本。
-    pub fn new_with(selector: UsbSelector, mv: ModelVersion) -> Self {
-        Self::new(DeviceConfig {
-            selector,
-            model_version: mv,
-            ..Default::default()
-        })
+    pub fn new_with(tm: &mytm::TaskManager, selector: UsbSelector, mv: ModelVersion) -> Self {
+        Self::new(
+            tm,
+            DeviceConfig {
+                selector,
+                model_version: mv,
+                ..Default::default()
+            },
+        )
     }
 
     /// 用现成的 transport 创建设备，主要给单元测试使用。
     #[cfg(test)]
     fn new_with_transport(
+        tm: &mytm::TaskManager,
         transport: impl crate::backend::Transport + 'static,
+        config: DeviceConfig,
+    ) -> Self {
+        Self::new_with_factory(tm, move || Ok(Box::new(transport)), config)
+    }
+
+    /// 用可能失败的 transport 工厂创建设备，用来测打开失败。
+    #[cfg(test)]
+    fn new_with_factory(
+        tm: &mytm::TaskManager,
+        factory: impl FnOnce() -> Result<
+            Box<dyn crate::backend::Transport>,
+            crate::backend::TransportError,
+        > + Send
+        + 'static,
         config: DeviceConfig,
     ) -> Self {
         let (out_tx, out_rx) = mpsc::channel(8);
         let (recv_tx, recv_rx) = mpsc::unbounded_channel();
-        let (ready_tx, ready_rx) = watch::channel(worker::ReadyStatus::Pending);
 
-        let factory: worker::TransportFactory = Box::new(move || Ok(Box::new(transport)));
-        let bg = worker::spawn(factory, config.model_version, out_rx, recv_tx, ready_tx);
+        let factory: worker::TransportFactory = Box::new(factory);
+        let worker = worker::spawn(tm, factory, config.model_version, out_rx, recv_tx);
 
-        Self::from_parts(config, out_tx, recv_rx, ready_rx, bg)
+        Self::from_parts(config, out_tx, recv_rx, worker)
     }
 
     fn from_parts(
         config: DeviceConfig,
         out_tx: mpsc::Sender<worker::OutJob>,
         recv_rx: mpsc::UnboundedReceiver<Vec<u8>>,
-        ready_rx: watch::Receiver<worker::ReadyStatus>,
-        _bg: tokio::task::JoinHandle<()>,
+        worker: worker::WorkerHandle,
     ) -> Self {
         Self {
             mv: config.model_version,
@@ -205,8 +233,7 @@ impl Device {
                 rx: recv_rx,
                 queue: VecDeque::new(),
             }),
-            ready_rx,
-            _bg,
+            worker,
         }
     }
 
@@ -216,15 +243,51 @@ impl Device {
     }
 
     /// 等待设备就绪。
+    ///
+    /// worker 在 transport 打开成功后上报一次 `WorkerProgress`，
+    /// 任务因此进入 `Running`；打开失败、panic 或提前退出都会转换成
+    /// [`FrontendError`]。
     pub async fn ready(&self) -> Result<(), FrontendError> {
-        let mut rx = self.ready_rx.clone();
-        loop {
-            match rx.borrow().clone() {
-                worker::ReadyStatus::Ready => return Ok(()),
-                worker::ReadyStatus::Failed(e) => return Err(FrontendError::NotReady(e)),
-                worker::ReadyStatus::Pending => {}
+        match self
+            .worker
+            .wait_for(|state| matches!(state, TypedTaskStateRef::Running(_)))
+            .await
+        {
+            TypedTaskState::Running(_) => Ok(()),
+            TypedTaskState::Failed(e) => Err(FrontendError::NotReady(e.to_string())),
+            TypedTaskState::Panicked(msg) => {
+                Err(FrontendError::NotReady(format!("worker panicked: {msg}")))
             }
-            rx.changed().await.map_err(|_| FrontendError::WorkerGone)?;
+            TypedTaskState::Pending => {
+                Err(FrontendError::NotReady("worker is still pending".into()))
+            }
+            TypedTaskState::Cancelling | TypedTaskState::Cancelled => {
+                Err(FrontendError::WorkerGone)
+            }
+            TypedTaskState::Completed(_) | TypedTaskState::Invalid => {
+                Err(FrontendError::WorkerGone)
+            }
+        }
+    }
+
+    /// 取消 worker 并等它真正退出。
+    ///
+    /// 阻塞线程返回后 USB 句柄才释放，所以退出程序前应该调用一次。等待超过
+    /// `timeout` 会返回 [`FrontendError::ShutdownTimeout`]；worker 已经因为
+    /// IO 错误或 panic 停下时，只记日志并视为已停止。
+    pub async fn shutdown(&self, timeout: Duration) -> Result<(), FrontendError> {
+        self.worker.cancel();
+        match tokio::time::timeout(timeout, self.worker.wait_terminal()).await {
+            Err(_) => Err(FrontendError::ShutdownTimeout(timeout)),
+            Ok(TypedTaskState::Failed(e)) => {
+                warn!("device worker stopped with error: {e}");
+                Ok(())
+            }
+            Ok(TypedTaskState::Panicked(msg)) => {
+                warn!("device worker panicked: {msg}");
+                Ok(())
+            }
+            Ok(_) => Ok(()),
         }
     }
 
@@ -518,7 +581,8 @@ mod tests {
         for frame in frames {
             transport.push_frame(frame.clone());
         }
-        let device = Device::new_with_transport(transport.clone(), test_config());
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_transport(&tm, transport.clone(), test_config());
         (device, transport)
     }
 
@@ -597,7 +661,7 @@ mod tests {
             print_done_timeout: Duration::from_millis(30),
             ..test_config()
         };
-        let device = Device::new_with_transport(transport, config);
+        let device = Device::new_with_transport(&mytm::TaskManager::new(), transport, config);
 
         let err = device
             .wait_for_print_done(Duration::from_millis(30))
@@ -627,5 +691,90 @@ mod tests {
         assert!(written.windows(2).any(|w| w == [0x1f, 0x26]), "TotalLines");
         assert!(written.windows(2).any(|w| w == [0x1f, 0x21]), "PrintLine");
         assert!(written.windows(2).any(|w| w == [0x1f, 0x28]), "EndPage");
+    }
+
+    /// `Device` 需要能放进 `Arc` 跨 tokio task 共享（第二步换 crossfire 时也要保持）。
+    #[test]
+    fn device_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Device>();
+    }
+
+    #[tokio::test]
+    async fn ready_reports_open_failure() {
+        let device = Device::new_with_factory(
+            &mytm::TaskManager::new(),
+            || Err(TransportError::NotFound),
+            test_config(),
+        );
+
+        let err = device.ready().await.unwrap_err();
+        assert!(
+            matches!(&err, FrontendError::NotReady(msg) if msg.contains("no matching device")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_stops_the_worker() {
+        let (device, transport) = device_with(&[]);
+        device.ready().await.unwrap();
+
+        device.shutdown(Duration::from_secs(1)).await.unwrap();
+
+        let err = device
+            .try_send_batch(&[&req::status::Status {}])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FrontendError::WorkerGone), "{err:?}");
+        assert!(transport.written().is_empty());
+    }
+
+    /// 卡在 IO 里的 worker 不会让 `shutdown` 无限等下去。
+    #[tokio::test]
+    async fn shutdown_times_out_when_the_worker_is_stuck() {
+        struct SlowTransport;
+
+        impl Transport for SlowTransport {
+            fn write(&mut self, _cmd_area: &[u8]) -> Result<WriteOutcome, TransportError> {
+                Ok(WriteOutcome::Written)
+            }
+
+            fn read_chunk(&mut self, _out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
+                thread::sleep(Duration::from_millis(200));
+                Ok(ReadStatus::Timeout)
+            }
+
+            fn reset(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+
+        let device =
+            Device::new_with_transport(&mytm::TaskManager::new(), SlowTransport, test_config());
+        device.ready().await.unwrap();
+
+        let err = device
+            .shutdown(Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FrontendError::ShutdownTimeout(_)), "{err:?}");
+    }
+
+    /// 外层 `TaskManager::close()` 能停掉 worker，和 `shutdown()` 配合得到确定终点。
+    #[tokio::test]
+    async fn close_stops_the_worker() {
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_transport(&tm, TestTransport::default(), test_config());
+        device.ready().await.unwrap();
+
+        tm.close();
+
+        device.shutdown(Duration::from_secs(1)).await.unwrap();
+        let err = device
+            .try_send_batch(&[&req::status::Status {}])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FrontendError::WorkerGone), "{err:?}");
     }
 }
