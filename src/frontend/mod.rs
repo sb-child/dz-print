@@ -15,15 +15,17 @@
 //!
 //! worker 由 [`mytm`] 托管：[`Device::ready`] 等它的 `Running` 状态，
 //! [`Device::shutdown`] 取消它并等阻塞线程真正退出（USB 句柄释放）。
+//! 两边的通道都由 [`crossfire`] 提供，选型见 `worker` 模块文档。
 //!
 //! 打印任务的流控和分页见 `print` 模块（[`Device::print_bitmap_job`]）。
 
 use std::{collections::VecDeque, time::Duration};
 
+use crossfire::oneshot;
 use mytm::{TypedTaskState, TypedTaskStateRef};
 use pretty_hex::simple_hex;
 use thiserror::Error;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use crate::{
@@ -87,7 +89,7 @@ pub enum FrontendError {
 
 /// 前台状态：响应队列 + 未取走的原始 payload。
 struct RecvState {
-    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    rx: worker::RecvRx,
     queue: VecDeque<Vec<u8>>,
 }
 
@@ -138,7 +140,7 @@ pub struct Device {
     mv: ModelVersion,
     assembler: Assembler,
     config: DeviceConfig,
-    out_tx: mpsc::Sender<worker::OutJob>,
+    out_tx: worker::OutTx,
     recv: Mutex<RecvState>,
     worker: worker::WorkerHandle,
 }
@@ -151,8 +153,7 @@ impl Device {
     ///
     /// 必须在 tokio runtime 里调用：worker 内部仍用 `spawn_blocking`。
     pub fn new(tm: &mytm::TaskManager, config: DeviceConfig) -> Self {
-        let (out_tx, out_rx) = mpsc::channel(8);
-        let (recv_tx, recv_rx) = mpsc::unbounded_channel();
+        let (out_tx, out_rx, recv_tx, recv_rx) = worker::channels();
 
         let worker = worker::spawn_usb(
             tm,
@@ -209,8 +210,7 @@ impl Device {
         + 'static,
         config: DeviceConfig,
     ) -> Self {
-        let (out_tx, out_rx) = mpsc::channel(8);
-        let (recv_tx, recv_rx) = mpsc::unbounded_channel();
+        let (out_tx, out_rx, recv_tx, recv_rx) = worker::channels();
 
         let factory: worker::TransportFactory = Box::new(factory);
         let worker = worker::spawn(tm, factory, config.model_version, out_rx, recv_tx);
@@ -220,8 +220,8 @@ impl Device {
 
     fn from_parts(
         config: DeviceConfig,
-        out_tx: mpsc::Sender<worker::OutJob>,
-        recv_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        out_tx: worker::OutTx,
+        recv_rx: worker::RecvRx,
         worker: worker::WorkerHandle,
     ) -> Self {
         Self {
@@ -317,7 +317,7 @@ impl Device {
             simple_hex(&cmd_area)
         );
 
-        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+        let (ack_tx, ack_rx) = oneshot::oneshot();
         self.out_tx
             .send(worker::OutJob {
                 cmd_area,
@@ -440,8 +440,8 @@ impl Device {
             }
 
             match tokio::time::timeout(timeout, state.rx.recv()).await {
-                Ok(Some(payload)) => state.queue.push_back(payload),
-                Ok(None) => return Err(RecvError::Closed),
+                Ok(Ok(payload)) => state.queue.push_back(payload),
+                Ok(Err(_)) => return Err(RecvError::Closed),
                 Err(_) => return Err(RecvError::Timeout(timeout)),
             }
         }
@@ -733,7 +733,11 @@ mod tests {
     /// 卡在 IO 里的 worker 不会让 `shutdown` 无限等下去。
     #[tokio::test]
     async fn shutdown_times_out_when_the_worker_is_stuck() {
-        struct SlowTransport;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct SlowTransport {
+            entered: Arc<AtomicBool>,
+        }
 
         impl Transport for SlowTransport {
             fn write(&mut self, _cmd_area: &[u8]) -> Result<WriteOutcome, TransportError> {
@@ -741,6 +745,7 @@ mod tests {
             }
 
             fn read_chunk(&mut self, _out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
+                self.entered.store(true, Ordering::SeqCst);
                 thread::sleep(Duration::from_millis(200));
                 Ok(ReadStatus::Timeout)
             }
@@ -750,9 +755,21 @@ mod tests {
             }
         }
 
-        let device =
-            Device::new_with_transport(&mytm::TaskManager::new(), SlowTransport, test_config());
+        let entered = Arc::new(AtomicBool::new(false));
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_transport(
+            &tm,
+            SlowTransport {
+                entered: entered.clone(),
+            },
+            test_config(),
+        );
         device.ready().await.unwrap();
+
+        // 等 worker 真的进入一次阻塞读，`shutdown` 的取消才不会提前命中循环顶部。
+        while !entered.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
 
         let err = device
             .shutdown(Duration::from_millis(20))

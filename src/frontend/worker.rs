@@ -7,6 +7,17 @@
 //! 前台只和 channel 打交道；worker 把切出来的原始 payload 回传给前台，
 //! 由前台按响应类型解析。这样 `try_recv_one::<T>()` 解析失败时不会消费队列。
 //!
+//! 三个 channel 都来自 [`crossfire`]，按各自的跨线程方向选型：
+//!
+//! | 方向 | 通道 | 发送端 | 接收端 |
+//! | --- | --- | --- | --- |
+//! | 前台 → worker 写任务 | `mpmc::bounded_async_blocking(8)` | 异步、`Sync` | 阻塞 |
+//! | worker → 前台 payload | `spsc::unbounded_async` | 阻塞 | 异步 |
+//! | 单条写任务的 ack | `oneshot` | 阻塞 | 异步 |
+//!
+//! 写任务用多生产者是为了让 `Device` 在多任务里同时发送时仍然 `Sync`；
+//! 同时只有一个 worker 在收，所以负载侧用单生产者的 `spsc` 就够了。
+//!
 //! worker 由 [`mytm::TaskManager`] 托管，而不是裸的 `spawn_blocking`：
 //! 调用方可以 `cancel()`，再用 `wait_terminal()` 等阻塞线程真正返回，
 //! panic 也会被记录成 `TaskState::Panicked`，不会静默 detach。
@@ -18,10 +29,10 @@
 //! 注意 `mytm` 只在 `Pending -> Running` 这一次转换通知等待者；之后更新
 //! `WorkerProgress` 只会刷新值，不会唤醒 `wait_for`，要读进度得轮询。
 
+use crossfire::{AsyncRx, MAsyncTx, TryRecvError, oneshot::TxOneshot, spsc};
 use mytm::{ProgressUpdater, TaskHandle, TaskManager};
 use pretty_hex::simple_hex;
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
@@ -55,12 +66,33 @@ pub(crate) enum WorkerError {
     Closed,
 }
 
+/// 写任务通道的容量。
+pub(crate) const OUT_CAPACITY: usize = 8;
+
+/// 前台 → worker 的写任务发送端（异步、可克隆、`Sync`）。
+pub(crate) type OutTx = MAsyncTx<crossfire::mpmc::Array<OutJob>>;
+/// worker 侧的写任务接收端（阻塞）。
+pub(crate) type OutRx = crossfire::MRx<crossfire::mpmc::Array<OutJob>>;
+/// worker → 前台的原始 payload 发送端（阻塞）。
+pub(crate) type RecvTx = crossfire::Tx<spsc::List<Vec<u8>>>;
+/// 前台侧的 payload 接收端（异步）。
+pub(crate) type RecvRx = AsyncRx<spsc::List<Vec<u8>>>;
+/// 单条写任务完成后回给前台的 ack。
+pub(crate) type JobAck = TxOneshot<Result<(), String>>;
+
+/// 建立前台与 worker 之间的全部通道。
+pub(crate) fn channels() -> (OutTx, OutRx, RecvTx, RecvRx) {
+    let (out_tx, out_rx) = crossfire::mpmc::bounded_async_blocking(OUT_CAPACITY);
+    let (recv_tx, recv_rx) = spsc::unbounded_async();
+    (out_tx, out_rx, recv_tx, recv_rx)
+}
+
 /// 后台线程收到的写任务。
 pub(crate) struct OutJob {
     /// 已编码的命令区（不含 USB 外层 `1e <长度>`）。
     pub cmd_area: Vec<u8>,
     /// 写完后回报结果。
-    pub ack: oneshot::Sender<Result<(), String>>,
+    pub ack: JobAck,
 }
 
 /// 托管的 worker 句柄。
@@ -74,8 +106,8 @@ pub(crate) fn spawn_usb(
     tm: &TaskManager,
     selector: crate::backend::usb::UsbSelector,
     mv: ModelVersion,
-    out_rx: mpsc::Receiver<OutJob>,
-    recv_tx: mpsc::UnboundedSender<Vec<u8>>,
+    out_rx: OutRx,
+    recv_tx: RecvTx,
 ) -> WorkerHandle {
     let factory: TransportFactory = Box::new(move || {
         UsbTransport::open(&selector).map(|transport| Box::new(transport) as Box<dyn Transport>)
@@ -90,8 +122,8 @@ pub(crate) fn spawn(
     tm: &TaskManager,
     factory: TransportFactory,
     mv: ModelVersion,
-    out_rx: mpsc::Receiver<OutJob>,
-    recv_tx: mpsc::UnboundedSender<Vec<u8>>,
+    out_rx: OutRx,
+    recv_tx: RecvTx,
 ) -> WorkerHandle {
     tm.spawn_blocking_typed(move |_tm, progress, ct| {
         run(factory, mv, out_rx, recv_tx, progress, ct)
@@ -101,8 +133,8 @@ pub(crate) fn spawn(
 fn run(
     factory: TransportFactory,
     mv: ModelVersion,
-    mut out_rx: mpsc::Receiver<OutJob>,
-    recv_tx: mpsc::UnboundedSender<Vec<u8>>,
+    out_rx: OutRx,
+    recv_tx: RecvTx,
     progress: ProgressUpdater<WorkerProgress>,
     ct: CancellationToken,
 ) -> Result<(), WorkerError> {
@@ -140,10 +172,10 @@ fn run(
                     if let Err(e) = &result {
                         error!("write failed: {e}");
                     }
-                    job.ack.send(result).ok();
+                    job.ack.send(result);
                 }
-                Err(mpsc::error::TryRecvError::Empty) => break,
-                Err(mpsc::error::TryRecvError::Disconnected) => {
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
                     debug!("frontend closed, device thread exits");
                     return Ok(());
                 }
@@ -173,11 +205,7 @@ fn run(
 /// 从接收缓冲区里切出所有完整响应，回传给前台。
 ///
 /// 返回 `false` 表示前台已经消失，后台线程该退出了。
-fn drain_frames(
-    assembler: &Assembler,
-    received: &mut Vec<u8>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-) -> bool {
+fn drain_frames(assembler: &Assembler, received: &mut Vec<u8>, tx: &RecvTx) -> bool {
     loop {
         match assembler.decode_frame(received) {
             Ok(Some((payload, consumed))) => {

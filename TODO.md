@@ -362,10 +362,12 @@ transport（USB HID / BLE 串口透传）
   - `test_usb` 退出前（成功或失败）都调用 `shutdown`，然后 `tm.close()`
   - 新增 4 个单测：打开失败、shutdown 停线程、worker 卡住时 shutdown 超时、
     外层 `close()` 停掉 worker
-- [ ] 第二步：`out_tx` / payload / ack 换成 `crossfire`
-  - `spsc::bounded_async_blocking::<OutJob>(8)`、`spsc::unbounded_async::<Vec<u8>>()`、
-    `crossfire::oneshot`
-  - `Device` 要保持 `Send + Sync`，所以 `out_tx` 用 `mpmc::MAsyncTx`
+- [x] 第二步：`out_tx` / payload / ack 换成 `crossfire`
+  - 写任务：`mpmc::bounded_async_blocking::<OutJob>(8)`，前台拿异步、可克隆的
+    `MAsyncTx`（`Sync`，`Device` 仍满足 `Send + Sync`），worker 拿阻塞 `MRx`
+  - payload：`spsc::unbounded_async::<Vec<u8>>()`，worker 用阻塞 `Tx` 发送，
+    前台用 `AsyncRx` 接收
+  - ack：`crossfire::oneshot`，worker 侧 `send` 不返回 `Result`（接收端消失时静默丢弃）
   - `ready` 已经不用通道，不受影响
 
 ### P1 拆分长文件 / 命名
@@ -439,8 +441,8 @@ transport（USB HID / BLE 串口透传）
   `src/bin/dzprint_typst.rs`（762 行）
   - 移到 `examples/`、加 feature gate 或删除；同时清掉未使用依赖
     （当前是 `btleplug` / `bytebuffer` / `chrono` / `num-derive` / `strum` /
-    `tar` / `tempfile` / `typst` / `typst-render` / `ureq`；`crossfire` 留给
-    frontend 第二步使用）
+    `tar` / `tempfile` / `typst` / `typst-render` / `ureq`；`crossfire` 已用于
+    frontend 的通道）
 - [ ] `src/bin/dzcli.rs` 只有空 `main_fn`，先实现 `List` 或标记未完成
 - [x] 删除 `_gen/`（生成脚本只解析不生成，避免继续误导）
 - [ ] 删除 `src/lib.rs` 末尾的空 dummy test

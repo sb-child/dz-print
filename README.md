@@ -89,7 +89,7 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
   - `usb.rs`：USB 外层 `1e <长度>` 的打包 / 解包，以及按 64 字节 HID 报告切片
 - `frontend/` `[新]` 设备 frontend
   - `mod.rs`：`Device` / `DeviceConfig` / `RecvError` / `FrontendError`，批量发送、按类型接收、`recv_matching`、`wait_for_print_done`、`shutdown`
-  - `worker.rs`：阻塞线程里的 USB 读写、命令区切帧、原始 payload 队列；worker 由 `mytm::TaskManager` 托管，可取消、可等待线程真正退出
+  - `worker.rs`：阻塞线程里的 USB 读写、命令区切帧、原始 payload 队列；worker 由 `mytm::TaskManager` 托管，可取消、可等待线程真正退出。三个通道都用 `crossfire`：写任务 `mpmc::bounded_async_blocking(8)`（异步发送端、阻塞接收端）、payload `spsc::unbounded_async`（阻塞发送端、异步接收端）、单条写任务 ack `crossfire::oneshot`
   - `print.rs`：`Device::print_bitmap_job`，分页 + `FlowPlanner` 流控 + 页末等待打印完成
 
 `Device` 的生命周期：
