@@ -4,31 +4,8 @@
 
 //! `dzprint_image` 和 `dzprint_typst` 共用的命令行参数与打印流程。
 //!
-//! 两个 bin 的差别只在“怎么得到一张位图”：图片走解码 + 缩放 + 抖动，
-//! Typst 走渲染 + 抖动。连接设备、查打印头点数、发送设置、打印、等结束、
-//! 退出顺序都放在这里，避免两边各写一份、改一边漏一边。
-//!
-//! 用法：
-//!
-//! ```ignore
-//! #[derive(Parser)]
-//! struct Cli {
-//!     // ... 各 bin 自己的参数
-//!     #[command(flatten)]
-//!     print: common::PrintArgs,
-//! }
-//!
-//! #[tokio::main]
-//! async fn main() -> std::process::ExitCode {
-//!     common::init_tracing();
-//!     let cli = Cli::parse();
-//!     common::exit_code(common::with_device(&cli.print, |dev| async {
-//!         let dots = common::print_head_dots(dev).await?;
-//!         // ... 位图 -> cli.print.print_bitmap(dev, &bitmap).await
-//!         Ok(())
-//!     }).await)
-//! }
-//! ```
+//! 两个 bin 只负责“怎么得到一张位图”，连接设备、发送设置、打印和退出顺序
+//! 都在这里，避免改一边漏一边。
 
 use std::time::Duration;
 
@@ -82,6 +59,15 @@ impl From<RasterArg> for DitherMode {
     }
 }
 
+impl From<DitherMode> for RasterArg {
+    fn from(value: DitherMode) -> Self {
+        match value {
+            DitherMode::FloydSteinberg => Self::FloydSteinberg,
+            DitherMode::Threshold => Self::Threshold,
+        }
+    }
+}
+
 /// RLE 编码方案。
 ///
 /// 默认 `off`：DP27P 上 RLE 对真实照片会打出白带，页计数也会异常；普通
@@ -131,6 +117,21 @@ impl From<RleArg> for RleMode {
     }
 }
 
+impl From<RleMode> for RleArg {
+    fn from(value: RleMode) -> Self {
+        match value {
+            RleMode::Off => Self::Off,
+            RleMode::Byte => Self::Byte,
+            RleMode::Bits4 => Self::Bits4,
+            RleMode::Bits5 => Self::Bits5,
+            RleMode::Bits6 => Self::Bits6,
+            RleMode::Bits4XOnly => Self::Bits4x,
+            RleMode::Bits5XOnly => Self::Bits5x,
+            RleMode::Bits6XOnly => Self::Bits6x,
+        }
+    }
+}
+
 /// 所有打印类 bin 共用的参数。
 #[derive(Args, Debug, Clone)]
 pub struct PrintArgs {
@@ -175,7 +176,6 @@ pub struct PrintArgs {
 }
 
 impl PrintArgs {
-    /// 按 `--device` 得到 USB 选择方式。
     pub fn selector(&self) -> UsbSelector {
         match self.device.as_deref() {
             Some(name) => {
@@ -186,7 +186,6 @@ impl PrintArgs {
         }
     }
 
-    /// 把命令行超时带进 [`DeviceConfig`]。
     pub fn device_config(&self) -> DeviceConfig {
         DeviceConfig {
             selector: self.selector(),
@@ -236,7 +235,6 @@ impl PrintArgs {
         }
     }
 
-    /// 按命令行里的 RLE / 纸张设置打印一整张位图。
     pub async fn print_bitmap(
         &self,
         dev: &Device,
@@ -280,7 +278,6 @@ where
     Ok(())
 }
 
-/// 查 `0x72` 拿到打印头点数。
 pub async fn print_head_dots(dev: &Device) -> anyhow::Result<u16> {
     dev.try_send_batch(&[&req::print_width::PrintWidth {}])
         .await?;
@@ -298,7 +295,6 @@ pub async fn print_head_dots(dev: &Device) -> anyhow::Result<u16> {
     Ok(width.print_width)
 }
 
-/// 初始化日志：默认 INFO，`RUST_LOG` 可覆盖。
 pub fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(

@@ -4,29 +4,11 @@
 
 //! 打印一张 jpg / png 图片。
 //!
-//! ```text
-//! dzprint_image --image <FILE> [--device <NAME>] [--raster <MODE>]
-//!               [--rle <MODE>] [--gap-type <TYPE>] [--gap-length <MM>]
-//!               [--darkness <VALUE>] [--speed <VALUE>]
-//!               [--print-timeout <SECS>] [--recv-timeout <SECS>]
-//! ```
+//! 先查 `0x72` 拿打印头点数，超宽时等比缩放，再抖动成位图交给 [`common`]；
+//! 参数见 `--help`。
 //!
-//! - 先查 `0x72` 拿到打印头点数；图片宽度大于点数时等比缩放到点数，否则原样打印。
-//! - 彩色图走 [`from_pixmap`]，灰度图走 [`from_gray_image`]。
-//! - `--gap-type` / `--gap-length` / `--darkness` / `--speed` 只发用户给出的那个，
-//!   并且都在打印任务开始前发送。
-//!
-//! 行数据默认不压缩（`--rle off`）：DP27P 上 `0x2c` / `0x3c` 打真实照片时固件会在
-//! 打印中途停走、在纸上插入一段空白；`0x29` 更糟，整页发完后固件连 `0x70` 都不回。
-//! `--rle` 仍保留给简单线稿和实验用。
-//!
-//! 卡住时会自己失败退出：连续多次状态查询没有回应返回 `PrinterSilent`，
-//! 整个任务超过 `--print-timeout` 返回 `PrintTimeout`。
-//!
-//! 纸张间隔同时写进每页的 `StartPage`，否则打印任务会用 `Continuous` 覆盖掉
-//! `--gap-type`。`--gap-length` 省略时用 0.5mm，和旧版 `GapSetting` 的默认值一致。
-//!
-//! 设备连接、设置、超时这些和 `dzprint_typst` 共用的部分在 [`common`]。
+//! 行数据默认不压缩：DP27P 上 RLE 打真实照片会在纸中间插入空白，`0x29` 甚至会让
+//! 固件停止回应，`--rle` 只留给简单线稿和实验。
 
 use anyhow::{Context as _, anyhow};
 use clap::Parser;
@@ -44,7 +26,6 @@ mod common;
 
 use common::PrintArgs;
 
-/// 命令行参数。
 #[derive(Parser, Debug)]
 #[command(version, about = "打印一张 jpg / png 图片")]
 struct Cli {
@@ -73,11 +54,9 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn print_image(dev: &Device, args: PrintArgs, img: DynamicImage) -> anyhow::Result<()> {
-    // 查询点数
     let dots = common::print_head_dots(dev).await?;
     info!("print head dots = {dots}");
 
-    // 转换位图
     let (width, height) = (img.width(), img.height());
     let img = fit_to_print_head(img, dots);
     info!("image {width}x{height} -> {}x{}", img.width(), img.height());
@@ -90,15 +69,11 @@ async fn print_image(dev: &Device, args: PrintArgs, img: DynamicImage) -> anyhow
         DitherMode::from(args.raster)
     );
 
-    // 发送设置
     args.send_settings(dev).await?;
-
-    // 打印
     args.print_bitmap(dev, &bitmap).await?;
     Ok(())
 }
 
-/// 图片宽度大于打印头点数时等比缩放到点数，否则原样返回。
 fn fit_to_print_head(img: DynamicImage, dots: u16) -> DynamicImage {
     let dots = u32::from(dots);
     let (width, height) = (img.width(), img.height());
@@ -110,9 +85,6 @@ fn fit_to_print_head(img: DynamicImage, dots: u16) -> DynamicImage {
     img.resize_exact(dots, new_height, FilterType::Lanczos3)
 }
 
-/// 按图像是否带彩色选择抖动入口。
-///
-/// 带 alpha 的图先铺白底，避免透明区域被当成黑色。
 fn to_bitmap(img: &DynamicImage, mode: DitherMode) -> anyhow::Result<Bitmap> {
     if img.color().has_color() {
         // 彩色：先合成到白底、填成不透明 RGBA，再交给 from_pixmap。
@@ -144,7 +116,6 @@ fn to_bitmap(img: &DynamicImage, mode: DitherMode) -> anyhow::Result<Bitmap> {
     }
 }
 
-/// 把带 alpha 的通道值合成到白底上。
 fn over_white(value: u8, alpha: u8) -> u8 {
     let alpha = u32::from(alpha);
     ((u32::from(value) * alpha + 255 * (255 - alpha)) / 255) as u8

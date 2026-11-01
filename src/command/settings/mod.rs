@@ -47,29 +47,19 @@ pub enum PrintSettingError {
 
 /// 打印速度。
 ///
-/// discriminant = `v2`/`v1` 线上值；用户面值和 `v0` 线上值见各变体注释。
+/// discriminant 是 `v2`/`v1` 线上值；`v0` 和用户面值见 `to_wire` / `user_value`。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SpeedSetting {
-    /// 最慢
-    /// - 用户面=1
-    /// - 线上 `v0=1` `v2,v1=0`
+    /// 最慢（用户面 1）
     Min = 0,
-    /// 稍慢
-    /// - 用户面=2
-    /// - 线上 `v0=2` `v2,v1=1`
+    /// 稍慢（用户面 2）
     Speed1,
-    /// 正常
-    /// - 用户面=3
-    /// - 线上 `v0=3` `v2,v1=2`
+    /// 正常（用户面 3）
     #[default]
     Normal,
-    /// 稍快
-    /// - 用户面=4
-    /// - 线上 `v0=4` `v2,v1=3`
+    /// 稍快（用户面 4）
     Speed3,
-    /// 最快
-    /// - 用户面=5
-    /// - 线上 `v0=5` `v2,v1=4`
+    /// 最快（用户面 5）
     Max,
 }
 
@@ -87,9 +77,7 @@ impl SpeedSetting {
         Self::try_from(wire).map_err(|_| PrintSettingError::InvalidU8 { value })
     }
 
-    /// 线上值
-    /// - `v2,v1` 为 `0..=4`
-    /// - `v0` 为 `1..=5`
+    /// v2/v1 原样写，v0 加 1。
     pub const fn to_wire(self, mv: ModelVersion) -> u8 {
         match mv {
             ModelVersion::V0 => self as u8 + 1,
@@ -145,69 +133,39 @@ impl FromStr for SpeedSetting {
 
 /// 打印浓度。
 ///
-/// discriminant = `v2`/`v1` 线上值；用户面值和 `v0` 线上值见各变体注释。
+/// discriminant 是 `v2`/`v1` 线上值；`v0` 和用户面值见 `to_wire` / `user_value`。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DarknessSetting {
-    /// 最浅
-    /// - 用户面=1
-    /// - 线上 `v0=1` `v2,v1=0`
+    /// 最浅（用户面 1）
     Min = 0,
-    /// 第 2 档
-    /// - 用户面=2
-    /// - 线上 `v0=2` `v2,v1=1`
+    /// 第 2 档（用户面 2）
     Darkness1,
-    /// 第 3 档
-    /// - 用户面=3
-    /// - 线上 `v0=3` `v2,v1=2`
+    /// 第 3 档（用户面 3）
     Darkness2,
-    /// 第 4 档
-    /// - 用户面=4
-    /// - 线上 `v0=4` `v2,v1=3`
+    /// 第 4 档（用户面 4）
     Darkness3,
-    /// 第 5 档
-    /// - 用户面=5
-    /// - 线上 `v0=5` `v2,v1=4`
+    /// 第 5 档（用户面 5）
     Darkness4,
-    /// 正常
-    /// - 用户面=6
-    /// - 线上 `v0=6` `v2,v1=5`
+    /// 正常（用户面 6）
     #[default]
     Normal,
-    /// 第 7 档
-    /// - 用户面=7
-    /// - 线上 `v0=7` `v2,v1=6`
+    /// 第 7 档（用户面 7）
     Darkness6,
-    /// 第 8 档
-    /// - 用户面=8
-    /// - 线上 `v0=8` `v2,v1=7`
+    /// 第 8 档（用户面 8）
     Darkness7,
-    /// 第 9 档
-    /// - 用户面=9
-    /// - 线上 `v0=9` `v2,v1=8`
+    /// 第 9 档（用户面 9）
     Darkness8,
-    /// 第 10 档
-    /// - 用户面=10
-    /// - 线上 `v0=10` `v2,v1=9`
+    /// 第 10 档（用户面 10）
     Darkness9,
-    /// 第 11 档
-    /// - 用户面=11
-    /// - 线上 `v0=11` `v2,v1=10`
+    /// 第 11 档（用户面 11）
     Darkness10,
-    /// 第 12 档
-    /// - 用户面=12
-    /// - 线上 `v0=12` `v2,v1=11`
+    /// 第 12 档（用户面 12）
     Darkness11,
-    /// 第 13 档
-    /// - 用户面=13
-    /// - 线上 `v0=13` `v2,v1=12`
+    /// 第 13 档（用户面 13）
     Darkness12,
-    /// 第 14 档
-    /// - 用户面=14
-    /// - 线上 `v0=14` `v2,v1=13`
+    /// 第 14 档（用户面 14）
     Darkness13,
-    /// 最深
-    /// - 用户面=15
-    /// - 线上 `v0=15` `v2,v1=14`
+    /// 最深（用户面 15）
     Max,
 }
 
@@ -225,9 +183,7 @@ impl DarknessSetting {
         Self::try_from(wire).map_err(|_| PrintSettingError::InvalidU8 { value })
     }
 
-    /// 线上值
-    /// - `v2,v1` 为 `0..=14`
-    /// - `v0` 为 `1..=15`
+    /// v2/v1 原样写，v0 加 1。
     pub const fn to_wire(self, mv: ModelVersion) -> u8 {
         match mv {
             ModelVersion::V0 => self as u8 + 1,

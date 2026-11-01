@@ -60,17 +60,14 @@ macro_rules! impl_var_int {
             }
 
             impl $name {
-                /// 创建新实例
                 pub const fn new(v: i32) -> Self {
                     Self { v }
                 }
 
-                /// 获取实例的值 (Getter)
                 pub const fn get(&self) -> i32 {
                     self.v
                 }
 
-                /// 设置实例的值 (Setter)
                 pub fn set(&mut self, val: i32) {
                     self.v = val;
                 }
@@ -134,52 +131,37 @@ macro_rules! impl_var_int {
 }
 
 impl_var_int! {
-    /// 自动变长：编码 1/2/3 字节（API），解码自动识别 1/2 字节（协议）
-    /// - 编码上限 `4194303`，解码上限 `16383`
-    /// - 3 字节编码与 `Fixed3` 相同；协议读侧没有 Auto 3 字节，须按上下文用 `Fixed3`
-    /// - 作为包长度字段时调用方必须保证 `<= 16383`
+    /// 自动变长；细节见 [VarintMode::Auto]。
     pub struct VarAuto {
         mode: VarintMode::Auto,
     };
-    /// 2 字节大端：`0xC0|高位 低位`
-    /// - 上限 `16383`
-    /// - 0x25 命令专用
+    /// 固定 2 字节；细节见 [VarintMode::Fixed2]。
     pub struct VarFixed2 {
         mode: VarintMode::Fixed2,
     };
-    /// 3 字节大端：`0xC0|高位 中位 低位`
-    /// - 上限 `4194303`
-    /// - 0x45 命令专用
+    /// 固定 3 字节；细节见 [VarintMode::Fixed3]。
     pub struct VarFixed3 {
         mode: VarintMode::Fixed3,
     };
-    /// 0xC0 标志 + 2 字节大端：`0xC0 高位 低位`
-    /// - 上限 `65535`
-    /// - 0x26 命令 + `v1` 机型专用
+    /// `0xC0` 标志 + 2 字节大端；细节见 [VarintMode::C0Be16]。
     pub struct VarC0Be16 {
         mode: VarintMode::C0Be16,
     };
 }
 
-/// 编解码模式
+/// 编解码模式。
+///
+/// `Auto` 编码最多 3 字节、解码只认 1/2 字节；写侧要明确 3 字节时用 `Fixed3`，
+/// 包长度字段必须保证 `<= 16383`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VarintMode {
-    /// 自动变长：编码 1/2/3 字节（API），解码自动识别 1/2 字节（协议）
-    /// - 编码上限 `4194303`，解码上限 `16383`
-    /// - 3 字节编码与 `Fixed3` 相同；协议读侧没有 Auto 3 字节，须按上下文用 `Fixed3`
-    /// - 作为包长度字段时调用方必须保证 `<= 16383`
+    /// 自动变长；编码上限 `4194303`，解码上限 `16383`。
     Auto,
-    /// 2 字节大端：`0xC0|高位 低位`
-    /// - 上限 `16383`
-    /// - 0x25 命令专用
+    /// 2 字节大端，`0x25` 命令专用，上限 `16383`。
     Fixed2,
-    /// 3 字节大端：`0xC0|高位 中位 低位`
-    /// - 上限 `4194303`
-    /// - 0x45 命令专用
+    /// 3 字节大端，`0x45` 命令专用，上限 `4194303`。
     Fixed3,
-    /// 0xC0 标志 + 2 字节大端：`0xC0 高位 低位`
-    /// - 上限 `65535`
-    /// - 0x26 命令 + `v1` 机型专用
+    /// `0xC0` 标志 + 2 字节大端，`0x26` + `v1` 专用，上限 `65535`。
     C0Be16,
 }
 

@@ -30,13 +30,9 @@
 
 #[derive(Debug, Clone, Copy)]
 pub enum EnvelopeKind {
-    // for `v2`
     AutoPackWithChecksum,
-    // for `v1`, checksum = `0x88`
     AutoPackWithFixedChecksum,
-    // for `v2`, RLE
     ManualPack,
-    // for `v0`
     Raw,
 }
 
@@ -56,7 +52,6 @@ impl Envelope {
         &self.payload
     }
 
-    /// 打包方式
     pub fn kind(&self) -> EnvelopeKind {
         self.kind
     }

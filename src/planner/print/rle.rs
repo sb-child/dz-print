@@ -14,11 +14,7 @@ use crate::{
     rle::{RleBitStream, RleBits, RleByteStream},
 };
 
-/// 选择并生成 RLE 行命令。
-///
-/// 只有编码后比普通行（`raw_len` 字节）更小才返回 `Some`，否则返回 `None`
-/// 让调用方发 [`PrintCommand::Line`]。位级模式默认同时算 X 和 D，取较小的那个；
-/// `*XOnly` 只算 X；`prev` 为 `None`（第一行）时也只算 X。
+/// 选择并生成 RLE 行命令；规则见模块文档。
 pub(super) fn select_rle(
     line: &BitmapLine<'_>,
     prev: Option<BitmapLine<'_>>,

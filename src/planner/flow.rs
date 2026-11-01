@@ -72,18 +72,13 @@ pub const JOB_TIMEOUT: Duration = Duration::from_secs(60);
 /// `0x77` 不响应时按这个字节数保守推进。
 pub const FALLBACK_BUDGET: usize = 8 * 1024;
 
-/// 流控参数。
+/// 流控参数，默认值见上面的常量。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlowConfig {
-    /// 单块最大字节数。
     pub max_chunk: usize,
-    /// 预算不足时的块间等待。
     pub chunk_gap: Duration,
-    /// 等 `0x77` 响应的超时。
     pub budget_timeout: Duration,
-    /// 整任务超时。
     pub job_timeout: Duration,
-    /// `0x77` 超时后按多少字节保守推进。
     pub fallback_budget: usize,
 }
 
@@ -280,12 +275,10 @@ impl FlowPlanner {
         }
     }
 
-    /// 当前统计。
     pub fn report(&self) -> FlowReport {
         self.report
     }
 
-    /// 当前参数。
     pub fn config(&self) -> &FlowConfig {
         &self.config
     }

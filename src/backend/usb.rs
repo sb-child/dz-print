@@ -156,7 +156,6 @@ impl UsbTransport {
         Err(TransportError::NotFound)
     }
 
-    /// 按 USB 设备名打开。
     pub fn open_by_name(name: impl Into<String>) -> Result<Self, TransportError> {
         Self::open(&UsbSelector::DeviceName(name.into()))
     }
@@ -168,12 +167,10 @@ impl UsbTransport {
         self
     }
 
-    /// 当前读超时。
     pub fn read_timeout(&self) -> Duration {
         self.read_timeout
     }
 
-    /// 当前写超时。
     pub fn write_timeout(&self) -> Duration {
         self.write_timeout
     }

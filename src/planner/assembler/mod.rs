@@ -54,7 +54,6 @@ impl Assembler {
         Self { mv }
     }
 
-    /// 当前机型版本。
     pub const fn model_version(&self) -> ModelVersion {
         self.mv
     }
@@ -182,73 +181,32 @@ fn encoded_len(env: &Envelope) -> Result<usize, PackReqError> {
     }
 }
 
-/// 把一条 [Envelope] 追加到命令区。
+/// 把一条 [Envelope] 追加到命令区，按 `kind` 补上长度字段和校验和。
 ///
-/// [Envelope::payload] 的布局是 `命令组 + 命令类型 + data`，不含长度字段和校验和。
-/// 这里按 `kind` 补上长度和校验和，最终线上布局：
-///
-/// ```text
-/// <命令组:1> <命令类型:1> <data_len:变长> <data...> <校验和:1>
-/// ```
-///
-/// 前置条件：[Envelope] 已经用 [encoded_len] 校验过，预留足够的空间获得最佳性能。
+/// 前置条件：[Envelope] 已经用 [`encoded_len`] 校验过。
 fn append_envelope(env: &Envelope, out: &mut Vec<u8>) {
     let payload = env.payload();
-    match env.kind() {
-        // Raw：`v0` 机型的 payload 本身就是完整命令，例如 `1b 40`、`1d 56 42 00`。
-        // ManualPack：调用方已自行补好长度字段和校验和，组装器不再改动。
-        EnvelopeKind::Raw | EnvelopeKind::ManualPack => {
-            // 两者都原样追加，不计算长度和校验和。
-            out.extend_from_slice(payload);
-        }
-        // 这一段把 `payload`（组 + 类型 + data）改写成线上帧：
-        // 组 + 类型 + 变长长度 + data + 校验和。
-        // `kind @ (...)` 把实际命中的枚举值绑到 `kind`，后面用它决定校验和。
-        kind @ (EnvelopeKind::AutoPackWithChecksum | EnvelopeKind::AutoPackWithFixedChecksum) => {
-            // encoded_len 已保证 payload 至少有 2 字节。直接跳过命令头读取 data。
-            let data = &payload[2..];
-            // payload = [命令组] [命令类型] [data...]
-            // data =                        [data...]
+    let kind @ (EnvelopeKind::AutoPackWithChecksum | EnvelopeKind::AutoPackWithFixedChecksum) =
+        env.kind()
+    else {
+        // Raw / ManualPack 已经是完整命令，不再改动。
+        out.extend_from_slice(payload);
+        return;
+    };
 
-            // 记住本帧在输出缓冲区里的起点。
-            // 校验和要按帧内偏移计算。
-            let start = out.len();
-            // out = ... [上一帧] [本帧]
-            // start =            ^ 本帧第一个字节位置
+    // encoded_len 已保证 payload 至少有命令组和命令类型。
+    let data = &payload[2..];
+    let start = out.len();
+    out.extend_from_slice(&payload[..2]);
+    VarintMode::Auto.encode_into(data.len() as i32, out);
+    out.extend_from_slice(data);
 
-            // 命令组 + 命令类型原样保留。
-            out.extend_from_slice(&payload[..2]);
-            // out = ... [上一帧] [命令组] [命令类型]
-            // 新增 2 字节        -------- ----------
-
-            // 在命令头和 data 之间插入变长长度字段：
-            // - `0..=191`：1 字节
-            // - `192..=16383`：2 字节，`0xC0 | 高 6 位` + 低 8 位
-            //
-            // `encoded_len` 已检查过 `data.len() <= 16383`，这里不会越界。
-            VarintMode::Auto.encode_into(data.len() as i32, out);
-            // out = ... [上一帧] [命令组] [命令类型] [长度]
-            // 新增 1 或 2 字节                       ------
-
-            // data 紧跟在长度字段后面。
-            out.extend_from_slice(data);
-            // out = ... [上一帧] [命令组] [命令类型] [长度] [data...]
-            // 新增 data.len() 字节                          ---------
-
-            // 校验和覆盖帧内除命令组以外的所有字节。
-            let checksum = match kind {
-                // v1 固定写 `0x88`，表示“不校验”。
-                EnvelopeKind::AutoPackWithFixedChecksum => 0x88,
-                // 校验位本身按 0 参与计算，所以直接算到 out.len()，结果一样。
-                // 区间是 `[start + 1, out.len())`。
-                _ => calculate_checksum(out, start + 1, out.len()),
-            };
-            // checksum = 0x88 / checksum([命令类型] [长度] [data...])
-            out.push(checksum);
-            // out = ... [上一帧] [命令组] [命令类型] [长度] [data...] [checksum]
-            // 新增 1 字节                                             ----------
-        }
-    }
+    let checksum = match kind {
+        EnvelopeKind::AutoPackWithFixedChecksum => 0x88,
+        // 校验位本身按 0 参与计算，所以直接算到当前末尾。
+        _ => calculate_checksum(out, start + 1, out.len()),
+    };
+    out.push(checksum);
 }
 
 #[cfg(test)]

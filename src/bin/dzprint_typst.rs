@@ -2,20 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-//! 打印 Typst 文档。
+//! 打印 Typst 文档：逐页渲染成位图，每页单独发一个打印任务。
 //!
-//! ```text
-//! dzprint_typst <FILE.typ> [--font <FILE>] [--device <NAME>] [--raster <MODE>]
-//!               [--rle <MODE>] [--gap-type <TYPE>] [--gap-length <MM>]
-//!               [--darkness <VALUE>] [--speed <VALUE>]
-//!               [--print-timeout <SECS>] [--recv-timeout <SECS>]
-//! ```
-//!
-//! - 文档在连接打印机之前编译，编译错误不会碰设备。
-//! - 每页按“打印头点数 / 页面宽度”渲染，正好铺满打印头；页高按比例。
-//! - 每页单独发一个打印任务（`StartPage` … `EndPage`），打完再渲染下一页，
-//!   避免多页位图同时留在内存里。
-//! - 额外字体用 `--font` 加载，默认只内置两份 Unifont。
+//! 参数见 `--help`。
 //!
 //! # 每页覆盖设置
 //!
@@ -72,10 +61,8 @@ use typst_render::RenderOptions;
 
 use common::PrintArgs;
 
-/// 每页覆盖设置用的标签名。
 const SETTINGS_LABEL: &str = "print-settings";
 
-/// 命令行参数。
 #[derive(Parser, Debug)]
 #[command(version, about = "打印一页或多页 Typst 文档")]
 struct Cli {
@@ -103,7 +90,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let world = TypstWorld::new(&cli)?;
     let doc = compile(&world)?;
 
-    // 每页的 <print-settings> 覆盖项；按页码索引。
     let overrides = page_settings(&doc)?;
     if !overrides.is_empty() {
         info!(pages = overrides.len(), "found <print-settings> overrides");
@@ -116,7 +102,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     .await
 }
 
-/// 编译文档，把编译警告 / 错误都打到日志里。
 fn compile(world: &TypstWorld) -> anyhow::Result<PagedDocument> {
     let warned = typst::compile::<PagedDocument>(world);
     for warning in &warned.warnings {
@@ -142,9 +127,6 @@ fn compile(world: &TypstWorld) -> anyhow::Result<PagedDocument> {
     })
 }
 
-/// 渲染并打印所有页。
-///
-/// 覆盖设置是“粘性”的：一页的 `<print-settings>` 会一直沿用到下一处覆盖。
 async fn print_document(
     dev: &Device,
     base: &PrintArgs,
@@ -160,6 +142,7 @@ async fn print_document(
 
     for (index, page) in doc.pages().iter().enumerate() {
         let page_no = index + 1;
+        // 覆盖是粘性的：一页的 <print-settings> 一直沿用到下一处覆盖。
         if let Some(settings) = overrides.get(&page_no) {
             info!(page = page_no, ?settings, "apply <print-settings>");
             settings.apply_to(&mut args);
@@ -190,10 +173,6 @@ async fn print_document(
     Ok(())
 }
 
-/// 把一页按打印头宽度渲染。
-///
-/// `pixel_per_pt` 由页面实际宽度算出，所以不同纸张 / 页面宽度都能铺满打印头。
-/// 四舍五入偶尔会多出 1 个像素，超出打印头时退一点再渲染一次。
 fn render_page(page: &typst_layout::Page, dots: u16) -> anyhow::Result<Pixmap> {
     let width_pt = page.frame.size().x.to_pt();
     if !(width_pt.is_finite() && width_pt > 0.0) {
@@ -206,7 +185,9 @@ fn render_page(page: &typst_layout::Page, dots: u16) -> anyhow::Result<Pixmap> {
         ..Default::default()
     };
 
+    // 由页面实际宽度算出 pixel_per_pt，不同纸张都能铺满打印头。
     let mut pixmap = typst_render::render(page, &options(dots_f / width_pt));
+    // 四舍五入偶尔多出 1 个像素，超出打印头时退一点再渲染一次。
     if pixmap.width() > u32::from(dots) {
         pixmap = typst_render::render(page, &options((dots_f - 1.0) / width_pt));
     }
@@ -233,7 +214,6 @@ impl From<&PrintArgs> for SendableSettings {
     }
 }
 
-/// 一页的 `<print-settings>` 覆盖项。
 #[derive(Debug, Clone, Default)]
 struct PageSettings {
     gap_type: Option<GapTypeSetting>,
@@ -259,22 +239,10 @@ impl PageSettings {
             args.speed = Some(speed);
         }
         if let Some(raster) = self.raster {
-            args.raster = match raster {
-                DitherMode::FloydSteinberg => common::RasterArg::FloydSteinberg,
-                DitherMode::Threshold => common::RasterArg::Threshold,
-            };
+            args.raster = raster.into();
         }
         if let Some(rle) = self.rle {
-            args.rle = match rle {
-                RleMode::Off => common::RleArg::Off,
-                RleMode::Byte => common::RleArg::Byte,
-                RleMode::Bits4 => common::RleArg::Bits4,
-                RleMode::Bits5 => common::RleArg::Bits5,
-                RleMode::Bits6 => common::RleArg::Bits6,
-                RleMode::Bits4XOnly => common::RleArg::Bits4x,
-                RleMode::Bits5XOnly => common::RleArg::Bits5x,
-                RleMode::Bits6XOnly => common::RleArg::Bits6x,
-            };
+            args.rle = rle.into();
         }
     }
 
@@ -541,7 +509,6 @@ impl World for TypstWorld {
     }
 }
 
-/// 内置 Unifont + `--font` 指定的字体。
 fn load_fonts(extra: &[PathBuf]) -> anyhow::Result<(Vec<Font>, FontBook)> {
     let mut fonts = Vec::new();
     let mut book = FontBook::new();

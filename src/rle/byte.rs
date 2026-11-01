@@ -51,14 +51,7 @@ pub struct RleByteStream {
 }
 
 impl RleByteStream {
-    /// 编码一行。
-    ///
-    /// 符号规则见 `rle.md`：
-    ///
-    /// - 单字节 `<= 0xC0`：原样输出。
-    /// - 单字节 `>= 0xC1`：`C1 <字节>`。
-    /// - 连续 `2..=63` 个相同字节：`<0xC0 | 数量> <字节>`。
-    /// - 超过 63 个就继续切分。
+    /// 编码一行，符号规则见 `rle.md`。
     ///
     /// 尾部的 `0x00`（白色）游程不编码，解码端会补白。
     pub fn encode(line: BitmapLine<'_>) -> Result<Self, RleTransformError> {

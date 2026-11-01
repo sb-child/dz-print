@@ -168,12 +168,7 @@ pub struct RleBitStream {
 }
 
 impl RleBitStream {
-    /// 编码一行。
-    ///
-    /// - `prev` 为 `None`：X 模式，直接编码这一行。
-    /// - `prev` 为 `Some`：D 模式，先和上一行 XOR 再编码。
-    ///
-    /// 两种模式都会丢掉尾部的白色游程，解码端按行宽补白。
+    /// `prev` 为 `None` 时用 X 模式，否则用 D 模式（先和上一行 XOR）。
     pub fn encode(
         line: BitmapLine<'_>,
         prev: Option<BitmapLine<'_>>,

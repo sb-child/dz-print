@@ -90,22 +90,12 @@ impl Device {
 
     /// 用 [`FlowPlanner`] 打印一整张位图，并指定纸张间隔。
     ///
-    /// 位图高于 [`MAX_LINES_PER_PAGE`] 时自动拆成多页：每页发
-    /// `StartPage` + `TotalLines`，再按预算分块发送行命令，最后 `EndPage`。
-    /// 页与页之间沿用同一个 [`PrintJobOptions`]（默认连续纸），不额外走纸。
-    /// 预算不足时发 `0x70` + `0x77`，`0x77` 超时退化到固定 8 KiB。
+    /// 高于 [`MAX_LINES_PER_PAGE`] 时自动拆页；最后一页的 `EndPage` 之后会等到
+    /// 打印头真正走完再返回。同一时刻只允许一个打印任务，否则返回
+    /// [`FrontendError::PrintBusy`]。
     ///
-    /// 最后一页的 `EndPage` 之后会调用 [`Device::wait_for_print_done`]，
-    /// 等打印头真正走完再返回。
-    ///
-    /// 同一时刻只允许一个打印任务：已有任务在跑时立即返回
-    /// [`FrontendError::PrintBusy`]，不排队，避免两页数据交叉发送。
-    ///
-    /// 预算查询会顺带读 `0x70`：无纸、开盖等错误状态立刻返回
-    /// [`FrontendError::PrinterStatus`]，不会一边报错一边继续查预算。
-    ///
-    /// 打印期间会占用 `0x70` / `0x77` 的响应；不要同时用 `try_recv_one` /
-    /// `try_pop_raw` 从队头取帧，否则会抢走预算和状态的响应。
+    /// 打印期间 `0x70` / `0x77` 的响应归这里所有，不要同时用 `try_recv_one` /
+    /// `try_pop_raw` 从队头取帧。
     pub async fn print_bitmap_job_with(
         &self,
         bm: &Bitmap,

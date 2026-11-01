@@ -113,7 +113,6 @@ impl From<RleArg> for RleMode {
     }
 }
 
-/// 命令行参数。
 #[derive(Parser, Debug)]
 #[command(version, about = "真机 USB 测试平台")]
 struct Cli {

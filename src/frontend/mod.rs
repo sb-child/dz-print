@@ -232,13 +232,7 @@ impl Default for DeviceConfig {
 
 /// 一台打印机。
 ///
-/// `Device` 是 `Send + Sync`，可以放进 `Arc` 跨 task 共享；各接口的并发约束
-/// 见模块文档的「并发」一节。简单说：
-///
-/// - 发送接口（`try_send_batch` / `send_cmd_area`）可以并发，worker 串行写；
-/// - [`Device::print_bitmap_job`] 同一时刻只允许一个；
-/// - 接收接口只有 [`Device::recv_cmd_timeout`] 适合多 task 并发，
-///   `try_recv_one` / `try_pop_raw` 会从队头消费，不要和别的接收接口同时用。
+/// `Device` 是 `Send + Sync`，接口之间的并发约束见模块文档的「并发」一节。
 pub struct Device {
     mv: ModelVersion,
     assembler: Assembler,
@@ -343,7 +337,6 @@ impl Device {
         }
     }
 
-    /// 当前机型版本。
     pub fn model_version(&self) -> ModelVersion {
         self.mv
     }
@@ -458,21 +451,11 @@ impl Device {
 
     /// 等打印机把已经发送的页真正打完。
     ///
-    /// `EndPage` 只是把数据交给固件，返回时打印头可能还在走。这里每
-    /// [`DeviceConfig::print_poll`] 查一次 `0x70`：
+    /// 每 [`DeviceConfig::print_poll`] 查一次 `0x70`：先看到忙、再连续几次空闲
+    /// 才算完成；错误状态直接返回。只认 `0x70` 的帧，`0x7b` 之类的推送会跳过。
     ///
-    /// - `Printing` / `Rotating` / `PageNotReady` 视为还在忙；
-    /// - 至少观察到一次忙，之后回到 `Printable` / `NoJob` 才返回；
-    /// - 如果打印很快就结束了，则等过 [`DeviceConfig::print_start_grace`] 后
-    ///   再接受空闲状态；
-    /// - `0x0c` 及以上的错误状态直接返回错误；
-    /// - 只认命令字节为 `0x70` 的帧，`0x7b` 之类的主动推送会被跳过。
-    ///
-    /// 只应在最后一页的 `EndPage` 之后调用；不要在行数据中间插 `0x70`。
-    ///
-    /// 只由结束打印的一方调用。[`Device::print_bitmap_job`] 内部已经调用，
-    /// 外部不要再并发调用；也不要在这期间用 `try_recv_one` / `try_pop_raw`
-    /// 从队头取帧，否则会抢走 `0x70` 的响应。
+    /// 只在最后一页的 `EndPage` 之后调用，由结束打印的一方独占；期间不要用
+    /// `try_recv_one` / `try_pop_raw` 从队头取帧，否则会抢走 `0x70` 的响应。
     pub async fn wait_for_print_done(
         &self,
         timeout: Duration,
@@ -589,6 +572,7 @@ impl Device {
                 idle_polls = 0;
             } else {
                 idle_polls += 1;
+                // 一页打完得很快时可能还没观察到忙，先等过启动宽限期再接受空闲。
                 if (seen_busy || started.elapsed() >= self.config.print_start_grace)
                     && idle_polls >= self.config.print_idle_confirm
                 {

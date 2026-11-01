@@ -94,12 +94,10 @@ pub const MAX_LINES_PER_PAGE: usize = 16383;
 
 /// RLE 编码方案。
 ///
-/// 只描述“用哪一族 RLE”；位级模式默认同时算 X 和 D，取字节数更小的那个。
-/// `*XOnly` 变体只用 X，用于验证设备是否支持 X / D 混用。
-/// 如果 RLE 编码后不比直接发一行小，仍然回退到 [`PrintCommand::Line`]。
+/// 位级模式默认同时算 X 和 D，取字节数更小的那个；`*XOnly` 只用 X。
+/// 编码后不比普通行小时仍回退到 [`PrintCommand::Line`]。
 ///
-/// **DP27P 实测 X / D 不能混用**，自动模式在该机型上会出现周期性断层，
-/// 真机请用 `Bits4XOnly` / `Bits5XOnly` / `Bits6XOnly`。详见 `rle.md`。
+/// DP27P 实测 X / D 不能混用，真机请用 `Bits4XOnly` / `Bits5XOnly` / `Bits6XOnly`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RleMode {
     /// 不压缩。
@@ -318,13 +316,9 @@ pub fn print_bitmap(bm: &Bitmap, rle: RleMode) -> Result<Vec<PrintCommand>, Prin
 
 /// 把位图切成多页，每页最多 `max_lines` 行。
 ///
-/// v2 的 `0x26 TotalLines` 上限是 [`MAX_LINES_PER_PAGE`]。超过这个行数的位图
-/// 必须拆页，否则 `print_bitmap` 的结果无法用一个 `TotalLines` 描述。
+/// 一次返回所有页；很大的位图可以用 [`print_bitmap_page`] 按 `start` 逐页生成。
 ///
-/// 每页的第一行都按全白基准处理，D 模式不会跨页引用上一页的解码结果。
-///
-/// 这个函数一次返回所有页；如果位图非常大、不想同时保留所有页的命令，
-/// 可以用 [`print_bitmap_page`] 按 `start` 逐页生成。
+/// 每页第一行都按全白基准处理，D 模式不会跨页引用上一页的解码结果。
 pub fn print_bitmap_pages(
     bm: &Bitmap,
     rle: RleMode,
