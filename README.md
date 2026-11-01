@@ -39,11 +39,13 @@ Motherboard produced by DothanTech(dothantech.com)
 - 源代码里有很多未使用的垃圾，是逆向初期的残留，哪些是新的、哪些是旧的见下面的代码结构
 
 ```bash
-# 打印一张 jpg / png 图片（会真的走纸）
+# 打印一张 jpg / png 图片（会真的走纸；行数据默认不压缩）
 cargo run --bin dzprint_image -- --image /tmp/print.png
 cargo run --bin dzprint_image -- --image /tmp/print.png \
   --device DP27P-Y4094C023 --raster floyd-steinberg \
   --gap-type gap --gap-length 2.5 --darkness normal --speed max
+# RLE 仍在实验，真实照片会出现白带，默认 --rle off
+cargo run --bin dzprint_image -- --image /tmp/print.png --rle bits6x
 
 # 打印一张图片的示例代码（旧版，整体被注释）
 cargo run --bin dzprint

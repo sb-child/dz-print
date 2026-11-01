@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! dzprint_image --image <FILE> [--device <NAME>] [--raster <MODE>]
-//!               [--gap-type <TYPE>] [--gap-length <MM>]
+//!               [--rle <MODE>] [--gap-type <TYPE>] [--gap-length <MM>]
 //!               [--darkness <VALUE>] [--speed <VALUE>]
 //! ```
 //!
@@ -15,21 +15,14 @@
 //! - `--gap-type` / `--gap-length` / `--darkness` / `--speed` 只发用户给出的那个，
 //!   并且都在打印任务开始前发送。
 //!
+//! 行数据默认不压缩（`--rle off`）：DP27P 上 `0x29` / `0x2c` / `0x3c` 对真实照片会
+//! 打出白带、甚至让固件认为一页还没结束。`--rle` 仍保留给简单线稿和实验用。
+//!
 //! 纸张间隔同时写进每页的 `StartPage`，否则打印任务会用 `Continuous` 覆盖掉
 //! `--gap-type`。`--gap-length` 省略时用 0.5mm，和旧版 `GapSetting` 的默认值一致。
 
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
-
 use anyhow::{Context as _, anyhow, ensure};
 use clap::{Parser, ValueEnum};
-use image::{DynamicImage, GrayImage, ImageReader, imageops::FilterType};
-use mytm::TaskManager;
-use tiny_skia::Pixmap;
-use tracing::info;
-
 use dz_print::{
     backend::usb::UsbSelector,
     bitmap::Bitmap,
@@ -42,15 +35,17 @@ use dz_print::{
     planner::print::{MAX_DOTS_PER_LINE, RleMode},
     raster::{DitherMode, from_gray_image, from_pixmap},
 };
+use image::{DynamicImage, GrayImage, ImageReader, imageops::FilterType};
+use mytm::TaskManager;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+use tiny_skia::Pixmap;
+use tracing::info;
 
 /// 退出前等 worker 线程真正停下（释放 USB 句柄）的超时。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// 打印任务使用的 RLE 模式。
-///
-/// DP27P 实测 X / D 混用会周期性断层，所以默认只用 X；RLE 不比原始行小的时候
-/// planner 会自己回退到 `PrintLine`。
-const RLE_MODE: RleMode = RleMode::Bits6XOnly;
 
 /// `--gap-length` 省略时用的间隔长度，单位 `0.01mm`（0.5mm）。
 const DEFAULT_GAP_LENGTH: u32 = 50;
@@ -72,6 +67,55 @@ impl From<RasterArg> for DitherMode {
         match value {
             RasterArg::FloydSteinberg => DitherMode::FloydSteinberg,
             RasterArg::Threshold => DitherMode::Threshold,
+        }
+    }
+}
+
+/// RLE 编码方案。
+///
+/// 默认 `off`：DP27P 上 RLE 对真实照片会打出白带，页计数也会异常；普通
+/// `0x21` 行命令是当前唯一在真机上稳定验证过的路径。简单线稿仍可显式选
+/// `byte` / `bits5x` / `bits6x` 做实验。
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RleArg {
+    /// 不压缩
+    #[default]
+    #[value(name = "off")]
+    Off,
+    /// 字节级 RLE
+    #[value(name = "byte")]
+    Byte,
+    /// 4 位符号，自动 X / D
+    #[value(name = "bits4")]
+    Bits4,
+    /// 5 位符号，自动 X / D
+    #[value(name = "bits5")]
+    Bits5,
+    /// 6 位符号，自动 X / D
+    #[value(name = "bits6")]
+    Bits6,
+    /// 4 位符号，只用 X
+    #[value(name = "bits4x")]
+    Bits4x,
+    /// 5 位符号，只用 X
+    #[value(name = "bits5x")]
+    Bits5x,
+    /// 6 位符号，只用 X
+    #[value(name = "bits6x")]
+    Bits6x,
+}
+
+impl From<RleArg> for RleMode {
+    fn from(value: RleArg) -> Self {
+        match value {
+            RleArg::Off => RleMode::Off,
+            RleArg::Byte => RleMode::Byte,
+            RleArg::Bits4 => RleMode::Bits4,
+            RleArg::Bits5 => RleMode::Bits5,
+            RleArg::Bits6 => RleMode::Bits6,
+            RleArg::Bits4x => RleMode::Bits4XOnly,
+            RleArg::Bits5x => RleMode::Bits5XOnly,
+            RleArg::Bits6x => RleMode::Bits6XOnly,
         }
     }
 }
@@ -107,6 +151,10 @@ struct Cli {
     /// 抖动方式
     #[arg(long, value_enum, default_value = "floyd-steinberg")]
     raster: RasterArg,
+
+    /// 行数据的 RLE 编码方案；默认不压缩
+    #[arg(long, value_enum, default_value = "off")]
+    rle: RleArg,
 }
 
 #[tokio::main]
@@ -125,10 +173,8 @@ async fn main() -> anyhow::Result<()> {
         None => UsbSelector::Auto,
     };
 
-    // 图片先读：路径或格式错了就不用去动打印机。
     let img = load_image(&cli.image)?;
 
-    // 整个程序共用一个 TaskManager：worker 挂在它下面，退出前统一 close。
     let tm = TaskManager::new();
     let dev = Device::new(
         &tm,
@@ -152,11 +198,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 查询点数、转换位图、发送设置，然后打印。
 async fn print_image(dev: &Device, cli: &Cli, img: DynamicImage) -> anyhow::Result<()> {
+    // 查询点数
     let dots = print_head_dots(dev).await?;
     info!("print head dots = {dots}");
 
+    // 转换位图
     let (width, height) = (img.width(), img.height());
     let img = fit_to_print_head(img, dots);
     info!("image {width}x{height} -> {}x{}", img.width(), img.height());
@@ -169,10 +216,12 @@ async fn print_image(dev: &Device, cli: &Cli, img: DynamicImage) -> anyhow::Resu
         DitherMode::from(cli.raster)
     );
 
+    // 发送设置
     send_settings(dev, cli).await?;
 
+    // 打印
     let report = dev
-        .print_bitmap_job_with(&bitmap, RLE_MODE, job_options(cli))
+        .print_bitmap_job_with(&bitmap, cli.rle.into(), job_options(cli))
         .await?;
     info!(
         chunks = report.chunks,
@@ -184,7 +233,6 @@ async fn print_image(dev: &Device, cli: &Cli, img: DynamicImage) -> anyhow::Resu
     Ok(())
 }
 
-/// 读 `0x72` 拿打印头点数。
 async fn print_head_dots(dev: &Device) -> anyhow::Result<u16> {
     dev.try_send_batch(&[&req::print_width::PrintWidth {}])
         .await?;
@@ -192,7 +240,7 @@ async fn print_head_dots(dev: &Device) -> anyhow::Result<u16> {
 
     ensure!(
         width.print_width > 0,
-        "设备回报的打印头点数为 0，无法确定缩放宽度"
+        "设备回报的打印头点数为 0, 无法确定缩放宽度"
     );
     ensure!(
         usize::from(width.print_width) <= MAX_DOTS_PER_LINE,
@@ -280,12 +328,11 @@ async fn send_settings(dev: &Device, cli: &Cli) -> anyhow::Result<()> {
 }
 
 /// 把命令行里的纸张设置带进 `StartPage`。
-///
-/// 只给了 `--gap-type` 时用 0.5mm，否则 v2 的 `printer_gap_length` 会校验失败。
 fn job_options(cli: &Cli) -> PrintJobOptions {
     let gap_type = cli.gap_type.unwrap_or_default();
     let gap_length = match cli.gap_length {
         Some(gap) => gap,
+        // 只给了 `--gap-type` 时用 0.5mm，否则 v2 的 `printer_gap_length` 会校验失败。
         None if gap_type != GapTypeSetting::Continuous => DEFAULT_GAP_LENGTH,
         None => 0,
     };
@@ -375,6 +422,7 @@ mod tests {
         assert!(cli.darkness.is_none());
         assert!(cli.speed.is_none());
         assert_eq!(cli.raster, RasterArg::FloydSteinberg);
+        assert_eq!(cli.rle, RleArg::Off);
     }
 
     #[test]

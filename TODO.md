@@ -17,13 +17,16 @@
 | 查询 `0x70` ~ `0x7d`                                              | 真机        | DP27P 上逐条实测                                                         |
 | `FlowPlanner` / `0x77` 流控                                       | 真机        | 9000 字节分块、50 ms 间隔、超时退 8 KiB；`status` 只做诊断               |
 | `0x7f` / `0x80`                                                   | 真机        | 激活 / 结束激活                                                          |
-| `print_bitmap_job` + `Off` / `Byte` / `Bits5XOnly` / `Bits6XOnly` | 真机        | 含超过 16383 行自动拆页                                                  |
+| `print_bitmap_job` + `Off`                                        | 真机        | 普通 `0x21` 行命令，含超过 16383 行自动拆页                              |
 | 无纸 / 开盖                                                       | 真机 + 单测 | 返回 `FrontendError::PrinterStatus`，不再循环查预算                      |
 | 拔线 / worker 卡死                                                | 单测        | 预算查询收到 `Closed` 直接返回；`send_cmd_area` 超时返回 `WorkerTimeout` |
 | `print_bitmap_job` 单任务锁                                       | 单测        | 第二个任务立即返回 `FrontendError::PrintBusy`                            |
 
 ### 可用但有限制 / 未验证
 
+- `RleMode::Byte` / `Bits5XOnly` / `Bits6XOnly`：简单线稿正常，真实照片（526x466
+  Floyd-Steinberg 截图）会出横向白带、`0x73` 页计数异常；`dzprint_image` 默认
+  改为 `--rle off`，RLE 需继续定位（`<符号数>` 语义 / 尾部白补白 / 固件缓冲限制）
 - `RleMode::Bits4` / `Bits5` / `Bits6`（自动 X/D）：DP27P 上会周期性断层，
   真机请用 `*XOnly`
 - `Bits4XOnly` / `0x3a`：DP27P 纸面空白，疑似固件不支持或码本不同
