@@ -29,7 +29,7 @@
 //! 注意 `mytm` 只在 `Pending -> Running` 这一次转换通知等待者；之后更新
 //! `WorkerProgress` 只会刷新值，不会唤醒 `wait_for`，要读进度得轮询。
 
-use crossfire::{AsyncRx, MAsyncTx, TryRecvError, oneshot::TxOneshot, spsc};
+use crossfire::{AsyncRx, MAsyncTx, MRx, TryRecvError, Tx, oneshot::TxOneshot, spsc};
 use mytm::{ProgressUpdater, TaskHandle, TaskManager};
 use pretty_hex::simple_hex;
 use thiserror::Error;
@@ -67,14 +67,14 @@ pub(crate) enum WorkerError {
 }
 
 /// 写任务通道的容量。
-pub(crate) const OUT_CAPACITY: usize = 8;
+const OUT_CAPACITY: usize = 8;
 
 /// 前台 → worker 的写任务发送端（异步、可克隆、`Sync`）。
 pub(crate) type OutTx = MAsyncTx<crossfire::mpmc::Array<OutJob>>;
 /// worker 侧的写任务接收端（阻塞）。
-pub(crate) type OutRx = crossfire::MRx<crossfire::mpmc::Array<OutJob>>;
+pub(crate) type OutRx = MRx<crossfire::mpmc::Array<OutJob>>;
 /// worker → 前台的原始 payload 发送端（阻塞）。
-pub(crate) type RecvTx = crossfire::Tx<spsc::List<Vec<u8>>>;
+pub(crate) type RecvTx = Tx<spsc::List<Vec<u8>>>;
 /// 前台侧的 payload 接收端（异步）。
 pub(crate) type RecvRx = AsyncRx<spsc::List<Vec<u8>>>;
 /// 单条写任务完成后回给前台的 ack。

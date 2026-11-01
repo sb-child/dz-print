@@ -581,6 +581,8 @@ mod tests {
         for frame in frames {
             transport.push_frame(frame.clone());
         }
+        // `WorkerHandle` 内部持有 `TaskManager` 的克隆，所以这里放下 `tm`
+        // 不会影响 worker；`shutdown()` / `close()` 仍然能作用到它。
         let tm = mytm::TaskManager::new();
         let device = Device::new_with_transport(&tm, transport.clone(), test_config());
         (device, transport)
@@ -661,7 +663,8 @@ mod tests {
             print_done_timeout: Duration::from_millis(30),
             ..test_config()
         };
-        let device = Device::new_with_transport(&mytm::TaskManager::new(), transport, config);
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_transport(&tm, transport, config);
 
         let err = device
             .wait_for_print_done(Duration::from_millis(30))
@@ -693,7 +696,7 @@ mod tests {
         assert!(written.windows(2).any(|w| w == [0x1f, 0x28]), "EndPage");
     }
 
-    /// `Device` 需要能放进 `Arc` 跨 tokio task 共享（第二步换 crossfire 时也要保持）。
+    /// `Device` 需要能放进 `Arc` 跨 tokio task 共享。
     #[test]
     fn device_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -702,11 +705,8 @@ mod tests {
 
     #[tokio::test]
     async fn ready_reports_open_failure() {
-        let device = Device::new_with_factory(
-            &mytm::TaskManager::new(),
-            || Err(TransportError::NotFound),
-            test_config(),
-        );
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_factory(&tm, || Err(TransportError::NotFound), test_config());
 
         let err = device.ready().await.unwrap_err();
         assert!(
@@ -728,6 +728,23 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, FrontendError::WorkerGone), "{err:?}");
         assert!(transport.written().is_empty());
+
+        // worker 退出后 payload 通道也关闭，前台不应该一直等到超时。
+        let err = device
+            .try_recv_one::<resp::status::Status>()
+            .await
+            .unwrap_err();
+        assert!(matches!(err, RecvError::Closed), "{err:?}");
+    }
+
+    /// `shutdown` 重复调用不会报错，方便在退出路径里统一兜底。
+    #[tokio::test]
+    async fn shutdown_is_idempotent() {
+        let (device, _transport) = device_with(&[]);
+        device.ready().await.unwrap();
+
+        device.shutdown(Duration::from_secs(1)).await.unwrap();
+        device.shutdown(Duration::from_secs(1)).await.unwrap();
     }
 
     /// 卡在 IO 里的 worker 不会让 `shutdown` 无限等下去。

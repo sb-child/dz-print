@@ -334,6 +334,9 @@ transport（USB HID / BLE 串口透传）
 > `cargo clippy --all-targets` 已无 dead_code 警告，只剩未使用依赖。
 >
 > worker 托管（2026-11-01）：改用 `mytm` 后 `cargo test --all-targets` 331 lib + 2 bin passed。
+>
+> 通道迁移（2026-11-01）：`out_tx` / payload / ack 换成 `crossfire` 后仍是
+> 332 lib + 2 bin passed；`clippy --all-targets` 无源码警告，`doc` 0 warning。
 
 ### P0 结构：frontend 与 test_usb
 
@@ -361,7 +364,7 @@ transport（USB HID / BLE 串口透传）
     阻塞线程真正返回后 USB 句柄才释放
   - `test_usb` 退出前（成功或失败）都调用 `shutdown`，然后 `tm.close()`
   - 新增 4 个单测：打开失败、shutdown 停线程、worker 卡住时 shutdown 超时、
-    外层 `close()` 停掉 worker
+    外层 `close()` 停掉 worker（后续补了 `shutdown` 幂等和 payload 通道关闭断言）
 - [x] 第二步：`out_tx` / payload / ack 换成 `crossfire`
   - 写任务：`mpmc::bounded_async_blocking::<OutJob>(8)`，前台拿异步、可克隆的
     `MAsyncTx`（`Sync`，`Device` 仍满足 `Send + Sync`），worker 拿阻塞 `MRx`
@@ -458,7 +461,7 @@ transport（USB HID / BLE 串口透传）
 
 ### 验收
 
-- [ ] `cargo test --lib` 不低于当前 331 passed
+- [ ] `cargo test --lib` 不低于当前 332 passed
 - [ ] `cargo clippy --all-targets` 无 dead_code / 未使用依赖警告
 - [ ] `cargo fmt -- --check` 通过
 - [ ] `cargo doc --no-deps --lib` 无警告
