@@ -85,6 +85,11 @@ pub struct UsbTransport {
     detached: Vec<u8>,
     read_timeout: Duration,
     write_timeout: Duration,
+    /// 读写已经报过 Disconnected 时为 false。
+    ///
+    /// 设备拔掉后 libusb 的 release / attach 可能继续阻塞，Drop 里跳过这些调用，
+    /// 避免 worker 线程卡在 USB 清理上不退出。
+    connected: bool,
 }
 
 impl UsbTransport {
@@ -144,6 +149,7 @@ impl UsbTransport {
                 detached,
                 read_timeout: READ_TIMEOUT,
                 write_timeout: WRITE_TIMEOUT,
+                connected: true,
             });
         }
 
@@ -171,6 +177,13 @@ impl UsbTransport {
     pub fn write_timeout(&self) -> Duration {
         self.write_timeout
     }
+
+    /// 记下 USB 错误；设备已经断开时不再在 Drop 里碰接口。
+    fn mark_error(&mut self, err: &TransportError) {
+        if matches!(err, TransportError::Disconnected { .. }) {
+            self.connected = false;
+        }
+    }
 }
 
 impl Transport for UsbTransport {
@@ -183,10 +196,18 @@ impl Transport for UsbTransport {
             message: e.to_string(),
         })?;
         for report in reports {
-            let written = self
-                .handle
-                .write_interrupt(self.endpoints.ep_out, &report, self.write_timeout)
-                .map_err(map_usb_error)?;
+            let written = match self.handle.write_interrupt(
+                self.endpoints.ep_out,
+                &report,
+                self.write_timeout,
+            ) {
+                Ok(written) => written,
+                Err(e) => {
+                    let err = map_usb_error(e);
+                    self.mark_error(&err);
+                    return Err(err);
+                }
+            };
             if written != report.len() {
                 return Err(TransportError::Io {
                     message: format!("short write: {written} of {} byte(s)", report.len()),
@@ -213,12 +234,20 @@ impl Transport for UsbTransport {
                 Ok(ReadStatus::Data)
             }
             Err(rusb::Error::Timeout) => Ok(ReadStatus::Timeout),
-            Err(e) => Err(map_usb_error(e)),
+            Err(e) => {
+                let err = map_usb_error(e);
+                self.mark_error(&err);
+                Err(err)
+            }
         }
     }
 
     fn reset(&mut self) -> Result<(), TransportError> {
-        self.handle.reset().map_err(map_usb_error)?;
+        if let Err(e) = self.handle.reset() {
+            let err = map_usb_error(e);
+            self.mark_error(&err);
+            return Err(err);
+        }
         std::thread::sleep(RESET_DELAY);
         // reset 之后接口声明可能丢失，重新 claim 一次；失败只记录，
         // 保持和以前一样的“reset 本身成功就返回”语义。
@@ -232,6 +261,10 @@ impl Transport for UsbTransport {
 
 impl Drop for UsbTransport {
     fn drop(&mut self) {
+        if !self.connected {
+            debug!("device disconnected, skip USB release/attach");
+            return;
+        }
         // 先释放接口，再把内核驱动接回去，避免下一次打开时设备被占用。
         let mut seen = Vec::new();
         for iface in [self.endpoints.out_iface, self.endpoints.in_iface] {

@@ -449,6 +449,19 @@ transport（USB HID / BLE 串口透传）
   - `Device::print_lock`（`tokio::sync::Mutex<()>`）；已有任务运行时第二个调用
     立即返回 `FrontendError::PrintBusy`，不排队，避免两页数据交叉发送
   - 补 `print_bitmap_job_rejects_a_second_job` 测试
+- [x] 无纸 / 开盖时不再循环查预算
+  - 预算查询顺带读的 `0x70` 命中 `is_error()` 时返回
+    `FrontendError::PrinterStatus`
+  - `QueryBudget` 分支补 `FlowPlanner::check_deadline()`，`size = 0` 不会无限循环
+  - 补 `no_paper_aborts_instead_of_querying_forever` 测试
+- [x] 拔线后前台在有限时间内退出
+  - 预算查询收到 `RecvError::Closed` 直接返回，不再退化继续发送
+  - `send_cmd_area` 给「入队 + ack」加 `recv_timeout`，超时返回
+    `FrontendError::WorkerTimeout`
+  - USB 已断开时 `UsbTransport::drop` 跳过 release / attach，避免 worker
+    线程卡在 USB 清理
+  - 补 `unplug_does_not_hang_wait_for_print_done`、
+    `send_times_out_when_the_worker_is_stuck` 测试
 - [x] `PrintLine` 参数校验
   - v0 的 `data_len` 用 `u16::try_from`，v1 的 `dots` 用 `checked_mul(8)` +
     `u16::try_from`，溢出返回 `ParamOutOfRange`
@@ -497,7 +510,7 @@ transport（USB HID / BLE 串口透传）
 
 ### 验收
 
-- [ ] `cargo test --lib` 不低于当前 344 passed
+- [ ] `cargo test --lib` 不低于当前 348 passed
 - [ ] `cargo clippy --all-targets` 无 dead_code / 未使用依赖警告
 - [ ] `cargo fmt -- --check` 通过
 - [ ] `cargo doc --no-deps --lib` 无警告

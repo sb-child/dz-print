@@ -124,6 +124,8 @@ pub enum FrontendError {
     PrintTimeout { timeout: Duration },
     #[snafu(display("device worker did not stop within {timeout:?}"))]
     ShutdownTimeout { timeout: Duration },
+    #[snafu(display("device worker did not answer within {timeout:?}"))]
+    WorkerTimeout { timeout: Duration },
     #[snafu(display("a print job is already running"))]
     PrintBusy,
 }
@@ -372,6 +374,10 @@ impl Device {
     }
 
     /// 直接发送一段已编码的命令区。
+    ///
+    /// 写任务在 [`DeviceConfig::recv_timeout`] 内没有完成时返回
+    /// [`FrontendError::WorkerTimeout`]：worker 卡在 USB 清理或设备掉线时，
+    /// 前台不能无限等 ack。
     pub async fn send_cmd_area(&self, cmd_area: Vec<u8>) -> Result<(), FrontendError> {
         if cmd_area.is_empty() {
             return Ok(());
@@ -381,17 +387,24 @@ impl Device {
 
         let (ack_tx, ack_rx) = oneshot::oneshot();
 
-        self.out_tx
-            .send(worker::OutJob {
-                cmd_area,
-                ack: ack_tx,
-            })
-            .map(|r| r.ok().context(WorkerGoneSnafu))
-            .await?;
-        ack_rx
-            .map(|r| r.ok().context(WorkerGoneSnafu))
-            .await?
-            .map_err(|message| FrontendError::Write { message })
+        let sent = async {
+            self.out_tx
+                .send(worker::OutJob {
+                    cmd_area,
+                    ack: ack_tx,
+                })
+                .map(|r| r.ok().context(WorkerGoneSnafu))
+                .await?;
+            ack_rx
+                .map(|r| r.ok().context(WorkerGoneSnafu))
+                .await?
+                .map_err(|message| FrontendError::Write { message })
+        };
+        let timeout = self.config.recv_timeout;
+        match tokio::time::timeout(timeout, sent).await {
+            Ok(result) => result,
+            Err(_) => Err(FrontendError::WorkerTimeout { timeout }),
+        }
     }
 
     /// 等打印机把已经发送的页真正打完。
@@ -835,6 +848,166 @@ mod tests {
             .print_bitmap_job(&bitmap, RleMode::Off)
             .await
             .unwrap();
+    }
+
+    /// 拔线后 `wait_for_print_done` 和 `shutdown` 都必须返回，不能挂住。
+    #[tokio::test]
+    async fn unplug_does_not_hang_wait_for_print_done() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct DyingTransport {
+            die: Arc<AtomicBool>,
+            writes: Arc<AtomicUsize>,
+        }
+
+        impl Transport for DyingTransport {
+            fn write(&mut self, _cmd_area: &[u8]) -> Result<WriteOutcome, TransportError> {
+                self.writes.fetch_add(1, Ordering::SeqCst);
+                Ok(WriteOutcome::Written)
+            }
+
+            fn read_chunk(&mut self, _out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
+                if self.die.load(Ordering::SeqCst) {
+                    Err(TransportError::Disconnected {
+                        message: "unplugged".into(),
+                    })
+                } else {
+                    thread::sleep(Duration::from_millis(1));
+                    Ok(ReadStatus::Timeout)
+                }
+            }
+
+            fn reset(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+
+        let die = Arc::new(AtomicBool::new(false));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_transport(
+            &tm,
+            DyingTransport {
+                die: die.clone(),
+                writes: writes.clone(),
+            },
+            test_config(),
+        );
+        device.ready().await.unwrap();
+
+        // 先让前台发出 0x70 并进入等待，再模拟拔线，和真机日志的顺序一致。
+        let waiter = device.wait_for_print_done(Duration::from_secs(5));
+        let unplug = async {
+            while writes.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+            die.store(true, Ordering::SeqCst);
+        };
+        let err = tokio::time::timeout(Duration::from_secs(2), async {
+            let (result, ()) = tokio::join!(waiter, unplug);
+            result
+        })
+        .await
+        .expect("wait_for_print_done hung after unplug")
+        .expect_err("expected an error after unplug");
+        assert!(
+            matches!(err, FrontendError::Recv { .. } | FrontendError::WorkerGone),
+            "{err:?}"
+        );
+
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(2),
+            device.shutdown(Duration::from_secs(1)),
+        )
+        .await;
+        stopped.expect("shutdown hung after unplug").unwrap();
+    }
+
+    /// 无纸时 `0x70` 一直回 `NoPaper`、`0x77` 回 `size = 0`，必须中止而不是死循环。
+    #[tokio::test]
+    async fn no_paper_aborts_instead_of_querying_forever() {
+        let (device, _transport) = device_with(&[status_frame(0x23), buffer_frame(0)]);
+
+        let mut bitmap = Bitmap::new(8, 1).unwrap();
+        bitmap.line_mut(0).unwrap().set(0, true);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            device.print_bitmap_job(&bitmap, RleMode::Off),
+        )
+        .await
+        .expect("print job hung on NoPaper");
+        let err = result.expect_err("expected an error on NoPaper");
+        assert!(
+            matches!(
+                err,
+                FrontendError::PrinterStatus {
+                    status: PrinterStatus::NoPaper
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// worker 卡在 USB 写里时，前台不能无限等 ack。
+    #[tokio::test]
+    async fn send_times_out_when_the_worker_is_stuck() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+
+        struct StuckTransport {
+            entered: Arc<AtomicBool>,
+            release: mpsc::Receiver<()>,
+        }
+
+        impl Transport for StuckTransport {
+            fn write(&mut self, _cmd_area: &[u8]) -> Result<WriteOutcome, TransportError> {
+                self.entered.store(true, Ordering::SeqCst);
+                let _ = self.release.recv();
+                Ok(WriteOutcome::Written)
+            }
+
+            fn read_chunk(&mut self, _out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
+                thread::sleep(Duration::from_millis(1));
+                Ok(ReadStatus::Timeout)
+            }
+
+            fn reset(&mut self) -> Result<(), TransportError> {
+                Ok(())
+            }
+        }
+
+        let entered = Arc::new(AtomicBool::new(false));
+        let (release_tx, release_rx) = mpsc::channel();
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_transport(
+            &tm,
+            StuckTransport {
+                entered: entered.clone(),
+                release: release_rx,
+            },
+            test_config(),
+        );
+        device.ready().await.unwrap();
+
+        let send = device.send_cmd_area(vec![0x1f, 0x70, 0x00, 0x8f]);
+        let wait_entered = async {
+            while !entered.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        };
+        let (result, ()) = tokio::join!(send, wait_entered);
+        let err = result.expect_err("expected a timeout");
+        assert!(
+            matches!(err, FrontendError::WorkerTimeout { .. }),
+            "{err:?}"
+        );
+
+        // 放行 worker，让测试结束时线程能真正退出。
+        release_tx.send(()).unwrap();
+        device.shutdown(Duration::from_secs(1)).await.unwrap();
     }
 
     /// `Device` 需要能放进 `Arc` 跨 tokio task 共享。

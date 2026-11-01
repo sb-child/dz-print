@@ -59,7 +59,7 @@ use crate::{
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-use super::{Device, FrontendError};
+use super::{Device, FrontendError, RecvError};
 
 impl Device {
     /// 用 [`FlowPlanner`] 打印一整张位图。
@@ -74,6 +74,9 @@ impl Device {
     ///
     /// 同一时刻只允许一个打印任务：已有任务在跑时立即返回
     /// [`FrontendError::PrintBusy`]，不排队，避免两页数据交叉发送。
+    ///
+    /// 预算查询会顺带读 `0x70`：无纸、开盖等错误状态立刻返回
+    /// [`FrontendError::PrinterStatus`]，不会一边报错一边继续查预算。
     pub async fn print_bitmap_job(
         &self,
         bm: &Bitmap,
@@ -132,6 +135,9 @@ impl Device {
                         flow.check_deadline()?;
                     }
                     ChunkDecision::QueryBudget => {
+                        // 设备长时间不给预算时也要受整任务超时约束，
+                        // 否则 `size = 0` 会让这个分支无限循环。
+                        flow.check_deadline()?;
                         tokio::time::sleep(flow.config().chunk_gap).await;
                         self.try_send_batch(&[
                             &req::status::Status {},
@@ -140,18 +146,28 @@ impl Device {
                         .await?;
                         // 两条查询的应答按命令字节分别取，顺序和中间夹的推送都不影响。
                         let timeout = flow.config().budget_timeout;
-                        match self
+                        let status = match self
                             .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, timeout)
                             .await
                         {
-                            Ok(Some(status)) => debug!(
-                                status = ?status.status,
-                                page_key = status.page_key,
-                                "status before budget"
-                            ),
-                            Ok(None) => debug!("status before budget timed out"),
-                            Err(e) => debug!("status before budget failed: {e}"),
-                        }
+                            Ok(Some(status)) => {
+                                debug!(
+                                    status = ?status.status,
+                                    page_key = status.page_key,
+                                    "status before budget"
+                                );
+                                Some(status)
+                            }
+                            Ok(None) => {
+                                debug!("status before budget timed out");
+                                None
+                            }
+                            Err(e @ RecvError::Closed) => return Err(e.into()),
+                            Err(e) => {
+                                debug!("status before budget failed: {e}");
+                                None
+                            }
+                        };
                         match self
                             .recv_cmd_timeout::<resp::buffer_size::BufferSize>(
                                 resp::buffer_size::CMD,
@@ -172,10 +188,19 @@ impl Device {
                                 warn!("buffer size timed out, fall back to 8 KiB");
                                 flow.on_budget_timeout();
                             }
+                            Err(e @ RecvError::Closed) => return Err(e.into()),
                             Err(e) => {
                                 warn!("buffer size failed, fall back to 8 KiB: {e}");
                                 flow.on_budget_timeout();
                             }
+                        }
+                        // 无纸 / 开盖等错误状态必须中止，不能一边报错一边继续查预算。
+                        if let Some(status) = status
+                            && status.status.is_error()
+                        {
+                            return Err(FrontendError::PrinterStatus {
+                                status: status.status,
+                            });
                         }
                     }
                     ChunkDecision::Wait => {
