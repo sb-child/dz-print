@@ -95,7 +95,7 @@ use pretty_hex::simple_hex;
 use snafu::{OptionExt, Snafu};
 use std::{collections::VecDeque, time::Duration};
 use tokio::sync::Mutex;
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 mod print;
 mod worker;
@@ -139,10 +139,14 @@ pub enum FrontendError {
     TooManyPages { pages: usize },
     #[snafu(display("page has {lines} lines, does not fit in u16"))]
     PageTooTall { lines: usize },
-    #[snafu(display("printer reported {status:?} while waiting for print completion"))]
+    #[snafu(display("printer reported {status} while waiting for print completion"))]
     PrinterStatus { status: PrinterStatus },
     #[snafu(display("print did not finish within {timeout:?}"))]
     PrintTimeout { timeout: Duration },
+    #[snafu(display(
+        "printer stopped answering status polls ({polls} timeouts of {timeout:?} in a row)"
+    ))]
+    PrinterSilent { polls: usize, timeout: Duration },
     #[snafu(display("device worker did not stop within {timeout:?}"))]
     ShutdownTimeout { timeout: Duration },
     #[snafu(display("device worker did not answer within {timeout:?}"))]
@@ -201,6 +205,12 @@ pub struct DeviceConfig {
     pub print_start_grace: Duration,
     /// 至少连续几次空闲才认为打印完成。
     pub print_idle_confirm: usize,
+    /// 连续多少次状态查询没有任何回应就判定打印机失联。
+    ///
+    /// 每次查询最长等 [`Self::recv_timeout`]，所以默认 `5` 次大约 15 秒。
+    /// 打印中途固件偶尔会停一小会儿不回应，但连续十几秒完全沉默说明它卡住了，
+    /// 继续等只会让整个任务挂到 [`Self::print_done_timeout`]。
+    pub print_silent_limit: usize,
     /// 等待打印完成的总超时。
     pub print_done_timeout: Duration,
 }
@@ -214,6 +224,7 @@ impl Default for DeviceConfig {
             print_poll: Duration::from_millis(100),
             print_start_grace: Duration::from_secs(1),
             print_idle_confirm: 2,
+            print_silent_limit: 5,
             print_done_timeout: Duration::from_secs(600),
         }
     }
@@ -471,6 +482,11 @@ impl Device {
         let poll = self.config.print_poll.max(Duration::from_millis(1));
         let mut seen_busy = false;
         let mut idle_polls = 0usize;
+        // 连续多少次查询没有回包。固件卡住时它连 `0x70` 都不回，
+        // 不设上限的话只能等到整个任务超时。
+        let mut silent_polls = 0usize;
+        // 只在状态变化时打日志，避免 100ms 轮询把日志刷满。
+        let mut logged: Option<PrinterStatus> = None;
 
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -492,9 +508,27 @@ impl Device {
                 )
                 .await
             {
-                Ok(Some(status)) => status,
+                Ok(Some(status)) => {
+                    silent_polls = 0;
+                    status
+                }
                 // 单次查询超时、或只收到 `0x7b` 之类的推送，不代表打印结束。
-                Ok(None) => continue,
+                Ok(None) => {
+                    silent_polls += 1;
+                    warn!(
+                        silent_polls,
+                        limit = self.config.print_silent_limit,
+                        timeout = ?self.config.recv_timeout,
+                        "printer did not answer the status poll"
+                    );
+                    if silent_polls >= self.config.print_silent_limit {
+                        return Err(FrontendError::PrinterSilent {
+                            polls: silent_polls,
+                            timeout: self.config.recv_timeout,
+                        });
+                    }
+                    continue;
+                }
                 Err(e) => return Err(e.into()),
             };
             debug!(
@@ -504,6 +538,34 @@ impl Device {
                 idle_polls,
                 "print status"
             );
+
+            // 状态变化对用户有意义：`printing` → `cover is open` 这类要能直接看到。
+            if logged != Some(status.status) {
+                if status.status.is_error() {
+                    error!(
+                        status = ?status.status,
+                        reason = %status.status,
+                        page_key = status.page_key,
+                        "printer stopped with an error"
+                    );
+                } else if matches!(
+                    status.status,
+                    PrinterStatus::Printing | PrinterStatus::Rotating
+                ) {
+                    info!(
+                        status = ?status.status,
+                        reason = %status.status,
+                        "printer is busy"
+                    );
+                } else {
+                    debug!(
+                        status = ?status.status,
+                        reason = %status.status,
+                        "print status"
+                    );
+                }
+                logged = Some(status.status);
+            }
 
             if status.status.is_error() {
                 return Err(FrontendError::PrinterStatus {

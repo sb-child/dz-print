@@ -164,6 +164,50 @@ impl PrinterStatus {
     pub const fn is_error(self) -> bool {
         self.to_wire() >= 12
     }
+
+    /// 状态的简短说明，用于日志和错误信息。
+    ///
+    /// 未定义的状态码返回 `"unknown status"`，具体线上值用 [`Self::to_wire`] 看。
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Printable => "ready",
+            Self::Printing => "printing",
+            Self::Rotating => "motor rotating",
+            Self::NoJob => "no print job",
+            Self::PageNotReady => "page data not complete",
+            Self::JobCanceled => "print job canceled",
+            Self::EnvNotReady => "environment not ready",
+            Self::VolTooLow => "print voltage too low",
+            Self::VolTooHigh => "print voltage too high",
+            Self::TphNotFound => "print head not detected",
+            Self::TphTooHot => "print head too hot",
+            Self::CoverOpened => "cover is open",
+            Self::NoPaper => "no paper detected",
+            Self::RibbonCanOpened => "ribbon cartridge is not locked",
+            Self::NoRibbon => "no ribbon detected",
+            Self::UnmatchedRibbon => "ribbon mismatch",
+            Self::TphTooCold => "print head too cold",
+            Self::UsedupRibbon => "ribbon used up",
+            Self::UsedupRibbon2 => "ribbon used up",
+            Self::NoLabel => "no label roll detected",
+            Self::UnmatchedLabel => "label roll mismatch",
+            Self::UsedupLabel => "label roll used up",
+            Self::NoRibbon2 => "no thermal ribbon detected",
+            Self::UnmatchedRibbon2 => "thermal ribbon mismatch",
+            Self::LabelCanOpened => "label cartridge is not locked",
+            Self::Unknown(_) => "unknown status",
+        }
+    }
+}
+
+/// 日志和错误信息用：`printing`、`cover is open`、`unknown status 0x09`。
+impl std::fmt::Display for PrinterStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown(value) => write!(f, "unknown status {value:#04X}"),
+            other => f.write_str(other.description()),
+        }
+    }
 }
 
 impl From<u8> for PrinterStatus {
@@ -238,5 +282,21 @@ mod test {
 
         assert!(PrinterStatus::JobCanceled.is_error());
         assert!(PrinterStatus::LabelCanOpened.is_error());
+    }
+
+    /// 每个状态都要有可读说明，日志和错误信息直接用 `Display`。
+    #[test]
+    fn every_status_has_a_description() {
+        for (_, status) in ALL {
+            assert!(!status.description().is_empty(), "{status:?}");
+            assert_eq!(status.to_string(), status.description(), "{status:?}");
+        }
+
+        assert_eq!(PrinterStatus::CoverOpened.to_string(), "cover is open");
+        assert_eq!(PrinterStatus::NoPaper.to_string(), "no paper detected");
+        assert_eq!(
+            PrinterStatus::Unknown(0x09).to_string(),
+            "unknown status 0x09"
+        );
     }
 }

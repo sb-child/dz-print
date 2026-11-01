@@ -6,7 +6,7 @@
 
 ## 接口可用度
 
-> 截至 2026-11-01，真机 DP27P（USB，软件版本 `3.1.20230620`），单测 348 个。
+> 截至 2026-11-01，真机 DP27P（USB，软件版本 `3.1.20230620`），单测 352 个。
 > “稳定”只表示当前实现可用且有回归测试，不代表跨机型 / 跨固件承诺。
 
 ### 已可用
@@ -19,14 +19,22 @@
 | `0x7f` / `0x80`                                                   | 真机        | 激活 / 结束激活                                                          |
 | `print_bitmap_job` + `Off`                                        | 真机        | 普通 `0x21` 行命令，含超过 16383 行自动拆页                              |
 | 无纸 / 开盖                                                       | 真机 + 单测 | 返回 `FrontendError::PrinterStatus`，不再循环查预算                      |
+| 打印机状态日志                                                    | 真机        | `0x70` 状态变化按 info/error 打日志，带 `cover is open` 这类说明         |
 | 拔线 / worker 卡死                                                | 单测        | 预算查询收到 `Closed` 直接返回；`send_cmd_area` 超时返回 `WorkerTimeout` |
+| 固件失联                                                          | 真机        | 连续 5 次 `0x70` 无回应返回 `FrontendError::PrinterSilent`               |
+| `0x25` 加热统计                                                   | 真机        | 每页数据发完后发单行最大 / 平均黑点数；未观察到行为变化，按厂商流程保留  |
 | `print_bitmap_job` 单任务锁                                       | 单测        | 第二个任务立即返回 `FrontendError::PrintBusy`                            |
 
 ### 可用但有限制 / 未验证
 
 - `RleMode::Byte` / `Bits5XOnly` / `Bits6XOnly`：简单线稿正常，真实照片（526x466
-  Floyd-Steinberg 截图）会出横向白带、`0x73` 页计数异常；`dzprint_image` 默认
-  改为 `--rle off`，RLE 需继续定位（`<符号数>` 语义 / 尾部白补白 / 固件缓冲限制）
+  Floyd-Steinberg 截图）**内容完整、没有错位，但中间被插入约 2.7cm 空白和几条细白线**；
+  同一页 RLE 比普通行慢 0.8~1.0 s，像是固件中途停走电机。逐项排除了 RLE6 码本
+  `461`/`923`、与普通行混用、`0x2e` 重复行、`0x25` 加热统计、字节对齐和分块边界。
+  `0x29` 更糟：整页发完后固件连 `0x70` 都不回（`FrontendError::PrinterSilent` 中止）。
+  `dzprint_image` 默认 `--rle off`，RLE 只当实验特性
+- `0x73`（打印统计）：DP27P 上四个计数器和纸面实际结果对不上（同一页 `PrintPages`
+  +1~+23 都有），只能当参考，不能用来判断打印是否正常
 - `RleMode::Bits4` / `Bits5` / `Bits6`（自动 X/D）：DP27P 上会周期性断层，
   真机请用 `*XOnly`
 - `Bits4XOnly` / `0x3a`：DP27P 纸面空白，疑似固件不支持或码本不同

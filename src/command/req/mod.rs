@@ -33,6 +33,7 @@ pub mod end_page;
 pub mod feed_line;
 pub mod gap_length;
 pub mod gap_type;
+pub mod heat_control;
 pub mod high_command;
 pub mod manufacturer;
 pub mod print_line;

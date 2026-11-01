@@ -44,8 +44,13 @@ cargo run --bin dzprint_image -- --image /tmp/print.png
 cargo run --bin dzprint_image -- --image /tmp/print.png \
   --device DP27P-Y4094C023 --raster floyd-steinberg \
   --gap-type gap --gap-length 2.5 --darkness normal --speed max
-# RLE 仍在实验，真实照片会出现白带，默认 --rle off
+# RLE 仍在实验：真实照片会在纸中间插入空白（固件停走），默认 --rle off
 cargo run --bin dzprint_image -- --image /tmp/print.png --rle bits6x
+# 超时可调：等打印结束的总超时、单条响应的等待超时（秒）
+cargo run --bin dzprint_image -- --image /tmp/print.png \
+  --print-timeout 120 --recv-timeout 2
+# 排查时打开 debug 日志
+RUST_LOG=debug cargo run --bin dzprint_image -- --image /tmp/print.png
 
 # 打印一张图片的示例代码（旧版，整体被注释）
 cargo run --bin dzprint

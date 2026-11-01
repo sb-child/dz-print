@@ -8,6 +8,7 @@
 //! dzprint_image --image <FILE> [--device <NAME>] [--raster <MODE>]
 //!               [--rle <MODE>] [--gap-type <TYPE>] [--gap-length <MM>]
 //!               [--darkness <VALUE>] [--speed <VALUE>]
+//!               [--print-timeout <SECS>] [--recv-timeout <SECS>]
 //! ```
 //!
 //! - 先查 `0x72` 拿到打印头点数；图片宽度大于点数时等比缩放到点数，否则原样打印。
@@ -15,8 +16,12 @@
 //! - `--gap-type` / `--gap-length` / `--darkness` / `--speed` 只发用户给出的那个，
 //!   并且都在打印任务开始前发送。
 //!
-//! 行数据默认不压缩（`--rle off`）：DP27P 上 `0x29` / `0x2c` / `0x3c` 对真实照片会
-//! 打出白带、甚至让固件认为一页还没结束。`--rle` 仍保留给简单线稿和实验用。
+//! 行数据默认不压缩（`--rle off`）：DP27P 上 `0x2c` / `0x3c` 打真实照片时固件会在
+//! 打印中途停走、在纸上插入一段空白；`0x29` 更糟，整页发完后固件连 `0x70` 都不回。
+//! `--rle` 仍保留给简单线稿和实验用。
+//!
+//! 卡住时会自己失败退出：连续多次状态查询没有回应返回 `PrinterSilent`，
+//! 整个任务超过 `--print-timeout` 返回 `PrintTimeout`。
 //!
 //! 纸张间隔同时写进每页的 `StartPage`，否则打印任务会用 `Continuous` 覆盖掉
 //! `--gap-type`。`--gap-length` 省略时用 0.5mm，和旧版 `GapSetting` 的默认值一致。
@@ -42,7 +47,7 @@ use std::{
     time::Duration,
 };
 use tiny_skia::Pixmap;
-use tracing::info;
+use tracing::{error, info};
 
 /// 退出前等 worker 线程真正停下（释放 USB 句柄）的超时。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -155,15 +160,42 @@ struct Cli {
     /// 行数据的 RLE 编码方案；默认不压缩
     #[arg(long, value_enum, default_value = "off")]
     rle: RleArg,
+
+    /// 等打印结束的总超时，单位秒
+    #[arg(long, value_name = "SECS", default_value_t = 600)]
+    print_timeout: u64,
+
+    /// 单条响应的等待超时，单位秒
+    ///
+    /// 固件卡住时 `0x70` 不会回包，这个值决定每次状态查询等多久；
+    /// 连续 5 次没有任何回应就会判定打印机失联并报错退出。
+    #[arg(long, value_name = "SECS", default_value_t = 3)]
+    recv_timeout: u64,
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
+    // 默认 INFO；排查时可以用 `RUST_LOG=debug` / `RUST_LOG=dz_print=trace` 打开细节。
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .with_target(false)
         .init();
 
+    // 错误要进日志，不只是打到 stdout 的 `Error: ...`；
+    // 打印中途开盖、缺纸这类设备错误也要带上原因。
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            error!("{err:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let selector = match cli.device.as_deref() {
         Some(name) => {
@@ -180,6 +212,8 @@ async fn main() -> anyhow::Result<()> {
         &tm,
         DeviceConfig {
             selector,
+            recv_timeout: Duration::from_secs(cli.recv_timeout.max(1)),
+            print_done_timeout: Duration::from_secs(cli.print_timeout.max(1)),
             ..Default::default()
         },
     );

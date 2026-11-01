@@ -53,11 +53,11 @@ use crate::{
     },
     planner::{
         flow::{ChunkDecision, FlowPlanner, FlowReport},
-        print::{MAX_LINES_PER_PAGE, RleMode, into_reqs, print_bitmap_page},
+        print::{MAX_LINES_PER_PAGE, PrintError, RleMode, into_reqs, print_bitmap_page},
     },
 };
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::{Device, FrontendError, RecvError};
 
@@ -126,6 +126,7 @@ impl Device {
         let mut page_no = 0usize;
         while start < bm.height() {
             // 逐页生成命令，避免长图把所有页的命令同时留在内存里。
+            let page_start = start;
             let page = print_bitmap_page(bm, start, rle, MAX_LINES_PER_PAGE)?;
             start += page.lines;
             page_no += 1;
@@ -228,6 +229,11 @@ impl Device {
                         if let Some(status) = status
                             && status.status.is_error()
                         {
+                            error!(
+                                status = ?status.status,
+                                reason = %status.status,
+                                "printer reported an error during the print job"
+                            );
                             return Err(FrontendError::PrinterStatus {
                                 status: status.status,
                             });
@@ -240,8 +246,19 @@ impl Device {
                 }
             }
 
-            self.try_send_batch(&[&req::end_page::EndPage {}]).await?;
+            // 厂商 SDK 在每个 band 的行命令发完、结束页之前发一次加热统计（`0x25`），
+            // 让固件知道这批行有多黑。DP27P 上没观察到行为变化（加不加都一样快、
+            // RLE 的空白也没消失），这里按厂商流程保留。
+            let heat = page_heat_stats(bm, page_start, page.lines)?;
+            debug!(
+                max_dots = heat.max_dots,
+                avg_dots = heat.avg_dots,
+                page = page_no,
+                "heat control"
+            );
+            self.try_send_batch(&[&heat]).await?;
 
+            self.try_send_batch(&[&req::end_page::EndPage {}]).await?;
             // `EndPage` 只是把数据交给固件；最后一页要等打印头真正走完，
             // 否则前台一退出，USB 句柄被释放，纸可能只走了一半。
             if start >= bm.height() {
@@ -271,4 +288,24 @@ impl Device {
         }
         Ok(total)
     }
+}
+
+/// 一页的加热统计：单行最大黑点数与平均黑点数。
+///
+/// 厂商 SDK 用这两个值（`0x25` 的 `MaxSfDots` / `MaxLEDots`）告诉固件这一批行
+/// 有多黑，固件据此决定加热脉冲。DP27P 上没观察到它改变打印行为。
+fn page_heat_stats(
+    bm: &Bitmap,
+    start: usize,
+    lines: usize,
+) -> Result<req::heat_control::HeatControl, PrintError> {
+    let mut max_dots = 0u16;
+    let mut sum = 0usize;
+    for y in start..start + lines {
+        let ones = bm.line(y)?.bits().count_ones();
+        max_dots = max_dots.max(u16::try_from(ones).unwrap_or(u16::MAX));
+        sum += ones;
+    }
+    let avg_dots = (sum / lines.max(1)) as u16;
+    Ok(req::heat_control::HeatControl { max_dots, avg_dots })
 }
