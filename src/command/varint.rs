@@ -21,6 +21,24 @@
 //! - 0xC0 标志 + 2 字节大端：`0xC0 高位 低位`（0xC0 是独立标志字节），0x26 命令 + `v1` 机型专用，上限 `65535`
 //!
 //! `0xC0|xxx` 指的是两个字节取或。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::varint::{VarAuto, VarintMode};
+//!
+//! // 直接编码 / 解码
+//! assert_eq!(VarintMode::Auto.encode(191), vec![0xBF]);
+//! assert_eq!(VarintMode::Auto.encode(192), vec![0xC0, 0xC0]);
+//! assert_eq!(VarintMode::Auto.decode(&[0xC0, 0xC0]), Some((192, 2)));
+//!
+//! // 越界时 encode 会 panic，先检查时可以走 encode_safe
+//! assert_eq!(VarintMode::Fixed2.encode_safe(16_384), None);
+//!
+//! // deku 模板里的字段用 VarAuto / VarFixed2 / VarFixed3 / VarC0Be16
+//! let field = VarAuto::new(300);
+//! assert_eq!(field.get(), 300);
+//! ```
 
 use deku::{DekuError, DekuReader, DekuWriter, ctx::Order, no_std_io, reader::Reader};
 use pretty_hex::simple_hex;

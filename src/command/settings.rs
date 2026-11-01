@@ -1,3 +1,36 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+//! 打印设置值：速度、浓度、纸张间隔类型。
+//!
+//! 三种值要区分：
+//!
+//! - **用户面值**：`1..=5`（速度）/ `1..=15`（浓度），界面和命令行用；
+//! - **线上值**：写进命令的字节，`v0` 比 `v2`/`v1` 大 1；
+//! - **枚举**：Rust 里的类型，`as u8` 是 `v2`/`v1` 的线上值。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::{ModelVersion, settings::SpeedSetting};
+//!
+//! // 界面上选“正常”（用户面值 3）
+//! let speed = SpeedSetting::from_user(3)?;
+//! assert_eq!(speed, SpeedSetting::Normal);
+//!
+//! // 写入 v2 设备：线上值 2；v0 设备：线上值 3
+//! assert_eq!(speed.to_wire(ModelVersion::V2), 2);
+//! assert_eq!(speed.to_wire(ModelVersion::V0), 3);
+//!
+//! // 把设备回的线上值转回来
+//! assert_eq!(SpeedSetting::from_wire(2, ModelVersion::V2)?, SpeedSetting::Normal);
+//! assert_eq!(speed.user_value(), 3);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! [`GapTypeSetting`] 全机型线上值一致，只有 `to_wire` / `from_wire`。
+
 use crate::command::ModelVersion;
 use std::str::FromStr;
 

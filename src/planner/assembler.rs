@@ -8,6 +8,31 @@
 //!
 //! - 编码：[`Assembler::encode`] 调用 [`ReqTrait::pack`]，再按 [`EnvelopeKind`] 补长度字段和校验和。
 //! - 解码：[`Assembler::decode_one`] 每次解出缓冲区头部的一条响应，返回响应和已消费字节数。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::{ModelVersion, req, resp, status::PrinterStatus};
+//! use dz_print::planner::Assembler;
+//!
+//! let assembler = Assembler::new(ModelVersion::V2);
+//!
+//! // 请求 → 命令区
+//! let command_area = assembler.encode(&[&req::status::Status {}])?;
+//! assert_eq!(command_area, vec![0x1f, 0x70, 0x00, 0x8f]);
+//!
+//! // 响应帧 → 解析结果 + 已消费字节数
+//! let frame = [0x1f, 0x70, 0x08, 0x00, 0x01, 0x01, 0x00, 0x00, 0x35, 0x05, 0x10, 0x3b];
+//! let (status, used) = assembler
+//!     .decode_one::<resp::status::Status>(&frame)?
+//!     .expect("complete frame");
+//! assert_eq!(status.status, PrinterStatus::Printable);
+//! assert_eq!(used, frame.len());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! `decode_one` 在数据不完整时返回 `Ok(None)`，不会消费缓冲区；需要原始
+//! payload（先按命令字节分发再解析）时用 [`Assembler::decode_frame`]。
 
 use pretty_hex::simple_hex;
 use snafu::{ResultExt, Snafu};

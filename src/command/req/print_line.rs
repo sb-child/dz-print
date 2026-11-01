@@ -2,6 +2,32 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//! 打印一行（普通位图数据，`1f 21` / `1f 2a` / `1f 2b` / `1d 76`）。
+//!
+//! 数据是 MSB first 的位图字节，`skips` 是左侧整字节空白。
+//! `repeats` 表示这一行重复打印几次，超过机型上限时自动展开成 `1f 2e`。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::{ModelVersion, req::{self, ReqTrait}};
+//!
+//! // 左侧空 1 字节，然后打印 0x80（一个黑点），不重复
+//! let line = req::print_line::PrintLine {
+//!     repeats: 0,
+//!     skips: 1,
+//!     data: vec![0x80],
+//! };
+//!
+//! let envelopes = line.pack(ModelVersion::V2)?;
+//! assert_eq!(envelopes.len(), 1);
+//! assert_eq!(envelopes[0].payload(), &[0x1f, 0x21, 0x00, 0x01, 0x80]);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 从整张位图生成行命令时不要手动拼，用
+//! [`crate::planner::print::print_bitmap`]。
+
 use crate::command::{
     ModelVersion,
     envelope::{Envelope, EnvelopeKind},

@@ -7,6 +7,34 @@
 //! 选设备 → 找同一接口上的 IN/OUT 中断端点对 → 声明接口。写入时用
 //! [`crate::planner::usb::encode_reports`] 按 64 字节报告切片，读取时用
 //! [`crate::planner::usb::decode_report`] 去掉 `1e <长度>` 包头和补零。
+//!
+//! # 用法
+//!
+//! ```no_run
+//! use dz_print::backend::{ReadStatus, Transport, usb::{UsbSelector, UsbTransport}};
+//!
+//! # fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! // 按设备名（型号-序列号）选，或 UsbSelector::Auto / VidPid(0x3533, 0x5c15)
+//! let mut transport = UsbTransport::open(&UsbSelector::DeviceName("DP27P-Y4094C023".into()))?;
+//!
+//! // 命令区已经由 Assembler 编好，这里只管发字节
+//! transport.write(&[0x1f, 0x70, 0x00, 0x8f])?;
+//!
+//! let mut received = Vec::new();
+//! if let ReadStatus::Data = transport.read_chunk(&mut received)? {
+//!     println!("response: {}", pretty_hex::simple_hex(&received));
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! 直接调用 [`Transport::write`] 时传入的是**命令区**（`Assembler::encode` 的输出），
+//! 不含 USB 的 `1e <长度>` 外层；`UsbTransport` 会自己切报告。
+//! 大多数场景用 [`crate::frontend::Device`] 即可，它会把 `UsbTransport` 放进
+//! worker 线程并处理收发队列。
+//!
+//! 退出时 `Drop` 会释放接口并把手动 detach 过的内核驱动接回去；
+//! [`Transport::reset`] 之后会重新 claim 一次。
 
 use std::time::Duration;
 

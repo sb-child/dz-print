@@ -7,6 +7,22 @@
 //! 值 = 线上字节。来源：
 //! - <https://github.com/wx-dev/DzPrinterCsharpSDK/blob/master/DzPrinter.Printer/PrinterCommand.cs#L84>
 //! - <https://github.com/Brick-web/SMKT/blob/main/Print%20SDK/lib/LPAUtils.d.ts#L327>
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::status::PrinterStatus;
+//!
+//! let status = PrinterStatus::from_wire(0x23);
+//! assert_eq!(status, PrinterStatus::NoPaper);
+//! assert!(status.is_error());
+//! assert_eq!(status.to_wire(), 0x23);
+//!
+//! // 未定义的值保留下来；0x0c 及以上仍然按错误处理
+//! let unknown = PrinterStatus::from_wire(0x09);
+//! assert_eq!(unknown, PrinterStatus::Unknown(0x09));
+//! assert!(!unknown.is_error());
+//! ```
 
 /// 打印机状态码。
 ///

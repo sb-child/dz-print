@@ -2,6 +2,27 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+//! 主机 → 设备的请求命令。
+//!
+//! 每条命令实现 [`ReqTrait`]：`pack(mv)` 按机型选字段，返回一到多条
+//! [`Envelope`]（重复行、RLE 这类命令可能展开成多条）。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::{ModelVersion, req::{self, ReqTrait}};
+//!
+//! // 走纸 3 行
+//! let envelopes = req::feed_line::FeedLine { lines: 3 }.pack(ModelVersion::V2)?;
+//! assert_eq!(envelopes.len(), 1);
+//! assert_eq!(envelopes[0].payload(), &[0x1f, 0x22, 0x02]);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 要发出去时把 `ReqTrait` 对象的切片交给
+//! [`crate::planner::Assembler::encode`]；实现新命令时参考同目录下的
+//! `req_template` 模板和现有命令的 `pack`。
+
 pub mod bluetooth_mac;
 pub mod buffer_size;
 pub mod darkness;

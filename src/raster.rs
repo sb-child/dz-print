@@ -8,6 +8,34 @@
 //!
 //! [`from_gray_image`] / [`from_pixmap`] → [`Bitmap`] →
 //! [`crate::planner::print::print_bitmap`] → 命令层。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::raster::{DitherMode, from_gray_image, from_pixmap};
+//! use image::GrayImage;
+//!
+//! // 8x8 灰度图：左上角 4x4 全黑，其余全白
+//! let mut gray = GrayImage::from_pixel(8, 8, image::Luma([255]));
+//! for y in 0..4 {
+//!     for x in 0..4 {
+//!         gray.put_pixel(x, y, image::Luma([0]));
+//!     }
+//! }
+//! let bitmap = from_gray_image(&gray, DitherMode::Threshold)?;
+//! assert_eq!((bitmap.width(), bitmap.height()), (8, 8));
+//! assert!(bitmap.line(0)?.get(0).unwrap());
+//! assert!(!bitmap.line(0)?.get(7).unwrap());
+//!
+//! // 也可以直接从 tiny-skia 画布转
+//! let pixmap = tiny_skia::Pixmap::new(8, 8).unwrap();
+//! let bitmap = from_pixmap(&pixmap, DitherMode::FloydSteinberg)?;
+//! assert_eq!(bitmap.width(), 8);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 输出位图的行宽就是图像宽度。打印机一行最多
+//! [`crate::planner::print::MAX_DOTS_PER_LINE`] 个点，超宽要在调用前缩放。
 
 use crate::bitmap::{Bitmap, BitmapError};
 use deku::bitvec::{BitVec, Msb0};

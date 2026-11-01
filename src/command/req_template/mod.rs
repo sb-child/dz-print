@@ -3,6 +3,26 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //! 请求命令模板
+//!
+//! 这些结构体只描述**线上字节**（deku magic + 字段），不处理机型差异；
+//! 机型归一化在 [`crate::command::req`]。
+//!
+//! # 用法
+//!
+//! ```
+//! use deku::DekuContainerWrite;
+//! use dz_print::command::req_template::feed_line::FeedLineV2Tl;
+//! use dz_print::command::varint::VarAuto;
+//!
+//! let cmd = FeedLineV2Tl {
+//!     lines: VarAuto::new(2), // 线上存的是“行数 - 1”
+//!     ..Default::default()
+//! };
+//! assert_eq!(cmd.to_bytes()?, vec![0x1f, 0x22, 0x02]);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 业务代码请用 [`crate::command::req`] 里的同名命令，不要直接拼模板。
 
 pub use crate::command::varint;
 pub use derive_aliases::derive as der;

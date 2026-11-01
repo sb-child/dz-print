@@ -18,6 +18,46 @@
 //! 两边的通道都由 [`crossfire`] 提供，选型见 `worker` 模块文档。
 //!
 //! 打印任务的流控和分页见 `print` 模块（[`Device::print_bitmap_job`]）。
+//!
+//! # 用法
+//!
+//! ```no_run
+//! use std::time::Duration;
+//!
+//! use dz_print::{
+//!     backend::usb::UsbSelector,
+//!     frontend::{Device, DeviceConfig},
+//! };
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let tm = mytm::TaskManager::new();
+//! let device = Device::new(
+//!     &tm,
+//!     DeviceConfig {
+//!         selector: UsbSelector::DeviceName("DP27P-Y4094C023".into()),
+//!         ..Default::default()
+//!     },
+//! );
+//! device.ready().await?;
+//!
+//! // 低层：批量发命令 + 按类型收响应
+//! device
+//!     .try_send_batch(&[&dz_print::command::req::status::Status {}])
+//!     .await?;
+//! let status = device
+//!     .try_recv_one::<dz_print::command::resp::status::Status>()
+//!     .await?;
+//! println!("{:?}", status.status);
+//!
+//! device.shutdown(Duration::from_secs(3)).await?; // 等 worker 退出
+//! tm.close();
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! - `DeviceConfig::default()` 用 `UsbSelector::Auto` 选第一台德佟设备
+//! - 打印整张位图用 [`Device::print_bitmap_job`]，见 `print` 模块
+//! - `shutdown` 之后 USB 句柄才释放；只 drop `Device` 不会等线程退出
 
 use std::{collections::VecDeque, time::Duration};
 

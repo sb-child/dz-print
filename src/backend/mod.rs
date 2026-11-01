@@ -7,6 +7,34 @@
 //! [`Transport`] 是设备 worker 唯一的 IO 接口。命令编码在
 //! [`crate::planner::Assembler`]，发送节奏在 [`crate::planner::flow`]，
 //! 这里只负责把一段命令区按链路要求发出去，再把收到的字节交回 worker。
+//!
+//! # 用法
+//!
+//! 正常业务用 [`frontend::Device`](crate::frontend::Device) 就够了；只有接新链路
+//! （BLE、串口、测试替身）时才需要自己实现 [`Transport`]：
+//!
+//! ```
+//! use dz_print::backend::{ReadStatus, Transport, TransportError, WriteOutcome};
+//!
+//! /// 只回超时的空实现。
+//! struct NullTransport;
+//!
+//! impl Transport for NullTransport {
+//!     fn write(&mut self, _cmd_area: &[u8]) -> Result<WriteOutcome, TransportError> {
+//!         Ok(WriteOutcome::Written)
+//!     }
+//!
+//!     fn read_chunk(&mut self, _out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
+//!         Ok(ReadStatus::Timeout)
+//!     }
+//!
+//!     fn reset(&mut self) -> Result<(), TransportError> {
+//!         Ok(())
+//!     }
+//! }
+//! ```
+//!
+//! 真机 USB 用 [`usb::UsbTransport`]，见该模块文档。
 
 pub mod usb;
 

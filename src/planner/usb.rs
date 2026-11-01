@@ -17,6 +17,27 @@
 //!
 //! 命令区本身的格式见 [`Assembler`](super::Assembler)。BLE 是串口透传，没有这层
 //! USB 包头，本模块只用于 USB。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::planner::usb::{self, REPORT_SIZE};
+//!
+//! // 命令区（Assembler::encode 的输出）
+//! let command_area = vec![0x1f, 0x70, 0x00, 0x8f];
+//!
+//! // 发：一刀切成 64 字节报告
+//! let reports: Vec<[u8; REPORT_SIZE]> = usb::encode_reports(&command_area)?;
+//! assert_eq!(reports.len(), 1);
+//!
+//! // 收：去掉 `1e <长度>` 和尾部补零
+//! let payload = usb::decode_report(&reports[0])?;
+//! assert_eq!(payload, command_area.as_slice());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 需要把多个数据包拼在一条流里（非 HID 链路）时用
+//! [`encode_packet`] / [`decode_packet`]。
 
 use crate::command::varint::VarintMode;
 use pretty_hex::simple_hex;

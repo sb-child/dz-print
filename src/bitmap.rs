@@ -8,6 +8,33 @@
 //! [`BitmapLineMut`] 借用访问，不复制数据。
 //!
 //! 位序是 MSB first：一行最左边的点是第一个字节的最高位。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::bitmap::Bitmap;
+//!
+//! let mut bitmap = Bitmap::new(16, 2)?;       // 16 x 2，全白
+//! assert_eq!((bitmap.width(), bitmap.height()), (16, 2));
+//!
+//! // 写第 0 行：最左边的点
+//! bitmap.line_mut(0)?.set(0, true);
+//! // 整行涂黑
+//! bitmap.line_mut(1)?.fill(true);
+//!
+//! // 读一行：first_one / last_one / to_bytes 都不复制
+//! let line = bitmap.line(1)?;
+//! assert_eq!(line.first_one(), Some(0));
+//! assert_eq!(line.last_one(), Some(15));
+//! assert_eq!(line.to_bytes(), vec![0xFF, 0xFF]);
+//!
+//! // 按行遍历
+//! assert_eq!(bitmap.lines().count(), 2);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 整块位缓冲可以用 [`Bitmap::bits`] 借用，或用 [`Bitmap::from_bits`] /
+//! [`Bitmap::into_bits`] 和 `deku::bitvec::BitVec<u8, Msb0>` 互相转换。
 
 use std::ops::Range;
 

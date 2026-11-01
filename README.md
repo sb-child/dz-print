@@ -33,6 +33,9 @@ Motherboard produced by DothanTech(dothantech.com)
 
 - 依赖 `dbus-devel`，记得安装
 - 记得设置并重载 udev 规则，类似 `SUBSYSTEM=="usb", ATTRS{idVendor}=="3533", ATTRS{idProduct}=="5c15", MODE="0666"`
+- 公开模块的 `//!` 文档都带 `# 用法` 示例（`bitmap` / `rle` / `raster` / `backend` /
+  `planner` / `frontend` / `command` 等），可以 `cargo doc --no-deps --open` 直接看，
+  用 `cargo test --doc` 跑其中的示例
 - 源代码里有很多未使用的垃圾，是逆向初期的残留，哪些是新的、哪些是旧的见下面的代码结构
 
 ```bash

@@ -5,6 +5,20 @@
 //! 响应里的字符串解码。
 //!
 //! 设备返回的字符串可能是 GBK/GB2312，并且带 `0x00` 结尾。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::resp::string::decode_gbk_nul;
+//!
+//! // GBK: "你好" + NUL
+//! let text = decode_gbk_nul(&[0xC4, 0xE3, 0xBA, 0xC3, 0x00])?;
+//! assert_eq!(&*text, "你好");
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! [`crate::command::resp::manufacturer`] 等字符串响应内部已经用了它，正常不需要
+//! 直接调用。
 
 use encoding_rs::GBK;
 

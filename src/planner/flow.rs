@@ -14,6 +14,39 @@
 //! - 预算不足 `max_chunk` 时块间等 `chunk_gap`；
 //! - `0x77` 超时按 `fallback_budget` 保守推进；
 //! - 整任务超过 `job_timeout` 报 [`FlowError::Timeout`]。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::resp::buffer_size::BufferSize;
+//! use dz_print::planner::flow::{ChunkDecision, FlowPlanner};
+//!
+//! let mut flow = FlowPlanner::default();
+//! flow.push(vec![0x1f, 0x70, 0x00, 0x8f]);
+//!
+//! // 还没有预算：先查 0x70 + 0x77
+//! assert!(matches!(flow.step(), ChunkDecision::QueryBudget));
+//!
+//! // 把 0x77 的响应交给它（size=50 → 25000 字节）
+//! flow.on_buffer_size(&BufferSize {
+//!     size: 50,
+//!     status: 0,
+//!     sync_token: 0,
+//!     tail: Vec::new(),
+//! })?;
+//!
+//! // 然后按 ChunkDecision::Send 写出，直到 Done
+//! match flow.step() {
+//!     ChunkDecision::Send(chunk) => assert_eq!(chunk.len(), 4),
+//!     other => panic!("unexpected: {other:?}"),
+//! }
+//! assert!(matches!(flow.step(), ChunkDecision::Done));
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! `FlowPlanner` 不做 IO：调用方负责 `transport.write(chunk)`、在
+//! [`FlowPlanner::needs_gap`] 为真时等待，并把 `0x77` 的响应交回来。
+//! [`crate::frontend::Device::print_bitmap_job`] 是完整的参考实现。
 
 use std::{
     collections::VecDeque,

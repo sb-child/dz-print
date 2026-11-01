@@ -3,6 +3,25 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //! 响应命令模板
+//!
+//! 这些结构体只描述**线上字节**，`_tail` 之类的字段会接收固件差异；
+//! 机型归一化在 [`crate::command::resp`]。
+//!
+//! # 用法
+//!
+//! ```
+//! use deku::DekuContainerRead;
+//! use dz_print::command::resp_template::status::StatusV2V1V0Tl;
+//!
+//! let payload = vec![0x1f, 0x70, 0x00, 0x01, 0x01, 0x00];
+//! let ((rest, _), status) = StatusV2V1V0Tl::from_bytes((payload.as_slice(), 0))?;
+//! assert!(rest.is_empty());
+//! assert_eq!(status.status, 0x00);
+//! assert_eq!(status.page_key, 0x0101);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 业务代码请用 [`crate::command::resp`] 里的同名类型。
 
 pub use derive_aliases::derive as der;
 pub mod bluetooth_mac;

@@ -8,6 +8,31 @@
 //!   `repeats` 用 `1f 2e` 展开（模板本身没有重复字段）。
 //! - `v1` / `v0` 机型：没有 RLE 命令，返回 [`PackReqError::UnsupportedUsage`]，
 //!   调用方应改用 [`PrintLine`](super::print_line::PrintLine)。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::{
+//!     ModelVersion,
+//!     req::{self, ReqTrait, print_line_rle::RleKind},
+//! };
+//!
+//! let cmd = req::print_line_rle::PrintLineRle {
+//!     repeats: 0,
+//!     kind: RleKind::Bits5x,
+//!     count: 2,                    // 符号数
+//!     data: vec![0x1F, 0xC0],      // MSB-first 位流
+//! };
+//! let envelopes = cmd.pack(ModelVersion::V2)?;
+//! assert_eq!(envelopes.len(), 1);
+//!
+//! // v1 / v0 没有 RLE 命令
+//! assert!(cmd.pack(ModelVersion::V1).is_err());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 位流由 [`crate::rle`] 生成，选择用哪一族由
+//! [`crate::planner::print`] 负责。
 
 use crate::command::{
     ModelVersion, calculate_checksum,

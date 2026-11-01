@@ -465,7 +465,16 @@ transport（USB HID / BLE 串口透传）
   `src/rle.rs` 改为迭代器求游程边界，不再依赖 nightly feature
 - [ ] 删除或使用 `Bitmap::bits_mut`（`src/bitmap.rs:96`）和
   `VarintMode::encode_into_safe`（`src/command/varint.rs:207`）
-- [ ] 补模块级文档：`rle.rs`、`settings.rs`、`command/mod.rs`、`command/envelope.rs`
+- [x] 补模块级文档和 `# 用法` 示例
+  - crate 入口：分层说明 + 打印整张位图 / 只生成字节两个例子
+  - `bitmap` / `rle` / `raster`：构造、行视图、RLE 编码、灰度图抖动
+  - `backend` / `backend::usb`：自定义 `Transport`、按名字打开 USB
+  - `planner` / `assembler` / `flow` / `print` / `usb`：编码、切帧、
+    `FlowPlanner` 状态机、位图 → 命令、HID 报告
+  - `frontend` / `frontend::print`：`Device` 生命周期、批量收发、打印任务
+  - `command` / `envelope` / `varint` / `settings` / `status` / `req` / `resp` /
+    `req_template` / `resp_template`：payload 打包解析、变长整数、设置值
+  - 27 个 doctest（`cargo test --doc`），需要硬件的例子标 `no_run`
 - [x] 修 `src/planner/mod.rs` 的 `[print]` 文档链接（模块/宏重名）
 - [ ] `TODO.md` 的「进行中」改成「已完成记录」，另开「下一步」
 - [ ] `README.md` 的 `bitmap.rs` 描述改成同时包含 `Bitmap` 和 `BitmapLine`

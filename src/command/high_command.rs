@@ -5,6 +5,32 @@
 //! `0x80` 激活命令的参数。
 //!
 //! 发送 `> 0x80` 的命令前要先发 `1f 80 <mode>` 激活，结束后可发 `1f 80 00`。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::{
+//!     ModelVersion,
+//!     high_command::HighCommandMode,
+//!     req::{self, ReqTrait},
+//! };
+//!
+//! // 激活：1f 80 7f
+//! let enable = req::high_command::HighCommand {
+//!     mode: HighCommandMode::Enable,
+//! };
+//! assert_eq!(enable.pack(ModelVersion::V2)?[0].payload(), &[0x1f, 0x80, 0x7f]);
+//!
+//! // 结束：1f 80 00
+//! let disable = req::high_command::HighCommand {
+//!     mode: HighCommandMode::Disable,
+//! };
+//! assert_eq!(disable.pack(ModelVersion::V2)?[0].payload(), &[0x1f, 0x80, 0x00]);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 固件 `>= 20230605` 也接受 [`HighCommandMode::EnableAlt`]（`0x49`）；
+//! 设备结束激活后回的 [`HighCommandMode::Disabled`]（`0x80`）主机不应主动发送。
 
 use thiserror::Error;
 

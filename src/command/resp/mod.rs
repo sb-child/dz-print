@@ -12,6 +12,22 @@
 //! 一条 `payload` = `命令组 + 命令类型 + 数据`，不含长度字段和校验和（与
 //! [`Envelope::payload`](crate::command::envelope::Envelope) 对称）。多条响应叠加时由帧层按长度字段
 //! 切分，模板只解析一条。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::command::{ModelVersion, resp::{self, RespTrait}, status::PrinterStatus};
+//!
+//! // payload 不含长度字段和校验和
+//! let status =
+//!     resp::status::Status::parse(&[0x1f, 0x70, 0x00, 0x01, 0x01], ModelVersion::V2)?;
+//! assert_eq!(status.status, PrinterStatus::Printable);
+//! assert_eq!(status.page_key, 0x0101);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 从设备原始字节开始解析时先过
+//! [`crate::planner::Assembler::decode_one`]，它负责长度字段、校验和和多帧切分。
 
 use crate::command::ModelVersion;
 use deku::{DekuContainerRead, DekuError};

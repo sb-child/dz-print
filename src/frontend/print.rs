@@ -3,6 +3,46 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //! 位图打印任务：分页、流控、等待打印完成。
+//!
+//! # 用法
+//!
+//! ```no_run
+//! use std::time::Duration;
+//!
+//! use dz_print::{
+//!     backend::usb::UsbSelector,
+//!     bitmap::Bitmap,
+//!     frontend::{Device, DeviceConfig},
+//!     planner::print::RleMode,
+//! };
+//!
+//! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! let tm = mytm::TaskManager::new();
+//! let device = Device::new(
+//!     &tm,
+//!     DeviceConfig {
+//!         selector: UsbSelector::DeviceName("DP27P-Y4094C023".into()),
+//!         ..Default::default()
+//!     },
+//! );
+//! device.ready().await?;
+//!
+//! // 高位图会自动按 16383 行拆页
+//! let mut bitmap = Bitmap::new(384, 2000)?;
+//! bitmap.line_mut(0)?.fill(true);
+//!
+//! let report = device.print_bitmap_job(&bitmap, RleMode::Bits5XOnly).await?;
+//! println!("{} chunks, {} bytes", report.chunks, report.bytes);
+//!
+//! device.shutdown(Duration::from_secs(3)).await?;
+//! tm.close();
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! `print_bitmap_job` 在最后一个 `EndPage` 之后轮询 `0x70`，等打印头真正走完
+//! 才返回；中途出错会带着 [`FrontendError`](super::FrontendError) 返回。
+//! 如果只想要命令、不碰设备，用 [`crate::planner::print`]。
 
 use std::time::Duration;
 

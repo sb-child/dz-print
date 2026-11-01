@@ -21,6 +21,35 @@
 //! DP27P 实测 X / D 不能混用：X 行之后的第一条 D 会基于错误的上一行。因此
 //! [`RleMode::Bits4`] / `Bits5` / `Bits6`（自动 X/D）不要用于该机型，
 //! 真机请用 [`RleMode::Bits4XOnly`] / `Bits5XOnly` / `Bits6XOnly`。
+//!
+//! # 用法
+//!
+//! ```
+//! use dz_print::bitmap::Bitmap;
+//! use dz_print::command::{ModelVersion, req::ReqTrait};
+//! use dz_print::planner::{
+//!     Assembler,
+//!     print::{MAX_LINES_PER_PAGE, RleMode, into_reqs, print_bitmap_page},
+//! };
+//!
+//! // 384 x 20：第 0 行整行黑，其余留白
+//! let mut bitmap = Bitmap::new(384, 20)?;
+//! bitmap.line_mut(0)?.fill(true);
+//!
+//! // 一页的计划；高位图用 print_bitmap_page 逐页生成
+//! let page = print_bitmap_page(&bitmap, 0, RleMode::Bits5XOnly, MAX_LINES_PER_PAGE)?;
+//! assert_eq!(page.lines, 20);
+//!
+//! // 命令参数 → 命令层请求 → 命令区
+//! let reqs = into_reqs(&page.commands);
+//! let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|req| req.as_ref()).collect();
+//! let command_area = Assembler::new(ModelVersion::V2).encode(&refs)?;
+//! assert!(!command_area.is_empty());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! 页面边界的 `StartPage` / `TotalLines` / `EndPage` 不在这里生成；
+//! 完整打印流程见 [`crate::frontend::Device::print_bitmap_job`]。
 
 use crate::bitmap::{Bitmap, BitmapError, BitmapLine};
 use crate::command::req::{self, ReqTrait};
