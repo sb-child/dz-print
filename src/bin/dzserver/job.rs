@@ -4,13 +4,12 @@
 
 //! 任务表：对外暴露的 status / cancel，内部保存终态和取消 token。
 
+use dz_print::command::status::PrinterStatus;
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
     time::{Duration, Instant},
 };
-
-use dz_print::command::status::PrinterStatus;
 use tokio_util::sync::CancellationToken;
 
 pub type JobId = [u8; 16];

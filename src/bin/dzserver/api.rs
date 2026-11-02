@@ -4,23 +4,6 @@
 
 //! gRPC 接口：只做校验、落临时文件、写任务表、入队。
 
-use std::{
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
-
-use mytm::TaskManager;
-use tempfile::TempDir;
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-use tonic::{Request, Response, Status};
-use uuid::Uuid;
-
-use dz_print::command::status::PrinterStatus as LibPrinterStatus;
-
 use crate::{
     dzsrv::{
         JobCancel, JobHandle, JobStatus, PrintImageReq, PrintTypstReq, PrinterStatus,
@@ -30,6 +13,20 @@ use crate::{
     render::JobSpec,
     render::run_blocking,
 };
+use dz_print::command::status::PrinterStatus as LibPrinterStatus;
+use mytm::TaskManager;
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use tempfile::TempDir;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tonic::{Request, Response, Status};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub(crate) struct ApiState {

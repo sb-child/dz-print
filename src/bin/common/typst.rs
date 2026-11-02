@@ -13,23 +13,34 @@
 // `dzprint_image` 也会编译 `common`，但只用到 image 部分。
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context as _, anyhow, bail, ensure};
 use chrono::{Datelike as _, Local};
-use dz_print::{bitmap::Bitmap, raster::DitherMode, raster::from_pixmap_over_white};
+use dz_print::{
+    bitmap::Bitmap,
+    command::settings::{DarknessSetting, GapTypeSetting, SpeedSetting},
+    planner::print::RleMode,
+    raster::{DitherMode, from_pixmap_over_white},
+};
 use tiny_skia::Pixmap;
 use tracing::{info, warn};
 use typst::{
     Library, LibraryExt as _, World,
     diag::{FileError, FileResult},
-    foundations::{Bytes, Datetime},
+    foundations::{Bytes, Datetime, Dict, Label, Selector, Value},
+    introspection::Introspector as _,
     syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot, package::PackageSpec},
     text::{Font, FontBook},
-    utils::LazyHash,
+    utils::{LazyHash, PicoStr},
 };
 use typst_layout::PagedDocument;
 use typst_render::RenderOptions;
+
+use super::{PrintArgs, parse_darkness, parse_gap_length, parse_gap_type, parse_speed};
 
 /// Typst 包缓存和单 job 解包共用的解包上限。
 pub const MAX_EXTRACT_BYTES: u64 = 64 * 1024 * 1024;
@@ -365,6 +376,201 @@ pub fn extract_archive<R: std::io::Read>(
     }
 
     Ok(())
+}
+
+pub const SETTINGS_LABEL: &str = "print-settings";
+
+/// 一页的 `<print-settings>` 覆盖项。覆盖是粘性的，调用方按页顺序 `apply_to`。
+#[derive(Debug, Clone, Default)]
+pub struct PageSettings {
+    pub gap_type: Option<GapTypeSetting>,
+    pub gap_length: Option<u32>,
+    pub darkness: Option<DarknessSetting>,
+    pub speed: Option<SpeedSetting>,
+    pub raster: Option<DitherMode>,
+    pub rle: Option<RleMode>,
+}
+
+impl PageSettings {
+    pub fn apply_to(&self, args: &mut PrintArgs) {
+        if let Some(gap_type) = self.gap_type {
+            args.gap_type = Some(gap_type);
+        }
+        if let Some(gap_length) = self.gap_length {
+            args.gap_length = Some(gap_length);
+        }
+        if let Some(darkness) = self.darkness {
+            args.darkness = Some(darkness);
+        }
+        if let Some(speed) = self.speed {
+            args.speed = Some(speed);
+        }
+        if let Some(raster) = self.raster {
+            args.raster = raster.into();
+        }
+        if let Some(rle) = self.rle {
+            args.rle = rle.into();
+        }
+    }
+
+    pub(crate) fn apply_dict(&mut self, dict: &Dict, page: usize) -> anyhow::Result<()> {
+        for (key, value) in dict.iter() {
+            let name = key.as_str();
+            match name {
+                "paper" | "gap-type" => {
+                    self.gap_type = Some(parse_gap_type(&string(value, page, name)?).map_err(
+                        |error| anyhow!("第 {page} 页 <print-settings> 的 `{name}`: {error}"),
+                    )?);
+                }
+                "gap" | "gap-length" => {
+                    self.gap_length = Some(gap_length(value, page)?);
+                }
+                "darkness" => {
+                    self.darkness = Some(darkness(value, page)?);
+                }
+                "speed" => {
+                    self.speed = Some(speed(value, page)?);
+                }
+                "raster" => {
+                    let raw = string(value, page, name)?;
+                    self.raster = Some(parse_raster(&raw).ok_or_else(|| {
+                        anyhow!(
+                            "第 {page} 页 <print-settings> 的 `raster`: 未知取值 `{raw}`，\
+                             可选 floyd-steinberg / threshold"
+                        )
+                    })?);
+                }
+                "rle" => {
+                    let raw = string(value, page, name)?;
+                    self.rle = Some(parse_rle(&raw).ok_or_else(|| {
+                        anyhow!(
+                            "第 {page} 页 <print-settings> 的 `rle`: 未知取值 `{raw}`，\
+                             可选 off / byte / bits4 / bits5 / bits6 / bits4x / bits5x / bits6x"
+                        )
+                    })?);
+                }
+                other => bail!(
+                    "第 {page} 页 <print-settings> 有未知字段 `{other}`，\
+                     可用 gap-type / gap / darkness / speed / raster / rle"
+                ),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn string(value: &Value, page: usize, key: &str) -> anyhow::Result<String> {
+    match value {
+        Value::Str(raw) => Ok(raw.as_str().to_owned()),
+        other => bail!("第 {page} 页 <print-settings> 的 `{key}` 应该是字符串，实际是 {other:?}"),
+    }
+}
+
+/// `gap` 数值按 mm 解释；字符串走和命令行一样的解析。
+fn gap_length(value: &Value, page: usize) -> anyhow::Result<u32> {
+    let mm = match value {
+        Value::Int(mm) => *mm as f64,
+        Value::Float(mm) => *mm,
+        Value::Str(raw) => {
+            return parse_gap_length(raw.as_str())
+                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `gap`: {error}"));
+        }
+        other => bail!(
+            "第 {page} 页 <print-settings> 的 `gap` 应该是数值（mm）或字符串，实际是 {other:?}"
+        ),
+    };
+    parse_gap_length(&mm.to_string())
+        .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `gap`: {error}"))
+}
+
+fn darkness(value: &Value, page: usize) -> anyhow::Result<DarknessSetting> {
+    let raw = match value {
+        Value::Int(raw) => {
+            let raw = u8::try_from(*raw)
+                .map_err(|_| anyhow!("第 {page} 页 <print-settings> 的 `darkness` 超出 1..=15"))?;
+            DarknessSetting::from_user(raw)
+                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `darkness`: {error}"))?
+        }
+        Value::Str(raw) => parse_darkness(raw.as_str())
+            .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `darkness`: {error}"))?,
+        other => bail!(
+            "第 {page} 页 <print-settings> 的 `darkness` 应该是整数或字符串，实际是 {other:?}"
+        ),
+    };
+    Ok(raw)
+}
+
+fn speed(value: &Value, page: usize) -> anyhow::Result<SpeedSetting> {
+    let raw = match value {
+        Value::Int(raw) => {
+            let raw = u8::try_from(*raw)
+                .map_err(|_| anyhow!("第 {page} 页 <print-settings> 的 `speed` 超出 1..=5"))?;
+            SpeedSetting::from_user(raw)
+                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `speed`: {error}"))?
+        }
+        Value::Str(raw) => parse_speed(raw.as_str())
+            .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `speed`: {error}"))?,
+        other => {
+            bail!("第 {page} 页 <print-settings> 的 `speed` 应该是整数或字符串，实际是 {other:?}")
+        }
+    };
+    Ok(raw)
+}
+
+fn parse_raster(raw: &str) -> Option<DitherMode> {
+    match raw.to_ascii_lowercase().as_str() {
+        "floyd-steinberg" | "floyd" | "fs" => Some(DitherMode::FloydSteinberg),
+        "threshold" | "none" => Some(DitherMode::Threshold),
+        _ => None,
+    }
+}
+
+fn parse_rle(raw: &str) -> Option<RleMode> {
+    match raw.to_ascii_lowercase().as_str() {
+        "off" | "none" => Some(RleMode::Off),
+        "byte" => Some(RleMode::Byte),
+        "bits4" => Some(RleMode::Bits4),
+        "bits5" => Some(RleMode::Bits5),
+        "bits6" => Some(RleMode::Bits6),
+        "bits4x" => Some(RleMode::Bits4XOnly),
+        "bits5x" => Some(RleMode::Bits5XOnly),
+        "bits6x" => Some(RleMode::Bits6XOnly),
+        _ => None,
+    }
+}
+
+/// 从文档里收集每页的 `<print-settings>`。
+///
+/// 同一页出现多个 `metadata` 时按出现顺序合并，后者覆盖前者。
+pub fn page_settings(doc: &PagedDocument) -> anyhow::Result<HashMap<usize, PageSettings>> {
+    let Some(label) = Label::new(PicoStr::intern(SETTINGS_LABEL)) else {
+        return Ok(HashMap::new());
+    };
+    let selector = Selector::Label(label);
+    let introspector = doc.introspector();
+
+    let mut overrides: HashMap<usize, PageSettings> = HashMap::new();
+    for content in introspector.query(&selector) {
+        let Some(location) = content.location() else {
+            continue;
+        };
+        let Some(page) = introspector.page(location) else {
+            continue;
+        };
+        let page = page.get();
+
+        let value = content.get_by_name("value").map_err(|error| {
+            anyhow!("第 {page} 页 <{SETTINGS_LABEL}> 无法读取 value: {error:?}")
+        })?;
+        let Value::Dict(dict) = value else {
+            bail!(
+                "第 {page} 页 <{SETTINGS_LABEL}> 必须是字典，\
+                 例如 #metadata((gap: 2.5)) <{SETTINGS_LABEL}>"
+            );
+        };
+        overrides.entry(page).or_default().apply_dict(&dict, page)?;
+    }
+    Ok(overrides)
 }
 
 #[cfg(test)]

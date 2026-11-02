@@ -7,23 +7,21 @@
 //! 所有 CPU 和文件 IO 都在 `mytm::TaskManager::spawn_blocking_typed` 里做，
 //! 结果通过 oneshot 回给异步 worker，避免把大位图再复制一份。
 
+use crate::{
+    common::{PrintArgs, PrintSettings, typst},
+    job::JobId,
+    printer::PrinterProfile,
+};
+use anyhow::{Context as _, anyhow, ensure};
+use dz_print::{bitmap::Bitmap, frontend::PrintJobOptions, planner::print::RleMode};
+use mytm::{TaskHandle, TaskManager};
 use std::{
     fs::File,
     path::{Path, PathBuf},
 };
-
-use anyhow::{Context as _, anyhow, ensure};
-use dz_print::{bitmap::Bitmap, frontend::PrintJobOptions, planner::print::RleMode};
-use mytm::{TaskHandle, TaskManager};
 use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-
-use crate::{
-    common::{PrintArgs, typst},
-    job::JobId,
-    printer::PrinterProfile,
-};
 
 /// 一页已经渲染好的位图，以及这一页需要的打印参数。
 #[derive(Debug)]
@@ -31,6 +29,8 @@ pub struct RenderedPage {
     pub bitmap: Bitmap,
     pub rle: RleMode,
     pub options: PrintJobOptions,
+    /// 这一页生效的 gap / darkness / speed；和上一页不同时打印 worker 重发。
+    pub settings: PrintSettings,
 }
 
 #[derive(Debug)]
@@ -151,6 +151,7 @@ fn render_image(
         bitmap,
         rle: args.rle.into(),
         options: args.job_options(),
+        settings: PrintSettings::from(args),
     }])
 }
 
@@ -185,20 +186,30 @@ fn render_typst(
     let doc = typst::compile(&world)?;
     info!(pages = doc.pages().len(), "typst compiled");
 
+    let overrides = typst::page_settings(&doc)?;
+    let mut page_args = args.clone();
     let mut pages = Vec::with_capacity(doc.pages().len());
     for (index, page) in doc.pages().iter().enumerate() {
         ensure!(!cancel.is_cancelled(), "job cancelled");
-        let bitmap = typst::render_bitmap(page, head_dots, args.raster.into())?;
+        let page_no = index + 1;
+        // 覆盖是粘性的：一直沿用到下一处覆盖。
+        if let Some(settings) = overrides.get(&page_no) {
+            info!(page = page_no, ?settings, "apply <print-settings>");
+            settings.apply_to(&mut page_args);
+        }
+
+        let bitmap = typst::render_bitmap(page, head_dots, page_args.raster.into())?;
         info!(
-            page = index + 1,
+            page = page_no,
             width = bitmap.width(),
             height = bitmap.height(),
             "typst page rendered"
         );
         pages.push(RenderedPage {
             bitmap,
-            rle: args.rle.into(),
-            options: args.job_options(),
+            rle: page_args.rle.into(),
+            options: page_args.job_options(),
+            settings: PrintSettings::from(&page_args),
         });
     }
 
@@ -239,6 +250,8 @@ mod tests {
     use super::*;
     use crate::Cli;
     use clap::Parser;
+    use dz_print::command::settings::DarknessSetting;
+    use dz_print::planner::print::RleMode;
 
     fn print_args() -> PrintArgs {
         Cli::try_parse_from(["dzserver", "/tmp", "127.0.0.1:0"])
@@ -286,7 +299,7 @@ mod tests {
         let tar_path = temp.path().join("input.tar");
 
         let mut builder = tar::Builder::new(Vec::new());
-        let source = b"#set page(width: 20mm, height: 10mm)\nHello";
+        let source = b"#set page(width: 20mm, height: 50mm)\nPage one\n                       #pagebreak()\n                       #metadata((darkness: 12, rle: \"bits6x\")) <print-settings>\n                       Page two\n                       #pagebreak()\n                       Page three";
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Regular);
         header.set_size(source.len() as u64);
@@ -315,8 +328,21 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(rendered.pages.len(), 1);
+        assert_eq!(rendered.pages.len(), 3);
         assert!(rendered.pages[0].bitmap.width() <= 576);
         assert!(rendered.pages[0].bitmap.width() > 0);
+
+        // 第 2 页覆盖，第 3 页沿用第 2 页的设置。
+        assert_eq!(rendered.pages[0].settings.darkness, None);
+        assert_eq!(
+            rendered.pages[1].settings.darkness,
+            Some(DarknessSetting::Darkness11)
+        );
+        assert_eq!(rendered.pages[1].rle, RleMode::Bits6XOnly);
+        assert_eq!(
+            rendered.pages[2].settings.darkness,
+            Some(DarknessSetting::Darkness11)
+        );
+        assert_eq!(rendered.pages[2].rle, RleMode::Bits6XOnly);
     }
 }

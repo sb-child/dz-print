@@ -16,18 +16,16 @@ pub mod dzsrv {
     tonic::include_proto!("dzsrv");
 }
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
-
+use api::{MgmtEndpoint, PrintEndpoint};
 use clap::Parser;
+use common::PrintArgs;
 use dzsrv::{mgmt_server::MgmtServer, print_server::PrintServer};
 use pipeline::Pipeline;
 use std::net::SocketAddr;
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing::{info, warn};
-
-use api::{MgmtEndpoint, PrintEndpoint};
-use common::PrintArgs;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "打印服务器")]

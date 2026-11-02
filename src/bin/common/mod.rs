@@ -179,6 +179,53 @@ pub struct PrintArgs {
     pub recv_timeout: u64,
 }
 
+/// 真正需要发给打印机的设置；用来判断这一页要不要重发。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrintSettings {
+    pub gap_type: Option<GapTypeSetting>,
+    pub gap_length: Option<u32>,
+    pub darkness: Option<DarknessSetting>,
+    pub speed: Option<SpeedSetting>,
+}
+
+impl From<&PrintArgs> for PrintSettings {
+    fn from(args: &PrintArgs) -> Self {
+        Self {
+            gap_type: args.gap_type,
+            gap_length: args.gap_length,
+            darkness: args.darkness,
+            speed: args.speed,
+        }
+    }
+}
+
+impl PrintSettings {
+    /// 只发送设置过的字段，顺序固定为纸张类型 / 间隔 / 浓度 / 速度。
+    pub async fn send(&self, dev: &Device) -> anyhow::Result<()> {
+        let mut reqs: Vec<Box<dyn ReqTrait>> = Vec::new();
+        if let Some(gap_type) = self.gap_type {
+            reqs.push(Box::new(req::gap_type::GapType { gap_type }));
+        }
+        if let Some(gap) = self.gap_length {
+            reqs.push(Box::new(req::gap_length::GapLength { gap }));
+        }
+        if let Some(darkness) = self.darkness {
+            reqs.push(Box::new(req::darkness::Darkness { darkness }));
+        }
+        if let Some(speed) = self.speed {
+            reqs.push(Box::new(req::speed::Speed { speed }));
+        }
+        if reqs.is_empty() {
+            return Ok(());
+        }
+
+        info!(count = reqs.len(), "send print settings");
+        let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|req| req.as_ref()).collect();
+        dev.try_send_batch(&refs).await?;
+        Ok(())
+    }
+}
+
 impl PrintArgs {
     pub fn selector(&self) -> UsbSelector {
         match self.device.as_deref() {
@@ -202,27 +249,7 @@ impl PrintArgs {
     /// 只发送用户给出的设置，顺序固定为纸张类型 / 间隔 / 浓度 / 速度。
     #[allow(dead_code)]
     pub async fn send_settings(&self, dev: &Device) -> anyhow::Result<()> {
-        let mut reqs: Vec<Box<dyn ReqTrait>> = Vec::new();
-        if let Some(gap_type) = self.gap_type {
-            reqs.push(Box::new(req::gap_type::GapType { gap_type }));
-        }
-        if let Some(gap) = self.gap_length {
-            reqs.push(Box::new(req::gap_length::GapLength { gap }));
-        }
-        if let Some(darkness) = self.darkness {
-            reqs.push(Box::new(req::darkness::Darkness { darkness }));
-        }
-        if let Some(speed) = self.speed {
-            reqs.push(Box::new(req::speed::Speed { speed }));
-        }
-        if reqs.is_empty() {
-            return Ok(());
-        }
-
-        info!(count = reqs.len(), "send print settings");
-        let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|req| req.as_ref()).collect();
-        dev.try_send_batch(&refs).await?;
-        Ok(())
+        PrintSettings::from(self).send(dev).await
     }
 
     /// 把命令行里的纸张设置带进每页的 `StartPage`。

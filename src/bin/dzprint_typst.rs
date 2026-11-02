@@ -30,30 +30,16 @@
 
 mod common;
 
-use std::{collections::HashMap, path::PathBuf};
-
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::Context as _;
 use clap::Parser;
-use dz_print::{
-    command::settings::{DarknessSetting, GapTypeSetting, SpeedSetting},
-    frontend::Device,
-    planner::print::RleMode,
-    raster::DitherMode,
-};
-use tracing::info;
-use typst::{
-    foundations::{Dict, Label, Selector, Value},
-    introspection::Introspector as _,
-    utils::PicoStr,
-};
-use typst_layout::PagedDocument;
-
 use common::{
-    PrintArgs,
-    typst::{TypstWorld, compile, render_bitmap},
+    PrintArgs, PrintSettings,
+    typst::{self, PageSettings, TypstWorld, compile, render_bitmap},
 };
-
-const SETTINGS_LABEL: &str = "print-settings";
+use dz_print::frontend::Device;
+use std::{collections::HashMap, path::PathBuf};
+use tracing::info;
+use typst_layout::PagedDocument;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "打印一页或多页 Typst 文档")]
@@ -94,7 +80,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     )?;
     let doc = compile(&world)?;
 
-    let overrides = page_settings(&doc)?;
+    let overrides = typst::page_settings(&doc)?;
     if !overrides.is_empty() {
         info!(pages = overrides.len(), "found <print-settings> overrides");
     }
@@ -117,7 +103,7 @@ async fn print_document(
 
     let mut args = base.clone();
     // 上一次真正发给打印机的设置，用来避免每页都重复发一遍。
-    let mut sent: Option<SendableSettings> = None;
+    let mut sent: Option<PrintSettings> = None;
 
     for (index, page) in doc.pages().iter().enumerate() {
         let page_no = index + 1;
@@ -135,7 +121,7 @@ async fn print_document(
             "rendered page"
         );
 
-        let current = SendableSettings::from(&args);
+        let current = PrintSettings::from(&args);
         if sent.as_ref() != Some(&current) {
             args.send_settings(dev).await?;
             sent = Some(current);
@@ -151,223 +137,11 @@ async fn print_document(
     Ok(())
 }
 
-/// 真正需要发给打印机的设置；用来判断这一页要不要重发。
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SendableSettings {
-    gap_type: Option<GapTypeSetting>,
-    gap_length: Option<u32>,
-    darkness: Option<DarknessSetting>,
-    speed: Option<SpeedSetting>,
-}
-
-impl From<&PrintArgs> for SendableSettings {
-    fn from(args: &PrintArgs) -> Self {
-        Self {
-            gap_type: args.gap_type,
-            gap_length: args.gap_length,
-            darkness: args.darkness,
-            speed: args.speed,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct PageSettings {
-    gap_type: Option<GapTypeSetting>,
-    gap_length: Option<u32>,
-    darkness: Option<DarknessSetting>,
-    speed: Option<SpeedSetting>,
-    raster: Option<DitherMode>,
-    rle: Option<RleMode>,
-}
-
-impl PageSettings {
-    fn apply_to(&self, args: &mut PrintArgs) {
-        if let Some(gap_type) = self.gap_type {
-            args.gap_type = Some(gap_type);
-        }
-        if let Some(gap_length) = self.gap_length {
-            args.gap_length = Some(gap_length);
-        }
-        if let Some(darkness) = self.darkness {
-            args.darkness = Some(darkness);
-        }
-        if let Some(speed) = self.speed {
-            args.speed = Some(speed);
-        }
-        if let Some(raster) = self.raster {
-            args.raster = raster.into();
-        }
-        if let Some(rle) = self.rle {
-            args.rle = rle.into();
-        }
-    }
-
-    fn apply_dict(&mut self, dict: &Dict, page: usize) -> anyhow::Result<()> {
-        for (key, value) in dict.iter() {
-            let name = key.as_str();
-            match name {
-                "paper" | "gap-type" => {
-                    self.gap_type =
-                        Some(common::parse_gap_type(&string(value, page, name)?).map_err(
-                            |error| anyhow!("第 {page} 页 <print-settings> 的 `{name}`: {error}"),
-                        )?);
-                }
-                "gap" | "gap-length" => {
-                    self.gap_length = Some(gap_length(value, page)?);
-                }
-                "darkness" => {
-                    self.darkness = Some(darkness(value, page)?);
-                }
-                "speed" => {
-                    self.speed = Some(speed(value, page)?);
-                }
-                "raster" => {
-                    let raw = string(value, page, name)?;
-                    self.raster = Some(parse_raster(&raw).ok_or_else(|| {
-                        anyhow!(
-                            "第 {page} 页 <print-settings> 的 `raster`: 未知取值 `{raw}`，\
-                             可选 floyd-steinberg / threshold"
-                        )
-                    })?);
-                }
-                "rle" => {
-                    let raw = string(value, page, name)?;
-                    self.rle = Some(parse_rle(&raw).ok_or_else(|| {
-                        anyhow!(
-                            "第 {page} 页 <print-settings> 的 `rle`: 未知取值 `{raw}`，\
-                             可选 off / byte / bits4 / bits5 / bits6 / bits4x / bits5x / bits6x"
-                        )
-                    })?);
-                }
-                other => bail!(
-                    "第 {page} 页 <print-settings> 有未知字段 `{other}`，\
-                     可用 gap-type / gap / darkness / speed / raster / rle"
-                ),
-            }
-        }
-        Ok(())
-    }
-}
-
-fn string(value: &Value, page: usize, key: &str) -> anyhow::Result<String> {
-    match value {
-        Value::Str(raw) => Ok(raw.as_str().to_owned()),
-        other => bail!("第 {page} 页 <print-settings> 的 `{key}` 应该是字符串，实际是 {other:?}"),
-    }
-}
-
-/// `gap` 数值按 mm 解释；字符串走和命令行一样的解析。
-fn gap_length(value: &Value, page: usize) -> anyhow::Result<u32> {
-    let mm = match value {
-        Value::Int(mm) => *mm as f64,
-        Value::Float(mm) => *mm,
-        Value::Str(raw) => {
-            return common::parse_gap_length(raw.as_str())
-                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `gap`: {error}"));
-        }
-        other => bail!(
-            "第 {page} 页 <print-settings> 的 `gap` 应该是数值（mm）或字符串，实际是 {other:?}"
-        ),
-    };
-    common::parse_gap_length(&mm.to_string())
-        .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `gap`: {error}"))
-}
-
-fn darkness(value: &Value, page: usize) -> anyhow::Result<DarknessSetting> {
-    let raw = match value {
-        Value::Int(raw) => {
-            let raw = u8::try_from(*raw)
-                .map_err(|_| anyhow!("第 {page} 页 <print-settings> 的 `darkness` 超出 1..=15"))?;
-            DarknessSetting::from_user(raw)
-                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `darkness`: {error}"))?
-        }
-        Value::Str(raw) => common::parse_darkness(raw.as_str())
-            .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `darkness`: {error}"))?,
-        other => bail!(
-            "第 {page} 页 <print-settings> 的 `darkness` 应该是整数或字符串，实际是 {other:?}"
-        ),
-    };
-    Ok(raw)
-}
-
-fn speed(value: &Value, page: usize) -> anyhow::Result<SpeedSetting> {
-    let raw = match value {
-        Value::Int(raw) => {
-            let raw = u8::try_from(*raw)
-                .map_err(|_| anyhow!("第 {page} 页 <print-settings> 的 `speed` 超出 1..=5"))?;
-            SpeedSetting::from_user(raw)
-                .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `speed`: {error}"))?
-        }
-        Value::Str(raw) => common::parse_speed(raw.as_str())
-            .map_err(|error| anyhow!("第 {page} 页 <print-settings> 的 `speed`: {error}"))?,
-        other => {
-            bail!("第 {page} 页 <print-settings> 的 `speed` 应该是整数或字符串，实际是 {other:?}")
-        }
-    };
-    Ok(raw)
-}
-
-fn parse_raster(raw: &str) -> Option<DitherMode> {
-    match raw.to_ascii_lowercase().as_str() {
-        "floyd-steinberg" | "floyd" | "fs" => Some(DitherMode::FloydSteinberg),
-        "threshold" | "none" => Some(DitherMode::Threshold),
-        _ => None,
-    }
-}
-
-fn parse_rle(raw: &str) -> Option<RleMode> {
-    match raw.to_ascii_lowercase().as_str() {
-        "off" | "none" => Some(RleMode::Off),
-        "byte" => Some(RleMode::Byte),
-        "bits4" => Some(RleMode::Bits4),
-        "bits5" => Some(RleMode::Bits5),
-        "bits6" => Some(RleMode::Bits6),
-        "bits4x" => Some(RleMode::Bits4XOnly),
-        "bits5x" => Some(RleMode::Bits5XOnly),
-        "bits6x" => Some(RleMode::Bits6XOnly),
-        _ => None,
-    }
-}
-
-/// 从文档里收集每页的 `<print-settings>`。
-///
-/// 同一页出现多个 `metadata` 时按出现顺序合并，后者覆盖前者。
-fn page_settings(doc: &PagedDocument) -> anyhow::Result<HashMap<usize, PageSettings>> {
-    let Some(label) = Label::new(PicoStr::intern(SETTINGS_LABEL)) else {
-        return Ok(HashMap::new());
-    };
-    let selector = Selector::Label(label);
-    let introspector = doc.introspector();
-
-    let mut overrides: HashMap<usize, PageSettings> = HashMap::new();
-    for content in introspector.query(&selector) {
-        let Some(location) = content.location() else {
-            continue;
-        };
-        let Some(page) = introspector.page(location) else {
-            continue;
-        };
-        let page = page.get();
-
-        let value = content.get_by_name("value").map_err(|error| {
-            anyhow!("第 {page} 页 <{SETTINGS_LABEL}> 无法读取 value: {error:?}")
-        })?;
-        let Value::Dict(dict) = value else {
-            bail!(
-                "第 {page} 页 <{SETTINGS_LABEL}> 必须是字典，\
-                 例如 #metadata((gap: 2.5)) <{SETTINGS_LABEL}>"
-            );
-        };
-        overrides.entry(page).or_default().apply_dict(&dict, page)?;
-    }
-    Ok(overrides)
-}
-
-/// 文档里 `World` 的简化实现：只挂内置 / `--font` 字体，包从 preview 源下载。
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::typst::foundations::{Dict, Value};
+    use dz_print::command::settings::{DarknessSetting, GapTypeSetting, SpeedSetting};
     use tempfile::{TempDir, tempdir};
 
     fn test_world(path: &std::path::Path) -> (TypstWorld, TempDir) {
@@ -475,7 +249,7 @@ mod tests {
         let doc = compile(&world).unwrap();
         assert_eq!(doc.pages().len(), 2);
 
-        let overrides = page_settings(&doc).unwrap();
+        let overrides = typst::page_settings(&doc).unwrap();
         assert_eq!(
             overrides.get(&2).and_then(|settings| settings.gap_length),
             Some(200)

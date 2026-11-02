@@ -72,6 +72,8 @@ cargo run --bin dzserver -- /var/lib/dzserver 127.0.0.1:50051 \
   Typst 包；启动时会清理残留的 `jobs/*`。
 - 流水线是「入口队列 → N 个渲染 worker → 1 个打印队列 → 1 个打印 worker」。
   渲染和 tar / 包下载都在 blocking task 里，打印任务串行执行。
+- Typst 文档里的 `<print-settings>` 也会逐页生效；打印 worker 只在这一页的
+  gap / darkness / speed 变化时重发设置。
 - 打印中开盖、缺纸、USB 拔出会作废当前 job，等打印机重新就绪后继续打印下一个；
   排队中的 job 可以用 `Mgmt.Cancel` 取消。
 - 常用参数：`--render-workers`、`--queue-capacity`、`--max-job-bytes`、

@@ -4,6 +4,15 @@
 
 //! 流水线：入口队列 -> N 个渲染 worker -> 打印队列 -> 1 个打印 worker。
 
+use crate::{
+    api::ApiState,
+    common::{PrintArgs, typst::FontSet},
+    job::{JobState, JobStore},
+    printer::{PrinterProfile, PrinterWorker},
+    render::{JobSpec, RenderedJob, run_blocking},
+};
+use anyhow::Context as _;
+use mytm::{TaskHandle, TaskManager};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -12,20 +21,9 @@ use std::{
     },
     time::Duration,
 };
-
-use anyhow::Context as _;
-use mytm::{TaskHandle, TaskManager};
 use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-
-use crate::{
-    api::ApiState,
-    common::{PrintArgs, typst::FontSet},
-    job::{JobState, JobStore},
-    printer::{PrinterProfile, PrinterWorker},
-    render::{JobSpec, RenderedJob, run_blocking},
-};
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 const GC_INTERVAL: Duration = Duration::from_secs(60);

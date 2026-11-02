@@ -4,23 +4,21 @@
 
 //! 打印队列的唯一消费者：连接、等就绪、逐页打印、错误后作废当前 job 并重连。
 
-use std::time::Duration;
-
+use crate::{
+    common::{PrintArgs, PrintSettings, SHUTDOWN_TIMEOUT},
+    job::{JobId, JobState, JobStore},
+    render::RenderedJob,
+};
 use dz_print::{
     command::{req, resp, status::PrinterStatus},
     frontend::{Device, DeviceConfig, FrontendError, RecvError},
 };
 use mytm::TaskManager;
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-
-use crate::{
-    common::{PrintArgs, SHUTDOWN_TIMEOUT},
-    job::{JobId, JobState, JobStore},
-    render::RenderedJob,
-};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
@@ -33,13 +31,12 @@ pub struct PrinterProfile {
 
 pub struct PrinterWorker {
     tm: TaskManager,
-    args: PrintArgs,
     config: DeviceConfig,
     store: JobStore,
     rx: mpsc::Receiver<RenderedJob>,
     profile_tx: watch::Sender<Option<PrinterProfile>>,
     device: Option<Device>,
-    settings_sent: bool,
+    sent_settings: Option<PrintSettings>,
 }
 
 impl PrinterWorker {
@@ -53,13 +50,12 @@ impl PrinterWorker {
         let config = args.device_config();
         Self {
             tm,
-            args,
             config,
             store,
             rx,
             profile_tx,
             device: None,
-            settings_sent: false,
+            sent_settings: None,
         }
     }
 
@@ -221,7 +217,7 @@ impl PrinterWorker {
                         info!(head_dots, "printer connected");
                         let _ = self.profile_tx.send(Some(PrinterProfile { head_dots }));
                         self.device = Some(dev);
-                        self.settings_sent = false;
+                        self.sent_settings = None;
                         return true;
                     }
                     Err(error) => {
@@ -252,22 +248,19 @@ impl PrinterWorker {
         job: &RenderedJob,
         token: &CancellationToken,
     ) -> Result<(), PrintFailure> {
-        if !self.settings_sent {
-            {
-                let dev = self.device.as_ref().expect("device is ready");
-                self.args
-                    .send_settings(dev)
-                    .await
-                    .map_err(PrintFailure::Device)?;
-            }
-            self.settings_sent = true;
-        }
-
         let dev = self.device.as_ref().expect("device is ready");
         for repeat in 0..=job.repeats {
             for (index, page) in job.pages.iter().enumerate() {
                 if job.cancel.is_cancelled() || token.is_cancelled() {
                     return Err(PrintFailure::Cancelled);
+                }
+
+                if self.sent_settings.as_ref() != Some(&page.settings) {
+                    page.settings
+                        .send(dev)
+                        .await
+                        .map_err(PrintFailure::Device)?;
+                    self.sent_settings = Some(page.settings.clone());
                 }
 
                 let print = dev.print_bitmap_job_with(&page.bitmap, page.rle, page.options);
@@ -299,7 +292,7 @@ impl PrinterWorker {
         {
             warn!(%error, "device shutdown failed");
         }
-        self.settings_sent = false;
+        self.sent_settings = None;
         let _ = self.profile_tx.send(None);
     }
 }
