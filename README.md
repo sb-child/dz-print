@@ -58,6 +58,25 @@ cargo run --bin dzprint_typst -- /tmp/doc.typ --device DP27P-Y4094C023 \
 
 覆盖从该页开始生效，后续页沿用；需要恢复就在后面的页里再写一次。
 
+### 打印服务器：`dzserver`
+
+```bash
+# 需要 protobuf-compiler（build.rs 会编译 proto/dzsrv.proto）
+cargo run --bin dzserver -- /var/lib/dzserver 127.0.0.1:50051 \
+  --device DP27P-Y4094C023 --render-workers 2
+```
+
+- gRPC 服务定义在 [proto/dzsrv.proto](proto/dzsrv.proto)：`Print` 提交图片 / Typst tar，
+  `Mgmt` 查询或取消任务。
+- 第一个参数是持久化目录：`jobs/` 放每个任务的临时文件，`typst-packages/` 缓存
+  Typst 包；启动时会清理残留的 `jobs/*`。
+- 流水线是「入口队列 → N 个渲染 worker → 1 个打印队列 → 1 个打印 worker」。
+  渲染和 tar / 包下载都在 blocking task 里，打印任务串行执行。
+- 打印中开盖、缺纸、USB 拔出会作废当前 job，等打印机重新就绪后继续打印下一个；
+  排队中的 job 可以用 `Mgmt.Cancel` 取消。
+- 常用参数：`--render-workers`、`--queue-capacity`、`--max-job-bytes`、
+  `--max-repeats`、`--job-ttl`，以及和 `dzprint_image` 相同的纸张 / 浓度 / 速度参数。
+
 ### 真机测试：`test_usb`
 
 ```bash
@@ -80,18 +99,22 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
   cargo build --no-default-features            # 只要库
   ```
 
-  feature 有 `bin-dzcli` / `bin-image` / `bin-typst` / `bin-test-usb`，`bins` 是它们的合集。
-  只开 `bin-image` 时不会编译 Typst 和 `dzprint_typst` 的那套依赖。
+  feature 有 `bin-dzcli` / `bin-image` / `bin-typst` / `bin-test-usb` / `bin-dzserver`，
+  `bins` 是它们的合集。`dzprint_typst` 和 `dzserver` 共用 `typst-support`，
+  只开 `bin-image` 时不会编译 Typst 那一套依赖。
 
 ## 代码结构
 
 `src/`
 
-- `asset/`：内置字体，供 `dzprint_typst` 使用
+- `asset/`：内置字体，供 `dzprint_typst` / `dzserver` 使用
 - `bin/`
-  - `common/` 两个打印 bin 共用：clap 参数、发送设置、打印任务和退出顺序
+  - `common/` 各 bin 共用：clap 参数、打印流程；`image.rs` 图片解码 / 缩放 / 抖动，
+    `typst.rs` Typst world / 编译 / 渲染 / 安全解包
   - `dzprint_image` 打印 jpg / png：查打印头点数、按需缩放、抖动成位图
   - `dzprint_typst` 编译 Typst 文档、逐页渲染打印，支持 `<print-settings>` 按页覆盖
+  - `dzserver/` gRPC 打印服务器：`main.rs` 入口，`api.rs` 接口，`job.rs` 任务表，
+    `pipeline.rs` 渲染 / 打印队列，`render.rs` 阻塞渲染，`printer.rs` 设备生命周期与重连
   - `dzcli` CLI 雏形，只有参数骨架
   - `test_usb` 真机测试平台：`--phase` / `--rle` / `--rows`
 - `bitmap/` 以 bit 为单位的位图，行视图供 RLE 和命令层借用

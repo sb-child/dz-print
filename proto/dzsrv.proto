@@ -56,6 +56,8 @@ enum Status {
   STATUS_PRINTING = 4;
   // (终态)打印完成(或失败)，printer_status 包含详细说明，比如为什么打印失败
   STATUS_PRINT_COMPLETED = 5;
+  // (终态)任务被取消，可能发生在排队、渲染或打印阶段
+  STATUS_CANCELLED = 6;
 }
 
 enum PrinterStatus {

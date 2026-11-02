@@ -30,36 +30,28 @@
 
 mod common;
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::{Context as _, anyhow, bail};
-use chrono::{Datelike as _, Local};
 use clap::Parser;
 use dz_print::{
     command::settings::{DarknessSetting, GapTypeSetting, SpeedSetting},
     frontend::Device,
     planner::print::RleMode,
-    raster::{DitherMode, from_pixmap_over_white},
+    raster::DitherMode,
 };
-use tempfile::{TempDir, tempdir};
-use tiny_skia::Pixmap;
-use tracing::{info, warn};
+use tracing::info;
 use typst::{
-    Library, LibraryExt as _, World,
-    diag::{FileError, FileResult},
-    foundations::{Bytes, Datetime, Dict, Label, Selector, Value},
+    foundations::{Dict, Label, Selector, Value},
     introspection::Introspector as _,
-    syntax::{FileId, RootedPath, Source, VirtualPath, VirtualRoot, package::PackageSpec},
-    text::{Font, FontBook},
-    utils::{LazyHash, PicoStr},
+    utils::PicoStr,
 };
 use typst_layout::PagedDocument;
-use typst_render::RenderOptions;
 
-use common::PrintArgs;
+use common::{
+    PrintArgs,
+    typst::{TypstWorld, compile, render_bitmap},
+};
 
 const SETTINGS_LABEL: &str = "print-settings";
 
@@ -87,7 +79,19 @@ async fn main() -> std::process::ExitCode {
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
     // 编译在连接打印机之前完成，语法 / 布局错误不会白白占着设备。
-    let world = TypstWorld::new(&cli)?;
+    let fonts = common::typst::load_fonts(&cli.font)?;
+    let package_cache = tempfile::tempdir().context("创建 Typst 包缓存目录失败")?;
+    let root = cli
+        .document
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let world = TypstWorld::new(
+        root,
+        &cli.document,
+        fonts.fonts,
+        fonts.book,
+        package_cache.path(),
+    )?;
     let doc = compile(&world)?;
 
     let overrides = page_settings(&doc)?;
@@ -100,31 +104,6 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         print_document(dev, &cli.print, &doc, &overrides).await
     })
     .await
-}
-
-fn compile(world: &TypstWorld) -> anyhow::Result<PagedDocument> {
-    let warned = typst::compile::<PagedDocument>(world);
-    for warning in &warned.warnings {
-        warn!("Typst: {}", warning.message);
-    }
-    warned.output.map_err(|errors| {
-        let details: Vec<String> = errors
-            .iter()
-            .map(|error| {
-                let hints: Vec<String> = error
-                    .hints
-                    .iter()
-                    .map(|hint| format!("  hint: {}", hint.v))
-                    .collect();
-                if hints.is_empty() {
-                    format!("- {}", error.message)
-                } else {
-                    format!("- {}\n{}", error.message, hints.join("\n"))
-                }
-            })
-            .collect();
-        anyhow!("Typst 编译失败：\n{}", details.join("\n"))
-    })
 }
 
 async fn print_document(
@@ -148,14 +127,13 @@ async fn print_document(
             settings.apply_to(&mut args);
         }
 
-        let pixmap = render_page(page, dots)?;
+        let bitmap = render_bitmap(page, dots, args.raster.into())?;
         info!(
             page = page_no,
-            width = pixmap.width(),
-            height = pixmap.height(),
+            width = bitmap.width(),
+            height = bitmap.height(),
             "rendered page"
         );
-        let bitmap = from_pixmap_over_white(&pixmap, args.raster.into())?;
 
         let current = SendableSettings::from(&args);
         if sent.as_ref() != Some(&current) {
@@ -171,27 +149,6 @@ async fn print_document(
         args.print_bitmap(dev, &bitmap).await?;
     }
     Ok(())
-}
-
-fn render_page(page: &typst_layout::Page, dots: u16) -> anyhow::Result<Pixmap> {
-    let width_pt = page.frame.size().x.to_pt();
-    if !(width_pt.is_finite() && width_pt > 0.0) {
-        bail!("页面宽度 {width_pt}pt 无效，无法渲染");
-    }
-
-    let dots_f = f64::from(dots);
-    let options = |scale: f64| RenderOptions {
-        pixel_per_pt: scale.into(),
-        ..Default::default()
-    };
-
-    // 由页面实际宽度算出 pixel_per_pt，不同纸张都能铺满打印头。
-    let mut pixmap = typst_render::render(page, &options(dots_f / width_pt));
-    // 四舍五入偶尔多出 1 个像素，超出打印头时退一点再渲染一次。
-    if pixmap.width() > u32::from(dots) {
-        pixmap = typst_render::render(page, &options((dots_f - 1.0) / width_pt));
-    }
-    Ok(pixmap)
 }
 
 /// 真正需要发给打印机的设置；用来判断这一页要不要重发。
@@ -408,184 +365,24 @@ fn page_settings(doc: &PagedDocument) -> anyhow::Result<HashMap<usize, PageSetti
 }
 
 /// 文档里 `World` 的简化实现：只挂内置 / `--font` 字体，包从 preview 源下载。
-struct TypstWorld {
-    library: LazyHash<Library>,
-    book: LazyHash<FontBook>,
-    main: FileId,
-    main_source: String,
-    root: PathBuf,
-    fonts: Vec<Font>,
-    package_cache: TempDir,
-}
-
-impl TypstWorld {
-    fn new(cli: &Cli) -> anyhow::Result<Self> {
-        let path = cli
-            .document
-            .canonicalize()
-            .with_context(|| format!("找不到 Typst 文档 {}", cli.document.display()))?;
-        let main_source = std::fs::read_to_string(&path)
-            .with_context(|| format!("读取 Typst 文档 {} 失败", path.display()))?;
-        let root = path.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
-        let filename = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        let vpath = VirtualPath::new(format!("/{filename}"))
-            .map_err(|error| anyhow!("Typst 路径 `/{filename}` 无效: {error:?}"))?;
-        let main = FileId::unique(RootedPath::new(VirtualRoot::Project, vpath));
-
-        let (fonts, book) = load_fonts(&cli.font)?;
-        Ok(Self {
-            library: LazyHash::new(Library::builder().build()),
-            book: LazyHash::new(book),
-            main,
-            main_source,
-            root,
-            fonts,
-            package_cache: tempdir().context("创建 Typst 包缓存目录失败")?,
-        })
-    }
-
-    fn resolve_id(&self, id: FileId) -> FileResult<PathBuf> {
-        if id == self.main {
-            return Err(FileError::Other(Some("main file is virtual".into())));
-        }
-        match id.root() {
-            VirtualRoot::Project => {
-                let path = id.vpath().realize(&self.root).map_err(FileError::Realize)?;
-                if !path.starts_with(&self.root) {
-                    return Err(FileError::AccessDenied);
-                }
-                Ok(path)
-            }
-            VirtualRoot::Package(package) => {
-                let dir = prepare_package(package, self.package_cache.path())?;
-                id.vpath().realize(&dir).map_err(FileError::Realize)
-            }
-        }
-    }
-}
-
-impl World for TypstWorld {
-    fn library(&self) -> &LazyHash<Library> {
-        &self.library
-    }
-
-    fn book(&self) -> &LazyHash<FontBook> {
-        &self.book
-    }
-
-    fn main(&self) -> FileId {
-        self.main
-    }
-
-    fn source(&self, id: FileId) -> FileResult<Source> {
-        if id == self.main {
-            return Ok(Source::new(id, self.main_source.clone()));
-        }
-        let path = self.resolve_id(id)?;
-        let content = std::fs::read_to_string(&path).map_err(|e| FileError::from_io(e, &path))?;
-        Ok(Source::new(id, content))
-    }
-
-    fn file(&self, id: FileId) -> FileResult<Bytes> {
-        if id == self.main {
-            return Ok(Bytes::new(self.main_source.clone()));
-        }
-        let path = self.resolve_id(id)?;
-        let content = std::fs::read(&path).map_err(|e| FileError::from_io(e, &path))?;
-        Ok(Bytes::new(content))
-    }
-
-    fn font(&self, index: usize) -> Option<Font> {
-        self.fonts.get(index).cloned()
-    }
-
-    fn today(&self, _offset: Option<typst::foundations::Duration>) -> Option<Datetime> {
-        let now = Local::now();
-        Datetime::from_ymd(now.year(), now.month() as u8, now.day() as u8)
-    }
-}
-
-fn load_fonts(extra: &[PathBuf]) -> anyhow::Result<(Vec<Font>, FontBook)> {
-    let mut fonts = Vec::new();
-    let mut book = FontBook::new();
-
-    // 内置字体，保证离线也能排中文。
-    for bytes in [
-        &include_bytes!("../asset/unifont-16.0.04.ttf")[..],
-        &include_bytes!("../asset/UnifontExMono.ttf")[..],
-    ] {
-        push_font(Bytes::new(bytes), &mut fonts, &mut book)?;
-    }
-
-    for path in extra {
-        let data =
-            std::fs::read(path).with_context(|| format!("读取字体 {} 失败", path.display()))?;
-        push_font(Bytes::new(data), &mut fonts, &mut book)
-            .with_context(|| format!("加载字体 {} 失败", path.display()))?;
-    }
-    Ok((fonts, book))
-}
-
-fn push_font(bytes: Bytes, fonts: &mut Vec<Font>, book: &mut FontBook) -> anyhow::Result<()> {
-    let font = Font::new(bytes, 0).ok_or_else(|| anyhow!("不是可用的字体文件"))?;
-    book.push(font.info().clone());
-    fonts.push(font);
-    Ok(())
-}
-
-/// 把 `@preview/...` 包下载到临时目录。已存在就直接复用。
-fn prepare_package(pkg: &PackageSpec, cache_dir: &Path) -> FileResult<PathBuf> {
-    let package_dir = cache_dir.join(format!(
-        "{}__{}__{}",
-        pkg.namespace.as_str(),
-        pkg.name.as_str(),
-        pkg.version,
-    ));
-    if package_dir.exists() {
-        return Ok(package_dir);
-    }
-    if pkg.namespace != "preview" {
-        return Err(FileError::NotFound(PathBuf::from(format!(
-            "@{}/{} version {}",
-            pkg.namespace, pkg.name, pkg.version
-        ))));
-    }
-
-    let url = format!(
-        "https://packages.typst.org/preview/{}-{}.tar.gz",
-        pkg.name, pkg.version
-    );
-    info!("downloading Typst package: {url}");
-    let response = ureq::get(&url)
-        .call()
-        .map_err(|e| FileError::Other(Some(format!("下载 {url} 失败: {e}").into())))?;
-    let mut body = response.into_body();
-    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(body.as_reader()));
-
-    let downloading = cache_dir.join(format!(
-        "{}__{}__{}__downloading",
-        pkg.namespace.as_str(),
-        pkg.name.as_str(),
-        pkg.version,
-    ));
-    if downloading.exists() {
-        let _ = std::fs::remove_dir_all(&downloading);
-    }
-    std::fs::create_dir_all(&downloading).map_err(|e| FileError::from_io(e, &downloading))?;
-    archive
-        .unpack(&downloading)
-        .map_err(|e| FileError::Other(Some(format!("解压 {url} 失败: {e}").into())))?;
-    std::fs::rename(&downloading, &package_dir).map_err(|e| FileError::from_io(e, &package_dir))?;
-    Ok(package_dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::{TempDir, tempdir};
+
+    fn test_world(path: &std::path::Path) -> (TypstWorld, TempDir) {
+        let fonts = common::typst::load_fonts(&[]).unwrap();
+        let cache = tempdir().unwrap();
+        let world = TypstWorld::new(
+            path.parent().unwrap(),
+            path,
+            fonts.fonts,
+            fonts.book,
+            cache.path(),
+        )
+        .unwrap();
+        (world, cache)
+    }
 
     fn dict(pairs: &[(&str, Value)]) -> Dict {
         let mut dict = Dict::new();
@@ -674,8 +471,7 @@ mod tests {
         )
         .unwrap();
 
-        let cli = Cli::try_parse_from(["dzprint_typst", path.to_str().unwrap()]).unwrap();
-        let world = TypstWorld::new(&cli).unwrap();
+        let (world, _cache) = test_world(&path);
         let doc = compile(&world).unwrap();
         assert_eq!(doc.pages().len(), 2);
 
@@ -686,7 +482,7 @@ mod tests {
         );
         assert!(!overrides.contains_key(&1));
 
-        let pixmap = render_page(&doc.pages()[0], 576).unwrap();
+        let pixmap = common::typst::render_page(&doc.pages()[0], 576).unwrap();
         assert_eq!(pixmap.width(), 576);
     }
 
@@ -696,10 +492,9 @@ mod tests {
         let path = dir.path().join("doc.typ");
         // 7.3mm 这种宽度容易在四舍五入后多出 1 像素。
         std::fs::write(&path, "#set page(width: 7.3mm, height: 5mm)\nx\n").unwrap();
-        let cli = Cli::try_parse_from(["dzprint_typst", path.to_str().unwrap()]).unwrap();
-        let world = TypstWorld::new(&cli).unwrap();
+        let (world, _cache) = test_world(&path);
         let doc = compile(&world).unwrap();
-        let pixmap = render_page(&doc.pages()[0], 12).unwrap();
+        let pixmap = common::typst::render_page(&doc.pages()[0], 12).unwrap();
         assert!(pixmap.width() <= 12, "rendered {} px", pixmap.width());
         assert!(pixmap.width() > 0);
     }

@@ -17,7 +17,7 @@ num-traits = "0.2"
 # strum = { version = "0.28", features = ["derive"] }
 rayon = "1.12.0"
 tokio = { version = "1.54.1", features = ["full"] }
-tokio-util = "0.7.20"
+tokio-util = { version = "0.7.20", features = ["rt"] }
 anyhow = { version = "1.0.104", optional = true }
 clap = { version = "4.6", features = ["derive"], optional = true }
 typst = { version = "0.15.1", optional = true }
@@ -48,10 +48,9 @@ mytm = { git = "https://github.com/sb-child/mytm", rev = "fd1b520d30f40c17905e37
 futures-util = "0.3.34"
 tonic = { version = "0.14.9", optional = true }
 prost = { version = "0.14.4", optional = true }
-tokio-stream = { version = "0.1.19", optional = true }
-async-stream = { version = "0.3.6", optional = true }
+tokio-stream = { version = "0.1.19", features = ["net"], optional = true }
 tonic-prost = { version = "0.14.9", optional = true }
-
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [[bin]]
 name = "dzcli"
@@ -71,6 +70,7 @@ required-features = ["bin-test-usb"]
 
 [[bin]]
 name = "dzserver"
+path = "src/bin/dzserver/main.rs"
 required-features = ["bin-dzserver"]
 
 [features]
@@ -82,15 +82,15 @@ bins = ["bin-dzcli", "bin-image", "bin-typst", "bin-test-usb", "bin-dzserver"]
 # 只需要库时用 `--no-default-features`。
 bin-dzcli = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
 bin-image = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
-bin-typst = [
-    "dep:anyhow",
+bin-typst = ["typst-support", "dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
+
+# dzprint_typst 和 dzserver 共用的 Typst 渲染依赖。
+typst-support = [
     "dep:chrono",
-    "dep:clap",
     "dep:flate2",
     "dep:spin",
     "dep:tar",
     "dep:tempfile",
-    "dep:tracing-subscriber",
     "dep:ttf-parser",
     "dep:typst",
     "dep:typst-layout",
@@ -100,6 +100,7 @@ bin-typst = [
 ]
 bin-test-usb = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
 bin-dzserver = [
+    "typst-support",
     "dep:anyhow",
     "dep:clap",
     "dep:tracing-subscriber",
@@ -107,8 +108,8 @@ bin-dzserver = [
     "dep:prost",
     "dep:tonic-prost",
     "dep:tokio-stream",
-    "dep:async-stream",
     "dep:tonic-prost-build",
+    "dep:uuid",
 ]
 
 [build-dependencies]

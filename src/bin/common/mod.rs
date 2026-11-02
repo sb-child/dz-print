@@ -7,6 +7,10 @@
 //! 两个 bin 只负责“怎么得到一张位图”，连接设备、发送设置、打印和退出顺序
 //! 都在这里，避免改一边漏一边。
 
+pub mod image;
+#[cfg(any(feature = "bin-typst", feature = "bin-dzserver"))]
+pub mod typst;
+
 use std::time::Duration;
 
 use anyhow::{Context as _, ensure};

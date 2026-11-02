@@ -8,6 +8,8 @@ use crate::command::{
     resp_template::print_width::PrintWidthV2V1V0Tl,
 };
 
+pub const CMD: u8 = 0x72;
+
 /// 打印宽度和出纸宽度。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrintWidth {

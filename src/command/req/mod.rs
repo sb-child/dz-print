@@ -50,7 +50,7 @@ use crate::command::{ModelVersion, envelope::Envelope};
 use deku::DekuError;
 use snafu::Snafu;
 
-pub trait ReqTrait {
+pub trait ReqTrait: Send + Sync {
     fn pack(&self, cv: ModelVersion) -> Result<Vec<Envelope>, PackReqError>;
 }
 
