@@ -18,24 +18,24 @@ strum = { version = "0.28", features = ["derive"] }
 rayon = "1.12.0"
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = "0.7.20"
-anyhow = "1.0.104"
-clap = { version = "4.6", features = ["derive"] }
-typst = "0.15.1"
-typst-layout = "0.15.1"
-typst-library = "0.15.1"
-ttf-parser = "0.25.1"
-chrono = "0.4.45"
+anyhow = { version = "1.0.104", optional = true }
+clap = { version = "4.6", features = ["derive"], optional = true }
+typst = { version = "0.15.1", optional = true }
+typst-layout = { version = "0.15.1", optional = true }
+typst-library = { version = "0.15.1", optional = true }
+ttf-parser = { version = "0.25.1", optional = true }
+chrono = { version = "0.4.45", optional = true }
 # typst-render currently using
 tiny-skia = "=0.12.0"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-typst-render = "0.15.1"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }
+typst-render = { version = "0.15.1", optional = true }
 # spin = "^0.9" <- wasmi v1.1.0 <- typst-library v0.15.1
-spin = "=0.9.9"
-tempfile = "3.27.0"
-ureq = "3.5.0"
-tar = "0.4.46"
-flate2 = "1.1.10"
+spin = { version = "=0.9.9", optional = true }
+tempfile = { version = "3.27.0", optional = true }
+ureq = { version = "3.5.0", optional = true }
+tar = { version = "0.4.46", optional = true }
+flate2 = { version = "1.1.10", optional = true }
 deku = "0.20.3"
 derive_aliases = "0.4.7"
 pretty-hex = "0.4.2"
@@ -45,6 +45,50 @@ encoding_rs = "0.8.44"
 crossfire = { version = "3.1.22", features = ["tokio"] }
 mytm = { git = "https://github.com/sb-child/mytm", rev = "fd1b520d30f40c17905e375c8d1f1e17d02eb7c8" }
 futures-util = "0.3.34"
+
+
+[[bin]]
+name = "dzcli"
+required-features = ["bin-dzcli"]
+
+[[bin]]
+name = "dzprint_image"
+required-features = ["bin-image"]
+
+[[bin]]
+name = "dzprint_typst"
+required-features = ["bin-typst"]
+
+[[bin]]
+name = "test_usb"
+required-features = ["bin-test-usb"]
+
+[features]
+default = ["bins"]
+
+# 一次构建全部 bin；只想用一个时关掉默认特性再单独开对应 feature。
+bins = ["bin-dzcli", "bin-image", "bin-typst", "bin-test-usb"]
+
+# 只需要库时用 `--no-default-features`。
+bin-dzcli = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
+bin-image = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
+bin-typst = [
+    "dep:anyhow",
+    "dep:chrono",
+    "dep:clap",
+    "dep:flate2",
+    "dep:spin",
+    "dep:tar",
+    "dep:tempfile",
+    "dep:tracing-subscriber",
+    "dep:ttf-parser",
+    "dep:typst",
+    "dep:typst-layout",
+    "dep:typst-library",
+    "dep:typst-render",
+    "dep:ureq",
+]
+bin-test-usb = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
 
 [profile.release]
 opt-level = 2

@@ -72,6 +72,16 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
 
 - 公开模块的 `//!` 文档都带 `# 用法` 示例，可以 `cargo doc --no-deps --open` 查看，
   用 `cargo test --doc` 跑其中的示例
+- 每个 bin 对应一个 feature，默认 `bins` 全部开启；只要其中一个时关掉默认特性：
+
+  ```bash
+  cargo build --no-default-features --features bin-image
+  cargo build --no-default-features --features bin-typst
+  cargo build --no-default-features            # 只要库
+  ```
+
+  feature 有 `bin-dzcli` / `bin-image` / `bin-typst` / `bin-test-usb`，`bins` 是它们的合集。
+  只开 `bin-image` 时不会编译 Typst 和 `dzprint_typst` 的那套依赖。
 
 ## 代码结构
 
