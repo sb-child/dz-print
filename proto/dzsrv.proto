@@ -1,0 +1,93 @@
+syntax = "proto3";
+// this file for src/bin/dzserver.rs
+package dzsrv;
+
+service Print {
+  rpc PrintImage (PrintImageReq) returns (JobHandle);
+  rpc PrintTypst (PrintTypstReq) returns (JobHandle);
+}
+
+service Mgmt {
+  rpc Status (JobHandle) returns (JobStatus);
+  rpc Cancel (JobHandle) returns (JobCancel);
+}
+
+message PrintImageReq {
+  // 图像文件，png或jpg格式。
+  bytes image_file = 1;
+  // 重复次数。0代表打印一次，1代表打印两次。
+  uint32 repeats = 2;
+}
+
+message PrintTypstReq {
+  // tar 文件，里面的 main.typ 将被渲染打印。
+  bytes typst_tar = 1;
+  // 重复次数。0代表打印一次，1代表打印两次。
+  uint32 repeats = 2;
+}
+
+message JobHandle {
+  // 16 bytes UUID
+  bytes job_id = 1;
+}
+
+message JobStatus {
+  // 任务是否存在
+  bool exists = 1;
+  Status job_status = 2;
+  PrinterStatus printer_status = 3;
+}
+
+message JobCancel {
+  // 是否成功被取消
+  bool cancelled = 1;
+}
+
+enum Status {
+  // 任务正在排队
+  STATUS_IN_QUEUE = 0;
+  // 正在渲染
+  STATUS_RENDERING = 1;
+  // (终态)渲染失败
+  STATUS_RENDER_FAILED = 2;
+  // 等待打印机空闲
+  STATUS_PRINT_PENDING = 3;
+  // 正在打印
+  STATUS_PRINTING = 4;
+  // (终态)打印完成(或失败)，printer_status 包含详细说明，比如为什么打印失败
+  STATUS_PRINT_COMPLETED = 5;
+}
+
+enum PrinterStatus {
+  // 打印还没完成
+  PS_NOT_COMPLETED = 0;
+  // 打印机报告了未知错误
+  PS_OTHER_ERROR = 1;
+  PS_PRINTABLE = 2;
+  PS_PRINTING = 3;
+  PS_ROTATING = 4;
+  PS_NO_JOB = 5;
+  PS_PAGE_NOT_READY = 6;
+  PS_JOB_CANCELED = 7;
+  PS_ENV_NOT_READY = 8;
+  PS_VOL_TOO_LOW = 9;
+  PS_VOL_TOO_HIGH = 10;
+  PS_TPH_NOT_FOUND = 11;
+  PS_TPH_TOO_HOT = 12;
+  PS_COVER_OPENED = 13;
+  PS_NO_PAPER = 14;
+  PS_RIBBON_CAN_OPENED = 15;
+  PS_NO_RIBBON = 16;
+  PS_UNMATCHED_RIBBON = 17;
+  PS_TPH_TOO_COLD = 18;
+  PS_USEDUP_RIBBON = 19;
+  PS_USEDUP_RIBBON_2 = 20;
+  PS_NO_LABEL = 21;
+  PS_UNMATCHED_LABEL = 22;
+  PS_USEDUP_LABEL = 23;
+  PS_NO_RIBBON_2 = 24;
+  PS_UNMATCHED_RIBBON_2 = 25;
+  PS_LABEL_CAN_OPENED = 26;
+  // IO设备故障导致打印失败，比如被拔线
+  PS_IO_ERROR = 27;
+}

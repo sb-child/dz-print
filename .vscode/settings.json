@@ -3,5 +3,6 @@
     "tinymist.systemFonts": false,
     "[toml]": {
         "editor.defaultFormatter": "tamasfe.even-better-toml"
-    }
+    },
+    "rust-analyzer.cargo.features": []
 }

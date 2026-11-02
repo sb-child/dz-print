@@ -196,6 +196,7 @@ impl PrintArgs {
     }
 
     /// 只发送用户给出的设置，顺序固定为纸张类型 / 间隔 / 浓度 / 速度。
+    #[allow(dead_code)]
     pub async fn send_settings(&self, dev: &Device) -> anyhow::Result<()> {
         let mut reqs: Vec<Box<dyn ReqTrait>> = Vec::new();
         if let Some(gap_type) = self.gap_type {
@@ -221,6 +222,7 @@ impl PrintArgs {
     }
 
     /// 把命令行里的纸张设置带进每页的 `StartPage`。
+    #[allow(dead_code)]
     pub fn job_options(&self) -> PrintJobOptions {
         let gap_type = self.gap_type.unwrap_or_default();
         let gap_length = match self.gap_length {
@@ -235,6 +237,7 @@ impl PrintArgs {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn print_bitmap(
         &self,
         dev: &Device,
@@ -258,6 +261,7 @@ impl PrintArgs {
 ///
 /// 无论打印成功与否都会 `shutdown` + `tm.close()`，保证 worker 线程和 USB
 /// 句柄都释放掉再让进程结束；`body` 的错误优先返回，其次才是 shutdown 的错误。
+#[allow(dead_code)]
 pub async fn with_device<F>(args: &PrintArgs, body: F) -> anyhow::Result<()>
 where
     F: AsyncFnOnce(&Device) -> anyhow::Result<()>,
@@ -278,6 +282,7 @@ where
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn print_head_dots(dev: &Device) -> anyhow::Result<u16> {
     dev.try_send_batch(&[&req::print_width::PrintWidth {}])
         .await?;
