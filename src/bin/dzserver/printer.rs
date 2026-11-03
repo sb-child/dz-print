@@ -14,7 +14,7 @@ use crate::{
 };
 use dz_print::{
     command::status::PrinterStatus,
-    frontend::{Device, DeviceConfig, FrontendError},
+    frontend::{Device, DeviceConfig, FrontendError, StallOutcome},
 };
 use mytm::TaskManager;
 use std::time::{Duration, Instant};
@@ -350,6 +350,14 @@ enum ReadyState {
 fn classify_error(error: &anyhow::Error) -> (Option<PrinterStatus>, bool) {
     match error.downcast_ref::<FrontendError>() {
         Some(FrontendError::PrinterStatus { status }) => (Some(*status), false),
+        // 打印卡住之后统一收尾：读回错误码就报它；读到正常状态说明只是瞬时
+        // 卡了一下（例如盖子松动又合上），按普通失败处理；新连接上也读不到
+        // 才算 IO / 设备错误。
+        Some(FrontendError::Stalled { outcome, .. }) => match outcome {
+            StallOutcome::Status(status) if status.is_error() => (Some(*status), false),
+            StallOutcome::Status(_) => (None, false),
+            StallOutcome::Silent => (None, true),
+        },
         // 页面没开始打印，但没有具体的打印机状态码；让 gRPC 侧落到
         // PS_OTHER_ERROR，而不是 PS_PRINTABLE。
         Some(FrontendError::PrintDidNotStart { .. }) => (None, false),
@@ -382,5 +390,39 @@ mod tests {
         let (status, io_error) = classify_error(&error);
         assert!(status.is_none());
         assert!(!io_error);
+    }
+
+    fn stalled(outcome: StallOutcome) -> anyhow::Error {
+        anyhow::Error::new(FrontendError::Stalled {
+            cause: Box::new(FrontendError::PrinterSilent {
+                polls: 2,
+                timeout: Duration::from_millis(500),
+            }),
+            outcome,
+        })
+    }
+
+    #[test]
+    fn stalled_keeps_a_concrete_printer_status() {
+        let (status, io_error) =
+            classify_error(&stalled(StallOutcome::Status(PrinterStatus::CoverOpened)));
+        assert_eq!(status, Some(PrinterStatus::CoverOpened));
+        assert!(!io_error);
+    }
+
+    #[test]
+    fn stalled_and_recovered_is_a_plain_failure() {
+        // 盖子松了一下又合上：打印机读回可打印，但这一页已经作废。
+        let (status, io_error) =
+            classify_error(&stalled(StallOutcome::Status(PrinterStatus::Printable)));
+        assert!(status.is_none());
+        assert!(!io_error);
+    }
+
+    #[test]
+    fn stalled_and_still_silent_is_an_io_error() {
+        let (status, io_error) = classify_error(&stalled(StallOutcome::Silent));
+        assert!(status.is_none());
+        assert!(io_error);
     }
 }

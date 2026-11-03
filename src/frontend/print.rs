@@ -52,7 +52,7 @@ use crate::{
         settings::GapTypeSetting,
     },
     planner::{
-        flow::{ChunkDecision, FlowConfig, FlowPlanner, FlowReport},
+        flow::{ChunkDecision, FlowConfig, FlowError, FlowPlanner, FlowReport},
         print::{MAX_LINES_PER_PAGE, PrintError, PrintPage, RleMode, into_reqs, print_bitmap_page},
     },
 };
@@ -96,6 +96,11 @@ impl Device {
     ///
     /// 打印期间 `0x70` / `0x77` 的响应归这里所有，不要同时用 `try_recv_one` /
     /// `try_pop_raw` 从队头取帧。
+    ///
+    /// 只要卡住（读不到状态、整页超时、打印没开始、写命令没有确认），当前 job
+    /// 一律作废：先重置一次连接并读回真实状态，再返回
+    /// [`FrontendError::Stalled`]。读回正常状态也会照实报出来——那说明打印机
+    /// 已经可以接下一个任务，只是这一页废了。
     pub async fn print_bitmap_job_with(
         &self,
         bm: &Bitmap,
@@ -107,6 +112,24 @@ impl Device {
             .try_lock()
             .map_err(|_| FrontendError::PrintBusy)?;
 
+        match self.print_pages(bm, rle, options).await {
+            // 打印机卡住（沉默、总超时、打印没开始、worker 不响应）：job 已经
+            // 作废，但连接要重置一次并把真实状态读回来。这样调用方既能知道
+            // 原因，也能知道打印机现在是不是还能接下一个 job。
+            Err(error) if is_stalled(&error) => Err(self.abort_stalled(error).await),
+            result => result,
+        }
+    }
+
+    /// 逐页打印，是 [`Device::print_bitmap_job_with`] 的主体。
+    ///
+    /// 这里只负责发命令和判断进度，不做任何卡住后的收尾。
+    async fn print_pages(
+        &self,
+        bm: &Bitmap,
+        rle: RleMode,
+        options: PrintJobOptions,
+    ) -> Result<FlowReport, FrontendError> {
         let page_count = bm.height().div_ceil(MAX_LINES_PER_PAGE);
 
         let mut total = FlowReport::default();
@@ -126,7 +149,7 @@ impl Device {
             }
             // 失败时不要尝试补 `EndPage` 或续打：固件已经不在处理命令，补发的
             // 命令只会排在队尾。job 作废，收尾（重置连接、读回真实状态）由
-            // `reset_after_silence` 统一处理。
+            // `abort_stalled` 统一处理。
             let report = self
                 .send_page_commands(bm, &page, page_start, page_idx, options)
                 .await?;
@@ -172,7 +195,7 @@ impl Device {
     /// 在 `0x77` 已经超时的情况下确认一次 `0x70`。
     ///
     /// 如果状态也不回，说明打印机已经停止处理命令（开盖、缺纸或固件卡住）：
-    /// 重置一次连接，把真实状态读回来，再把 job 作废。
+    /// 返回沉默，由 [`Device::print_bitmap_job_with`] 重置连接并读回状态。
     async fn check_after_budget_timeout(&self) -> Result<(), FrontendError> {
         match self.query_status(self.config.recv_timeout).await? {
             Some(status) if status.is_error() => {
@@ -185,11 +208,11 @@ impl Device {
             }
             Some(_) => Ok(()),
             None => {
-                warn!(
-                    "status also timed out after buffer timeout; \
-                     resetting the device connection"
-                );
-                Err(self.reset_after_silence(1).await)
+                warn!("status also timed out after buffer timeout");
+                Err(FrontendError::PrinterSilent {
+                    polls: 1,
+                    timeout: self.config.recv_timeout,
+                })
             }
         }
     }
@@ -197,7 +220,7 @@ impl Device {
     /// 发完一页的 `StartPage` / 数据 / 加热统计，但不发 `EndPage`。
     ///
     /// 失败时直接返回，job 作废；调用方不要再补 `EndPage` 或续打，收尾走
-    /// [`Device::reset_after_silence`]。
+    /// [`Device::abort_stalled`]。
     async fn send_page_commands(
         &self,
         bm: &Bitmap,
@@ -362,6 +385,21 @@ impl Device {
         self.try_send_batch(&[&heat]).await?;
 
         Ok(flow.report())
+    }
+}
+
+/// 这些错误意味着打印机卡住了，收尾时应当重置连接并读回状态。
+///
+/// 共同点都是“打印没法继续，而且打印机可能已经不再按预期工作”：读不到回包、
+/// 整页超时、打印没开始、或者 worker 连一条写命令都确认不了。
+fn is_stalled(error: &FrontendError) -> bool {
+    match error {
+        FrontendError::PrinterSilent { .. }
+        | FrontendError::PrintTimeout { .. }
+        | FrontendError::PrintDidNotStart { .. }
+        | FrontendError::WorkerTimeout { .. } => true,
+        FrontendError::Flow { source } => matches!(source, FlowError::Timeout { .. }),
+        _ => false,
     }
 }
 

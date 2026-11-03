@@ -93,7 +93,7 @@ use futures_util::FutureExt;
 use mytm::{TypedTaskState, TypedTaskStateRef};
 use pretty_hex::simple_hex;
 use snafu::{OptionExt, Snafu};
-use std::{collections::VecDeque, time::Duration};
+use std::{collections::VecDeque, fmt, time::Duration};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
@@ -156,8 +156,43 @@ pub enum FrontendError {
     ShutdownTimeout { timeout: Duration },
     #[snafu(display("device worker did not answer within {timeout:?}"))]
     WorkerTimeout { timeout: Duration },
+    /// 打印卡住了：job 已经作废，连接已经重置过一次。
+    ///
+    /// `cause` 是检测到的卡住原因（沉默、总超时、打印没开始、worker 不响应），
+    /// `outcome` 是重置之后读回的状态。这一层包装是为了让调用方同时看到
+    /// “为什么卡住”和“现在打印机到底怎么样”。
+    #[snafu(display("{cause}; the device connection was reset, {outcome}"))]
+    Stalled {
+        cause: Box<FrontendError>,
+        outcome: StallOutcome,
+    },
     #[snafu(display("a print job is already running"))]
     PrintBusy,
+}
+
+/// 重置连接之后打印机的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StallOutcome {
+    /// 读到了状态：可能是具体错误，也可能已经恢复正常。
+    Status(PrinterStatus),
+    /// 新连接上仍然没有任何回包。
+    Silent,
+}
+
+impl fmt::Display for StallOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Status(status) if status.is_error() => write!(f, "the printer reports {status}"),
+            // 盖子松了一下又合上就是这种情况：job 已经废了，但打印机没事。
+            Self::Status(status) => {
+                write!(
+                    f,
+                    "the printer reports {status} again and can take the next job"
+                )
+            }
+            Self::Silent => write!(f, "the printer still does not answer"),
+        }
+    }
 }
 
 /// 前台状态：响应队列 + 未取走的原始 payload。
@@ -558,9 +593,8 @@ impl Device {
 
     /// 打印机沉默后重置连接，并在新连接上读一次状态。
     ///
-    /// 返回 `None` 表示 reset 失败，或者新连接上仍然没有回包。两种情况都只
-    /// 记录日志：调用方要的是“为什么打不了”，拿不到就只能报沉默。
-    async fn status_after_reset(&self) -> Option<PrinterStatus> {
+    /// 返回 `None` 表示 reset 失败，或者新连接上仍然没有回包。
+    pub(crate) async fn status_after_reset(&self) -> Option<PrinterStatus> {
         if let Err(error) = self.reset(self.config.recv_timeout).await {
             warn!(%error, "device reset failed");
             return None;
@@ -574,27 +608,40 @@ impl Device {
         }
     }
 
-    /// 打印机沉默后的统一收尾：重置连接、读一次真实状态，返回要上报的错误。
+    /// 打印卡住后的统一收尾：重置连接、读回状态，包装成 [`FrontendError::Stalled`]。
     ///
-    /// 能读到 `CoverOpened` / `NoPaper` 这类具体状态就报它，否则仍然报沉默。
-    /// 无论读到什么，当前 job 都已经作废：已经发出去的数据撤不回来。
-    pub(crate) async fn reset_after_silence(&self, polls: usize) -> FrontendError {
-        match self.status_after_reset().await {
-            Some(status) => {
+    /// 不管读回的状态是错误、正常还是仍然沉默，job 都不会继续：已经发出去的
+    /// 数据撤不回来，而 reset 之后旧连接上的进度也没了。读回正常状态是有意义
+    /// 的结果（例如盖子松了一下又合上），调用方据此决定下一个 job 还能不能跑。
+    pub(crate) async fn abort_stalled(&self, cause: FrontendError) -> FrontendError {
+        info!(%cause, "print stalled; resetting the device connection");
+
+        let outcome = match self.status_after_reset().await {
+            Some(status) if status.is_error() => {
                 warn!(
                     status = ?status,
                     reason = %status,
                     "printer status after reset"
                 );
-                if status.is_error() {
-                    return FrontendError::PrinterStatus { status };
-                }
+                StallOutcome::Status(status)
             }
-            None => warn!("printer still silent after reset"),
-        }
-        FrontendError::PrinterSilent {
-            polls,
-            timeout: self.config.recv_timeout,
+            Some(status) => {
+                info!(
+                    status = ?status,
+                    reason = %status,
+                    "printer is ready again after reset"
+                );
+                StallOutcome::Status(status)
+            }
+            None => {
+                warn!("printer still silent after reset");
+                StallOutcome::Silent
+            }
+        };
+
+        FrontendError::Stalled {
+            cause: Box::new(cause),
+            outcome,
         }
     }
 
@@ -613,6 +660,9 @@ impl Device {
     ///
     /// 只在最后一页的 `EndPage` 之后调用，由结束打印的一方独占；期间不要用
     /// `try_recv_one` / `try_pop_raw` 从队头取帧，否则会抢走 `0x70` 的响应。
+    ///
+    /// 这里只轮询状态，不做卡住后的收尾；重置连接、读回状态在
+    /// [`Self::print_bitmap_job`] 的出口统一处理。
     pub async fn wait_for_print_done(
         &self,
         timeout: Duration,
@@ -693,9 +743,12 @@ impl Device {
                         );
                     }
                     if silent_polls >= self.config.print_silent_limit {
-                        // 固件不再回包：job 作废，但先重置连接把原因读回来，
-                        // 否则调用方只能看到一句“打印机沉默”。
-                        return Err(self.reset_after_silence(silent_polls).await);
+                        // 直接返回；reset 和状态读回由 print_bitmap_job 统一做，
+                        // 那里知道这次卡住的前因后果。
+                        return Err(FrontendError::PrinterSilent {
+                            polls: silent_polls,
+                            timeout: self.config.recv_timeout,
+                        });
                     }
                     continue;
                 }
@@ -998,6 +1051,7 @@ mod tests {
         backend::{ReadStatus, Transport, TransportError, WriteOutcome},
         bitmap::Bitmap,
         command::{calculate_checksum, req, resp, status::PrinterStatus},
+        frontend::StallOutcome,
         planner::print::RleMode,
     };
 
@@ -1538,7 +1592,13 @@ mod tests {
         .await
         .expect("print job hung on a silent printer");
         assert!(
-            matches!(result, Err(FrontendError::PrinterSilent { .. })),
+            matches!(
+                result,
+                Err(FrontendError::Stalled {
+                    outcome: StallOutcome::Silent,
+                    ..
+                })
+            ),
             "{result:?}"
         );
         // reset 之后必须在新 transport 上重新发 0x70，而不是干等。
@@ -1593,12 +1653,59 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(FrontendError::PrinterStatus {
-                    status: PrinterStatus::CoverOpened
+                Err(FrontendError::Stalled {
+                    outcome: StallOutcome::Status(PrinterStatus::CoverOpened),
+                    ..
                 })
             ),
             "{result:?}"
         );
+    }
+
+    /// 卡住之后 reset 读回正常状态（盖子松了一下又合上）也要报出来：
+    /// job 作废，但调用方要能看到打印机已经可以接下一个任务。
+    #[tokio::test]
+    async fn status_after_reset_can_be_printable_again() {
+        let silent = TestTransport::default();
+        let recovered = TestTransport::default();
+        recovered.push_frame(status_frame(0x00));
+
+        let config = DeviceConfig {
+            recv_timeout: Duration::from_millis(5),
+            print_silent_limit: 2,
+            ..test_config()
+        };
+        let tm = mytm::TaskManager::new();
+        let mut transports = vec![silent, recovered].into_iter();
+        let device = Device::new_with_factory(
+            &tm,
+            move || {
+                transports
+                    .next()
+                    .map(|transport| Box::new(transport) as Box<dyn crate::backend::Transport>)
+                    .ok_or(crate::backend::TransportError::NotFound)
+            },
+            config,
+        );
+
+        let mut bitmap = Bitmap::new(576, 200).unwrap();
+        for y in 0..200 {
+            bitmap.line_mut(y).unwrap().set(0, true);
+        }
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            device.print_bitmap_job(&bitmap, RleMode::Off),
+        )
+        .await
+        .expect("print job hung");
+        match result {
+            Err(FrontendError::Stalled {
+                outcome: StallOutcome::Status(PrinterStatus::Printable),
+                ..
+            }) => {}
+            other => panic!("{other:?}"),
+        }
     }
 
     /// `Device::reset` 必须丢弃旧 transport，重新调用 factory。

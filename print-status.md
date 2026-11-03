@@ -94,7 +94,7 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
 打印完成后进程退出前还要调用 `Device::shutdown(timeout)`：它取消 worker 并等
 阻塞线程真正返回，USB 句柄释放后进程才结束。只 drop `Device` 不会等线程退出。
 
-## 打印机沉默：job 作废，reset 是唯一清理方式
+## 打印卡住：job 作废，reset + 读回状态
 
 开盖、缺纸或固件卡住时，打印机会直接停止处理命令，连续发多少 `0x70` 都
 **不会得到响应**。USB 写仍然会成功（中断 OUT 端点照常 ACK），所以不能靠
@@ -106,9 +106,17 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
   默认 `2` 次，`--recv-timeout 500ms` 时约 1 秒、默认 3 秒时约 6 秒。这个
   值只用来容忍偶尔漏答，调大不会提高恢复概率；
 - 判定沉默后当前 job 直接作废，不要补 `EndPage`、也不要重试当前页；
-- 收尾统一是 [`Device::reset`](src/frontend/mod.rs) + 读一次 `0x70`
-  （`Device::reset_after_silence`）：能读到 `CoverOpened` / `NoPaper` 就
-  报具体状态，读不到才保留 `PrinterSilent`；
+- **所有卡住都走同一个出口**：`print_bitmap_job` 失败时先看错误是不是
+  “卡住”（沉默、整页超时、打印没开始、写命令没有确认），是就调用
+  [`Device::abort_stalled`](src/frontend/mod.rs)，重置连接、读回一次状态，
+  再把错误包装成 `FrontendError::Stalled { cause, outcome }`；
+- `outcome` 有三种，都会照实报出来：
+  - `Status(CoverOpened)` / `Status(NoPaper)` 这类错误状态；
+  - `Status(Printable)`：卡了一下又自己好了（典型是盖子松动又合上），
+    这一页照样作废，但打印机可以马上接下一个 job；
+  - `Silent`：新连接上仍然没有回包；
+- 打印机明确回了错误状态（`PrinterStatus`）时不重置：它在正常通信，
+  没必要动连接；
 - `Device::reset` 的语义是**彻底重置连接**，关键在中间那段静默：
 
   1. worker 丢弃当前 transport（释放接口、把内核驱动接回去），连接真正断开；
@@ -120,6 +128,5 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
   30 秒、55 次 `0x70` 全部没有回包；断开 1~2 秒再重连，第一次查询就能读到
   `CoverOpened`。所以「重新 open」本身不够，固件需要一段没有主机在跟它说话
   的时间。它也不等价于在旧 handle 上调用 `libusb_reset_device()`；
-- 读到 `Printable` 也不要继续当前 job：已经发出去的数据无法撤回；
 - `dzserver` 失败后走 `drop_device()` + 下一次任务重连，重连本身也是重新
   open；`wait_ready` 有 `print_done_timeout` 上限，不会无限堵住队列。
