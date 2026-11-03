@@ -171,8 +171,9 @@ impl Device {
 
     /// 在 `0x77` 已经超时的情况下确认一次 `0x70`。
     ///
-    /// 如果状态也不回，说明固件的 parser 已经被前面的数据堵住；此时复位
-    /// USB、清掉残留响应，再探一次状态。无论探测结果如何，当前 job 都作废。
+    /// 如果状态也不回，说明固件的 parser 已经被前面的数据堵住；在同一个
+    /// 连接里继续查询或做 in-place reset 都不能可靠恢复（`reset` 不重建
+    /// libusb context / handle）。直接返回错误，让调用方关闭设备后重开。
     async fn check_after_budget_timeout(&self) -> Result<(), FrontendError> {
         match self
             .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, self.config.recv_timeout)
@@ -192,53 +193,13 @@ impl Device {
                 Ok(())
             }
             Ok(None) => {
-                warn!("status also timed out after buffer timeout; resetting USB device");
-                if let Err(error) = self.reset(self.config.recv_timeout).await {
-                    warn!(%error, "USB reset failed");
-                    return Err(FrontendError::PrinterSilent {
-                        polls: 1,
-                        timeout: self.config.recv_timeout,
-                    });
-                }
-
-                // reset 之后固件可能还要一小会儿才重新开始处理命令；多探
-                // 几次，避免把“刚复位完还没启动”误判成“仍然沉默”。
-                for attempt in 1..=3 {
-                    if attempt > 1 {
-                        tokio::time::sleep(self.config.recv_timeout).await;
-                    }
-                    match self
-                        .recv_cmd_timeout::<resp::status::Status>(
-                            resp::status::CMD,
-                            self.config.recv_timeout,
-                        )
-                        .await
-                    {
-                        Ok(Some(status)) => {
-                            warn!(
-                                attempt,
-                                status = ?status.status,
-                                reason = %status.status,
-                                "printer status after USB reset"
-                            );
-                            if status.status.is_error() {
-                                return Err(FrontendError::PrinterStatus {
-                                    status: status.status,
-                                });
-                            }
-                            break;
-                        }
-                        Ok(None) => {
-                            warn!(attempt, "printer still silent after USB reset");
-                        }
-                        Err(error) => {
-                            warn!(attempt, %error, "status query after USB reset failed");
-                        }
-                    }
-                }
-
-                // 设备恢复了也不能继续这一页：已经发出去的数据无法撤回，
-                // 继续发会在纸中间留下空洞。job 仍然作废。
+                // 同一个连接里 reset 不重建 libusb context / handle，实测
+                // 不能把固件从 parser 堵住的状态救回来。直接作废 job，
+                // 让调用方关闭设备后重新 open。
+                warn!(
+                    "status also timed out after buffer timeout; \
+                     discarding the job and reopening the device"
+                );
                 Err(FrontendError::PrinterSilent {
                     polls: 1,
                     timeout: self.config.recv_timeout,

@@ -86,18 +86,11 @@ pub(crate) fn channels() -> (OutTx, OutRx, RecvTx, RecvRx) {
     (out_tx, out_rx, recv_tx, recv_rx)
 }
 
-/// 后台线程收到的任务。
-pub(crate) enum OutJobKind {
-    /// 已编码的命令区（不含 USB 外层 `1e <长度>`）。
-    Write(Vec<u8>),
-    /// 复位 USB 设备，清掉两个方向上的残留数据。
-    Reset,
-}
-
-/// 一个待执行的任务。
+/// 后台线程收到的写任务。
 pub(crate) struct OutJob {
-    pub kind: OutJobKind,
-    /// 完成后回报结果。
+    /// 已编码的命令区（不含 USB 外层 `1e <长度>`）。
+    pub cmd_area: Vec<u8>,
+    /// 写完后回报结果。
     pub ack: JobAck,
 }
 
@@ -169,23 +162,13 @@ fn run(
         loop {
             match out_rx.try_recv() {
                 Ok(job) => {
-                    let result = match job.kind {
-                        OutJobKind::Write(cmd_area) => match transport.write(&cmd_area) {
-                            Ok(WriteOutcome::Written) => Ok(()),
-                            // USB 不会返回 Blocked；真出现就先报错，避免静默丢包。
-                            Ok(WriteOutcome::Blocked) => {
-                                Err("USB transport unexpectedly blocked".to_string())
-                            }
-                            Err(e) => Err(e.to_string()),
-                        },
-                        OutJobKind::Reset => {
-                            let result = transport.reset().map_err(|e| e.to_string());
-                            if result.is_ok() {
-                                // 复位后之前切了一半的帧也不能再用了。
-                                received.clear();
-                            }
-                            result
+                    let result = match transport.write(&job.cmd_area) {
+                        Ok(WriteOutcome::Written) => Ok(()),
+                        // USB 不会返回 Blocked；真出现就先报错，避免静默丢包。
+                        Ok(WriteOutcome::Blocked) => {
+                            Err("USB transport unexpectedly blocked".to_string())
                         }
+                        Err(e) => Err(e.to_string()),
                     };
                     if let Err(e) = &result {
                         error!("write failed: {e}");

@@ -461,7 +461,7 @@ impl Device {
         let sent = async {
             self.out_tx
                 .send(worker::OutJob {
-                    kind: worker::OutJobKind::Write(cmd_area),
+                    cmd_area,
                     ack: ack_tx,
                 })
                 .map(|r| r.ok().context(WorkerGoneSnafu))
@@ -476,46 +476,6 @@ impl Device {
             Ok(result) => result,
             Err(_) => Err(FrontendError::WorkerTimeout { timeout }),
         }
-    }
-
-    /// 复位 USB 设备，并清空前台已经收到的响应。
-    ///
-    /// 打印中途开盖时固件可能停止消费 USB，残留数据会堵住它的 parser；
-    /// 这时只能复位端点，再重新查询状态。当前 job 仍然作废，本方法只负责
-    /// 把设备恢复到能接受下一次任务的状态。
-    pub async fn reset(&self, timeout: Duration) -> Result<(), FrontendError> {
-        // `UsbTransport::reset` 内部要等设备稳定再重新 claim 接口，约 1 秒；
-        // 前面还可能有最多一个 `WRITE_TIMEOUT`（500ms）的写任务。用
-        // `recv_timeout` 当 reset 超时会误判成 worker 卡死。
-        const MIN_RESET_TIMEOUT: Duration = Duration::from_secs(3);
-        let timeout = timeout.max(MIN_RESET_TIMEOUT);
-
-        let (ack_tx, ack_rx) = oneshot::oneshot();
-        let sent = async {
-            self.out_tx
-                .send(worker::OutJob {
-                    kind: worker::OutJobKind::Reset,
-                    ack: ack_tx,
-                })
-                .map(|r| r.ok().context(WorkerGoneSnafu))
-                .await?;
-            ack_rx
-                .map(|r| r.ok().context(WorkerGoneSnafu))
-                .await?
-                .map_err(|message| FrontendError::Write { message })
-        };
-
-        let result = match tokio::time::timeout(timeout, sent).await {
-            Ok(result) => result,
-            Err(_) => Err(FrontendError::WorkerTimeout { timeout }),
-        };
-        if result.is_ok() {
-            let mut state = self.recv.lock().await;
-            while state.rx.try_recv().is_ok() {}
-            state.queue.clear();
-            info!("USB reset completed, receive queue cleared");
-        }
-        result
     }
 
     /// 等打印机把已经发送的页真正打完。
@@ -929,7 +889,6 @@ mod tests {
     struct TestTransport {
         written: Arc<StdMutex<Vec<u8>>>,
         incoming: Arc<StdMutex<VecDeque<Vec<u8>>>>,
-        resets: Arc<StdMutex<usize>>,
     }
 
     impl TestTransport {
@@ -939,10 +898,6 @@ mod tests {
 
         fn written(&self) -> Vec<u8> {
             self.written.lock().unwrap().clone()
-        }
-
-        fn resets(&self) -> usize {
-            *self.resets.lock().unwrap()
         }
     }
 
@@ -964,7 +919,6 @@ mod tests {
         }
 
         fn reset(&mut self) -> Result<(), TransportError> {
-            *self.resets.lock().unwrap() += 1;
             Ok(())
         }
     }
@@ -1445,10 +1399,10 @@ mod tests {
             ..test_config()
         };
         let tm = mytm::TaskManager::new();
-        let device = Device::new_with_transport(&tm, transport.clone(), config);
+        let device = Device::new_with_transport(&tm, transport, config);
 
-        // 页要足够长，才能在 `0x77` 超时 fallback 之后再次进入预算查询，
-        // 触发“预算超时 + 状态超时 -> USB reset”的路径。
+        // 页要足够长，才能在 `0x77` 超时 fallback 之后再次检查状态，
+        // 覆盖“预算超时 + 状态超时 -> 作废 job”的路径。
         let mut bitmap = Bitmap::new(576, 200).unwrap();
         for y in 0..200 {
             bitmap.line_mut(y).unwrap().set(0, true);
@@ -1464,7 +1418,6 @@ mod tests {
             matches!(result, Err(FrontendError::PrinterSilent { .. })),
             "{result:?}"
         );
-        assert!(transport.resets() > 0, "USB reset was not attempted");
     }
 
     /// worker 卡在 USB 写里时，前台不能无限等 ack。
