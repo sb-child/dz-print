@@ -269,7 +269,10 @@ fn printer_status(snapshot: &JobSnapshot) -> PrinterStatus {
     match snapshot.printer_status {
         Some(status) => convert_printer_status(status),
         None => match snapshot.state {
-            JobState::PrintCompleted => PrinterStatus::PsPrintable,
+            // 成功完成时 printer_status 一定是 Some(Printable)；这里只有
+            // 没被分类到具体 PrinterStatus 的失败（例如 PrintDidNotStart），
+            // 不能再返回 PsPrintable，否则客户端会把失败当成成功。
+            JobState::PrintCompleted => PrinterStatus::PsOtherError,
             _ => PrinterStatus::PsNotCompleted,
         },
     }
@@ -303,5 +306,20 @@ fn convert_printer_status(status: LibPrinterStatus) -> PrinterStatus {
         LibPrinterStatus::UnmatchedRibbon2 => PrinterStatus::PsUnmatchedRibbon2,
         LibPrinterStatus::LabelCanOpened => PrinterStatus::PsLabelCanOpened,
         LibPrinterStatus::Unknown(_) => PrinterStatus::PsOtherError,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_without_a_printer_status_is_an_error() {
+        let snapshot = JobSnapshot {
+            state: JobState::PrintCompleted,
+            printer_status: None,
+            io_error: false,
+        };
+        assert_eq!(printer_status(&snapshot), PrinterStatus::PsOtherError);
     }
 }

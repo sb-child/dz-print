@@ -335,6 +335,9 @@ async fn query_status(dev: &Device, timeout: Duration) -> Result<PrinterStatus, 
 fn classify_error(error: &anyhow::Error) -> (Option<PrinterStatus>, bool) {
     match error.downcast_ref::<FrontendError>() {
         Some(FrontendError::PrinterStatus { status }) => (Some(*status), false),
+        // 页面没开始打印，但没有具体的打印机状态码；让 gRPC 侧落到
+        // PS_OTHER_ERROR，而不是 PS_PRINTABLE。
+        Some(FrontendError::PrintDidNotStart { .. }) => (None, false),
         Some(
             FrontendError::PrinterSilent { .. }
             | FrontendError::PrintTimeout { .. }
@@ -350,4 +353,19 @@ fn classify_error(error: &anyhow::Error) -> (Option<PrinterStatus>, bool) {
 
 fn job_label(id: JobId) -> Uuid {
     Uuid::from_bytes(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn print_did_not_start_is_not_an_io_error() {
+        let error = anyhow::Error::new(FrontendError::PrintDidNotStart {
+            timeout: Duration::from_secs(3),
+        });
+        let (status, io_error) = classify_error(&error);
+        assert!(status.is_none());
+        assert!(!io_error);
+    }
 }
