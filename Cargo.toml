@@ -70,6 +70,10 @@ name = "test_usb"
 required-features = ["bin-test-usb"]
 
 [[bin]]
+name = "probe_end_page"
+required-features = ["bin-probe"]
+
+[[bin]]
 name = "dzserver"
 path = "src/bin/dzserver/main.rs"
 required-features = ["bin-dzserver"]
@@ -78,7 +82,7 @@ required-features = ["bin-dzserver"]
 default = ["bins"]
 
 # 一次构建全部 bin；只想用一个时关掉默认特性再单独开对应 feature。
-bins = ["bin-dzcli", "bin-image", "bin-typst", "bin-test-usb", "bin-dzserver"]
+bins = ["bin-dzcli", "bin-image", "bin-typst", "bin-test-usb", "bin-probe", "bin-dzserver"]
 
 # 只需要库时用 `--no-default-features`。
 bin-dzcli = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
@@ -105,6 +109,7 @@ typst-support = [
     "dep:ureq",
 ]
 bin-test-usb = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
+bin-probe = ["dep:anyhow", "dep:clap", "dep:tracing-subscriber"]
 bin-dzserver = [
     "typst-support",
     "dep:anyhow",

@@ -114,6 +114,47 @@ DP27P 上并不完全可靠，日志里的结论只能当参考，最终仍要�
 确认页面是否真的打印过：到 `--grace` 后统计没有增长就继续等，直到
 `--start-timeout` 返回 `PrintDidNotStart`，避免固件启动慢时提前判完成。
 
+### 卡住恢复实验：`probe_end_page`
+
+这个 bin 用真机验证「打印机已经沉默后还发 `EndPage` 是否会让恢复变慢」。
+它会真的打印并走纸。
+
+```bash
+# 主实验：同一个完整页，唯一区别是沉默后发不发 EndPage
+cargo run --bin probe_end_page -- --mode late \
+  --rows 1418 --prompt-at 80 --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode late-skip \
+  --rows 1418 --prompt-at 80 --recv-timeout 500ms
+
+# 辅助实验：在同一个中途位置，只切换 EndPage
+cargo run --bin probe_end_page -- --mode early \
+  --rows 1418 --prompt-at 50 --probe-every 2000 --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode early-end-page \
+  --rows 1418 --prompt-at 50 --probe-every 2000 --recv-timeout 500ms
+```
+
+模式：
+
+- `early`：探测到沉默就停，不发 `EndPage`；
+- `early-end-page`：同样停，但仍然发一条 `EndPage`；
+- `late`：不理会沉默，发完整页 + `0x25` + `0x73` + `EndPage`（复现失败场景）；
+- `late-skip`：发完整页；`0x73` 和 `0x70` 都失败时不发 `EndPage`。
+
+`late` / `late-skip` 建议 `--prompt-at 80`：失败抓包就是“数据快发完时开盖，
+主机仍把剩下的数据和 EndPage 写进去”。`early` / `early-end-page` 用 50 左右，
+在同一个中途位置只切换 EndPage。默认 `--pace 50ms` 大致对应真机的发送速度；
+如果 80% 还反应不过来，把 `--rows` 调大（例如 3000）。
+
+程序打印到 `--prompt-at` 指定的百分比时会打出 `>>> OPEN THE COVER NOW <<<`，
+看到后打开盖子。结束后打印：
+
+```text
+RESULT mode=early rows=1418 sent_bytes=... sent_lines=... drop_elapsed=... prompt=... first_silence=... first_error=... endpage=... stats_ok=... answer=... from_silence=... from_endpage=...
+```
+
+`--settle` 控制断开到重连的等待（默认 `1.3s`），`--retries` / `--retry-gap`
+控制重连后的探测。`--no-wait` 跳过开始前的回车确认。
+
 `dzcli` 目前只有 `clap` 参数骨架，功能还没接。
 
 ## 开发
@@ -128,7 +169,7 @@ DP27P 上并不完全可靠，日志里的结论只能当参考，最终仍要�
   cargo build --no-default-features            # 只要库
   ```
 
-  feature 有 `bin-dzcli` / `bin-image` / `bin-typst` / `bin-test-usb` / `bin-dzserver`，
+  feature 有 `bin-dzcli` / `bin-image` / `bin-typst` / `bin-test-usb` / `bin-probe` / `bin-dzserver`，
   `bins` 是它们的合集。`dzprint_typst` 和 `dzserver` 共用 `typst-support`，
   只开 `bin-image` 时不会编译 Typst 那一套依赖。
 
