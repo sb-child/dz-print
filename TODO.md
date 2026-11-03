@@ -380,7 +380,7 @@ transport（USB HID / BLE 串口透传）
 - [ ] `ModelVersion` 判定依据：协议只写了 SDK `h=0/16/303`，没有从设备读取 `device_type` / `h` 的实现；DP27P 旧代码走 v1，DP305P 暂按 v2。实测 DP27P（`DP27P-Y4094C023`，`3.1.20230620`）在 v2 编码下能查询 `0x70`~`0x7d`，打印命令还没验证
 - [ ] `0x88` 校验歧义：v2 的合法校验和恰好为 `0x88` 时会被当成「不校验」而跳过验证；与 SDK 行为一致，暂不处理
 - [ ] 每完成一个阶段，同步更新 `cmd-impl-status.md` 的 resp 列；确认过的格式补到 `protocol.md`
-- [x] 新增 `resp/` 后补 `README.md` 的代码结构说明
+- [x] 新增 `resp/` 后补代码结构说明（现在在 `src/lib.rs` 的模块注释里，不在 README）
 
 ## 代码质量审核（2026-11-01）
 
@@ -565,7 +565,7 @@ transport（USB HID / BLE 串口透传）
   - 27 个 doctest（`cargo test --doc`），需要硬件的例子标 `no_run`
 - [x] 修 `src/planner/mod.rs` 的 `[print]` 文档链接（模块/宏重名）
 - [ ] `TODO.md` 的「进行中」改成「已完成记录」，另开「下一步」
-- [ ] `README.md` 的 `bitmap.rs` 描述改成同时包含 `Bitmap` 和 `BitmapLine`
+- [x] `src/bitmap/mod.rs` 的模块注释同时覆盖 `Bitmap` 和 `BitmapLine`（已满足）
 - [ ] `protocol.md` / `flow-control.md` 考虑拆分「规范」和「实验记录」
 
 ### 验收

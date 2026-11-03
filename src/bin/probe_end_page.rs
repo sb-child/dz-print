@@ -36,8 +36,31 @@
 //! probe_end_page --mode late-skip --rows 3000 --prompt-at 30
 //! ```
 //!
-//! 比较两次的 `after_reopen`：如果 `late` 明显更慢、`late-skip` 稳定在 1~2 秒，
-//! 就说明 EndPage 是关键，并且候选修复有效。
+//! # 判读
+//!
+//! 结束后打印一行 `RESULT`，主指标是 `after_reopen`：断开重连之后多久恢复应答。
+//!
+//! | 字段 | 含义 |
+//! | --- | --- |
+//! | `sent_bytes` / `sent_lines` | 沉默前已经写进去多少 |
+//! | `prompt` / `first_silence` | 提示开盖、第一次探测失败的时刻（相对开始发送） |
+//! | `first_error` | 打印机回了错误状态而不是沉默（说明开盖时它已经空闲） |
+//! | `endpage` | 是否真的写了 `EndPage`；`None` 表示没写 |
+//! | `drop_elapsed` / `reopen_elapsed` | 断开、重连各花了多久 |
+//! | `attempts` / `after_reopen` | 重连后第几次探测恢复、以及隔了多久 |
+//! | `from_silence` / `from_endpage` | 从沉默 / 从 `EndPage` 到恢复，含 settle 和数据发送 |
+//!
+//! `after_reopen` 的分辨率约 300ms：`--poll-interval` 默认 100ms，单次探测最多
+//! 等 200ms。`--poll-for`（默认 20s）内都没恢复就报 `None`。`--settle` 控制
+//! 断开到重连的等待（默认 1.3s）。同一组参数交替跑 3~5 次，比较中位数。
+//!
+//! # 已经测出来的结论
+//!
+//! 同一页、同一开盖位置，`late` 在 reset + 1.3s 重连之后 20 秒内 50 次 `0x70`
+//! 全部无响应；`late-skip` 重连后第一次查询就回 `CoverOpened`。所以“沉默后
+//! 写 `EndPage`”会把设备写死，库里已经改成发 `EndPage` 前先确认打印机还在
+//! 应答（`frontend::print::confirm_printer_answers`）。这个 bin 留着用于复现和
+//! 回归验证，不再是待验证的猜想。
 
 mod common;
 

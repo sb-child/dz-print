@@ -16,6 +16,30 @@
 //! - `--poll` / `--grace`：等待打印完成时的 `0x70` 轮询间隔和启动宽限期（`humantime` 写法）。
 //!
 //! `--phase print` 和 `--phase short-print` 会真的驱动打印头并走纸。
+//!
+//! # 短页面实验
+//!
+//! ```text
+//! test_usb --phase short-print --short-rows 32 --short-pages 3 --poll 1ms --print-timeout 20s
+//! ```
+//!
+//! 连续打几张短页面，复现“打完前后掉打印头”。逐页记录
+//! `print_bitmap_job` 的返回值、`0x73` 统计增量和打印结束后队列里的残留帧。
+//!
+//! `--poll` / `--grace` / `--start-timeout` / `--verify-interval` 直接对应
+//! [`DeviceConfig`] 里等待打印完成的参数；想抓到转瞬即逝的状态就把 `--poll`
+//! 调到 `1ms`~`5ms`。
+//!
+//! 两个实测限制：
+//!
+//! - 实际采样率还受固件响应速度限制：DP27P 回一条 `0x70` 大约要 100ms，
+//!   所以即使 `--poll 1ms`，真正能看到的间隔也只有 ~10Hz；
+//! - `0x73` 计数器在 DP27P 上并不完全可靠，日志里的结论只能当参考，最终仍要
+//!   看纸面。
+//!
+//! `print_bitmap_job` 在一直看不到 `Printing` / `Rotating` 时会用 `0x73`
+//! 确认页面是否真的打印过：到 `--grace` 后统计没有增长就继续等，直到
+//! `--start-timeout` 返回 `PrintDidNotStart`，避免固件启动慢时提前判完成。
 
 use std::time::Duration;
 
