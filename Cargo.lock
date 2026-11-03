@@ -933,7 +933,6 @@ dependencies = [
  "rayon",
  "rusb",
  "snafu",
- "spin 0.12.3",
  "tar",
  "tempfile",
  "tiny-skia",
@@ -3659,15 +3658,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
-name = "spin"
-version = "0.12.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0134f9043ed38b087ac4f7d4af44c79e2c9e5094421fe3164f435ce585953b10"
-dependencies = [
- "lock_api 0.4.14",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4988,7 +4978,7 @@ version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2300d0f78cba12f14e29e8dd157ea64050c0a688179aefdb2050105805594a0c"
 dependencies = [
- "spin 0.9.9",
+ "spin",
  "wasmi_collections",
  "wasmi_core",
  "wasmi_ir",
