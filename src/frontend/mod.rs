@@ -144,7 +144,8 @@ pub enum FrontendError {
     #[snafu(display("print did not finish within {timeout:?}"))]
     PrintTimeout { timeout: Duration },
     #[snafu(display(
-        "printer stopped answering status polls ({polls} timeouts of {timeout:?} in a row)"
+        "printer stopped answering status polls ({polls} timeouts of {timeout:?} in a row); \
+         the cover may be open, paper may be out, or the device may be unplugged"
     ))]
     PrinterSilent { polls: usize, timeout: Duration },
     #[snafu(display(
@@ -1380,6 +1381,33 @@ mod tests {
                 }
             ),
             "{err:?}"
+        );
+    }
+
+    /// 开盖 / 缺纸时固件可能连 `0x70` 都不回；发送阶段不能一直灌数据。
+    #[tokio::test]
+    async fn silent_printer_aborts_during_send() {
+        let transport = TestTransport::default();
+        let config = DeviceConfig {
+            recv_timeout: Duration::from_millis(5),
+            print_silent_limit: 2,
+            ..test_config()
+        };
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_transport(&tm, transport, config);
+
+        let mut bitmap = Bitmap::new(8, 1).unwrap();
+        bitmap.line_mut(0).unwrap().set(0, true);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            device.print_bitmap_job(&bitmap, RleMode::Off),
+        )
+        .await
+        .expect("print job hung on a silent printer");
+        assert!(
+            matches!(result, Err(FrontendError::PrinterSilent { .. })),
+            "{result:?}"
         );
     }
 

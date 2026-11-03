@@ -152,6 +152,10 @@ impl Device {
                 ..FlowConfig::default()
             });
             flow.push_commands(&self.assembler, &refs)?;
+            // 开盖 / 缺纸时固件可能直接停止回应所有查询。连续几次连 `0x70`
+            // 都没有回包时不要继续灌数据，否则要等整页发完、`EndPage` 之后
+            // 才会在 `wait_for_print_done` 里发现。
+            let mut silent_polls = 0usize;
 
             loop {
                 match flow.step() {
@@ -185,6 +189,7 @@ impl Device {
                             .await
                         {
                             Ok(Some(status)) => {
+                                silent_polls = 0;
                                 debug!(
                                     status = ?status.status,
                                     page_key = status.page_key,
@@ -193,7 +198,27 @@ impl Device {
                                 Some(status)
                             }
                             Ok(None) => {
-                                debug!("status before budget timed out");
+                                silent_polls += 1;
+                                if silent_polls == 1 {
+                                    debug!(
+                                        limit = self.config.print_silent_limit,
+                                        timeout = ?self.config.recv_timeout,
+                                        "status before budget timed out"
+                                    );
+                                } else {
+                                    warn!(
+                                        silent_polls,
+                                        limit = self.config.print_silent_limit,
+                                        timeout = ?self.config.recv_timeout,
+                                        "printer did not answer the status poll during print"
+                                    );
+                                }
+                                if silent_polls >= self.config.print_silent_limit {
+                                    return Err(FrontendError::PrinterSilent {
+                                        polls: silent_polls,
+                                        timeout: self.config.recv_timeout,
+                                    });
+                                }
                                 None
                             }
                             Err(e @ RecvError::Closed) => return Err(e.into()),
@@ -202,6 +227,20 @@ impl Device {
                                 None
                             }
                         };
+                        // 无纸 / 开盖等错误状态必须立即中止，不要再多等一次
+                        // `0x77` 的响应。
+                        if let Some(status) = status
+                            && status.status.is_error()
+                        {
+                            error!(
+                                status = ?status.status,
+                                reason = %status.status,
+                                "printer reported an error during the print job"
+                            );
+                            return Err(FrontendError::PrinterStatus {
+                                status: status.status,
+                            });
+                        }
                         let buffer_timeout =
                             deadline.saturating_duration_since(tokio::time::Instant::now());
                         match self
@@ -212,6 +251,7 @@ impl Device {
                             .await
                         {
                             Ok(Some(bs)) => {
+                                silent_polls = 0;
                                 debug!(
                                     size = bs.size,
                                     budget = bs.budget(),
@@ -229,19 +269,6 @@ impl Device {
                                 warn!("buffer size failed, fall back to 8 KiB: {e}");
                                 flow.on_budget_timeout();
                             }
-                        }
-                        // 无纸 / 开盖等错误状态必须中止，不能一边报错一边继续查预算。
-                        if let Some(status) = status
-                            && status.status.is_error()
-                        {
-                            error!(
-                                status = ?status.status,
-                                reason = %status.status,
-                                "printer reported an error during the print job"
-                            );
-                            return Err(FrontendError::PrinterStatus {
-                                status: status.status,
-                            });
                         }
                     }
                     ChunkDecision::Wait => {
