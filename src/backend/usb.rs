@@ -52,8 +52,6 @@ pub const READ_TIMEOUT: Duration = Duration::from_millis(100);
 pub const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// 读 USB 字符串描述符的超时。
 const NAME_TIMEOUT: Duration = Duration::from_secs(1);
-/// `reset` 之后等设备重新枚举。
-const RESET_DELAY: Duration = Duration::from_secs(1);
 
 /// USB 设备选择方式。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,24 +235,6 @@ impl Transport for UsbTransport {
                 Err(err)
             }
         }
-    }
-
-    fn reset(&mut self) -> Result<(), TransportError> {
-        info!("resetting USB device");
-        if let Err(e) = self.handle.reset() {
-            let err = map_usb_error(e);
-            self.mark_error(&err);
-            return Err(err);
-        }
-        std::thread::sleep(RESET_DELAY);
-        // reset 之后接口声明可能丢失，重新 claim 一次；失败只记录，
-        // 保持和以前一样的“reset 本身成功就返回”语义。
-        match claim_interfaces(&self.handle, self.endpoints) {
-            Ok(detached) => self.detached = detached,
-            Err(e) => warn!("re-claim interfaces after reset failed: {e}"),
-        }
-        info!("USB device reset completed");
-        Ok(())
     }
 }
 

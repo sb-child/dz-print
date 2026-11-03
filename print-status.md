@@ -103,13 +103,13 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
 - `print_silent_limit` 默认 `2`；`--recv-timeout 500ms` 时约 1 秒，
   默认 3 秒时约 6 秒；
 - 判定沉默后当前 job 直接作废，不要补 `EndPage`、也不要重试当前页；
-- 如果 `0x77` 已经超时、下一轮 `0x70` 也不回，发送循环直接返回错误；
-- 不要在同一个连接里做 in-place reset：`Transport::reset()` 不会重建
-  libusb context / DeviceHandle，实测不能把固件从 parser 堵住的状态救回来；
-- 清理 USB 缓冲的唯一可靠方式是**关闭设备后重新打开**。`UsbTransport::open`
-  会新建 context / handle，并在 claim 接口之前做一次 `handle.reset()`，
-  所以 CLI 下次运行、`dzserver` 的 drop/reconnect 都能恢复；
-- CLI 在沉默错误退出前会做一次这样的 close + open，并读一次 `0x70`：
-  如果能读到 `CoverOpened` / `NoPaper`，最终错误会换成具体状态；读不到
-  就保留 `PrinterSilent`。`dzserver` 失败后也会重建连接读一次状态；
-- 同一次连接里继续轮询状态没有意义，只会延迟退出。
+- 如果 `0x77` 已经超时、下一轮 `0x70` 也不回，发送循环调用一次
+  [`Device::reset`](src/frontend/mod.rs)；
+- `Device::reset` 的语义是**彻底重置连接**：worker 丢弃当前 transport
+  （释放接口、把内核驱动接回去），再用原来的选择器重新 open 一个新的
+  libusb context / DeviceHandle，claim 之前做 `handle.reset()`。它不等价于
+  在旧 handle 上调用 `libusb_reset_device()`，实测后者救不回被堵住的 parser；
+- reset 完成后只读一次 `0x70`：读到 `CoverOpened` / `NoPaper` 就报具体
+  状态，否则保留 `PrinterSilent`。job 仍然作废；
+- `dzserver` 失败后走 `drop_device()` + 下一次任务重连，重连本身也是重新
+  open；`wait_ready` 有 `print_done_timeout` 上限，不会无限堵住队列。

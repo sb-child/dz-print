@@ -171,9 +171,8 @@ impl Device {
 
     /// 在 `0x77` 已经超时的情况下确认一次 `0x70`。
     ///
-    /// 如果状态也不回，说明固件的 parser 已经被前面的数据堵住；在同一个
-    /// 连接里继续查询或做 in-place reset 都不能可靠恢复（`reset` 不重建
-    /// libusb context / handle）。直接返回错误，让调用方关闭设备后重开。
+    /// 如果状态也不回，说明固件的 parser 已经被前面的数据堵住。调用
+    /// [`Device::reset`] 重新打开连接，再读一次状态；job 仍然作废。
     async fn check_after_budget_timeout(&self) -> Result<(), FrontendError> {
         match self
             .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, self.config.recv_timeout)
@@ -193,13 +192,47 @@ impl Device {
                 Ok(())
             }
             Ok(None) => {
-                // 同一个连接里 reset 不重建 libusb context / handle，实测
-                // 不能把固件从 parser 堵住的状态救回来。直接作废 job，
-                // 让调用方关闭设备后重新 open。
                 warn!(
                     "status also timed out after buffer timeout; \
-                     discarding the job and reopening the device"
+                     resetting the device connection"
                 );
+
+                // reset 会丢弃旧 transport，重新 open 出新的 libusb context /
+                // handle，相当于重启进程后的第一次连接。job 仍然作废，这里
+                // 只是把 parser 和残留响应清掉，并尽量读回真实状态。
+                if let Err(error) = self.reset(self.config.recv_timeout).await {
+                    warn!(%error, "device reset failed");
+                    return Err(FrontendError::PrinterSilent {
+                        polls: 1,
+                        timeout: self.config.recv_timeout,
+                    });
+                }
+
+                match self
+                    .recv_cmd_timeout::<resp::status::Status>(
+                        resp::status::CMD,
+                        self.config.recv_timeout,
+                    )
+                    .await
+                {
+                    Ok(Some(status)) => {
+                        warn!(
+                            status = ?status.status,
+                            reason = %status.status,
+                            "printer status after reset"
+                        );
+                        if status.status.is_error() {
+                            return Err(FrontendError::PrinterStatus {
+                                status: status.status,
+                            });
+                        }
+                    }
+                    Ok(None) => warn!("printer still silent after reset"),
+                    Err(error) => warn!(%error, "status query after reset failed"),
+                }
+
+                // 即使读到了 Printable 也不能继续：已经发出去的数据无法
+                // 撤回，job 已经作废。
                 Err(FrontendError::PrinterSilent {
                     polls: 1,
                     timeout: self.config.recv_timeout,

@@ -27,10 +27,6 @@
 //!     fn read_chunk(&mut self, _out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
 //!         Ok(ReadStatus::Timeout)
 //!     }
-//!
-//!     fn reset(&mut self) -> Result<(), TransportError> {
-//!         Ok(())
-//!     }
 //! }
 //! ```
 //!
@@ -103,9 +99,6 @@ pub trait Transport: Send + 'static {
 
     /// 读一段，把命令区字节追加到 `out`。超时由实现自己配置。
     fn read_chunk(&mut self, out: &mut Vec<u8>) -> Result<ReadStatus, TransportError>;
-
-    /// 复位设备并清空内部缓冲。
-    fn reset(&mut self) -> Result<(), TransportError>;
 }
 
 #[cfg(test)]
@@ -133,11 +126,6 @@ mod tests {
             self.incoming.clear();
             Ok(ReadStatus::Data)
         }
-
-        fn reset(&mut self) -> Result<(), TransportError> {
-            self.incoming.clear();
-            Ok(())
-        }
     }
 
     /// worker 会把它放进 `Box<dyn Transport>`，所以 trait 必须是对象安全的。
@@ -149,6 +137,5 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(t.read_chunk(&mut out).unwrap(), ReadStatus::Data);
         assert!(out.is_empty());
-        assert!(t.reset().is_ok());
     }
 }

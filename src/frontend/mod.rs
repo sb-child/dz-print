@@ -324,14 +324,24 @@ impl Device {
         transport: impl crate::backend::Transport + 'static,
         config: DeviceConfig,
     ) -> Self {
-        Self::new_with_factory(tm, move || Ok(Box::new(transport)), config)
+        let mut transport = Some(transport);
+        Self::new_with_factory(
+            tm,
+            move || {
+                let transport = transport
+                    .take()
+                    .ok_or(crate::backend::TransportError::NotFound)?;
+                Ok(Box::new(transport))
+            },
+            config,
+        )
     }
 
-    /// 用可能失败的 transport 工厂创建设备，用来测打开失败。
+    /// 用可能失败的 transport 工厂创建设备，用来测打开失败或 reset。
     #[cfg(test)]
     fn new_with_factory(
         tm: &mytm::TaskManager,
-        factory: impl FnOnce() -> Result<
+        factory: impl FnMut() -> Result<
             Box<dyn crate::backend::Transport>,
             crate::backend::TransportError,
         > + Send
@@ -461,7 +471,7 @@ impl Device {
         let sent = async {
             self.out_tx
                 .send(worker::OutJob {
-                    cmd_area,
+                    kind: worker::OutJobKind::Write(cmd_area),
                     ack: ack_tx,
                 })
                 .map(|r| r.ok().context(WorkerGoneSnafu))
@@ -476,6 +486,45 @@ impl Device {
             Ok(result) => result,
             Err(_) => Err(FrontendError::WorkerTimeout { timeout }),
         }
+    }
+
+    /// 彻底重置设备连接。
+    ///
+    /// worker 会丢弃当前 transport（释放接口、把内核驱动接回去），再用
+    /// 原来的选择器重新 open：新的 libusb context / DeviceHandle、claim 之前
+    /// 再做一次 reset。等价于重启进程后的第一次连接，不会复用旧 handle。
+    ///
+    /// 只用于清掉卡住的 parser 和残留响应；当前 job 仍然作废。
+    pub async fn reset(&self, timeout: Duration) -> Result<(), FrontendError> {
+        // 重新 open 内部有 1 秒稳定等待，前面还可能排着一个写任务。
+        const MIN_RESET_TIMEOUT: Duration = Duration::from_secs(3);
+        let timeout = timeout.max(MIN_RESET_TIMEOUT);
+
+        let (ack_tx, ack_rx) = oneshot::oneshot();
+        let sent = async {
+            self.out_tx
+                .send(worker::OutJob {
+                    kind: worker::OutJobKind::Reset,
+                    ack: ack_tx,
+                })
+                .map(|r| r.ok().context(WorkerGoneSnafu))
+                .await?;
+            ack_rx
+                .map(|r| r.ok().context(WorkerGoneSnafu))
+                .await?
+                .map_err(|message| FrontendError::Write { message })
+        };
+
+        let result = match tokio::time::timeout(timeout, sent).await {
+            Ok(result) => result,
+            Err(_) => Err(FrontendError::WorkerTimeout { timeout }),
+        };
+        if result.is_ok() {
+            let mut state = self.recv.lock().await;
+            while state.rx.try_recv().is_ok() {}
+            state.queue.clear();
+        }
+        result
     }
 
     /// 等打印机把已经发送的页真正打完。
@@ -917,10 +966,6 @@ mod tests {
                 Ok(ReadStatus::Timeout)
             }
         }
-
-        fn reset(&mut self) -> Result<(), TransportError> {
-            Ok(())
-        }
     }
 
     fn frame(cmd: u8, data: &[u8]) -> Vec<u8> {
@@ -995,10 +1040,6 @@ mod tests {
                 Ok(ReadStatus::Timeout)
             }
         }
-
-        fn reset(&mut self) -> Result<(), TransportError> {
-            Ok(())
-        }
     }
 
     fn respond(config: DeviceConfig) -> (Device, RespondingTransport) {
@@ -1045,7 +1086,12 @@ mod tests {
         // `WorkerHandle` 内部持有 `TaskManager` 的克隆，所以这里放下 `tm`
         // 不会影响 worker；`shutdown()` / `close()` 仍然能作用到它。
         let tm = mytm::TaskManager::new();
-        let device = Device::new_with_transport(&tm, transport.clone(), test_config());
+        let factory_transport = transport.clone();
+        let device = Device::new_with_factory(
+            &tm,
+            move || Ok(Box::new(factory_transport.clone())),
+            test_config(),
+        );
         (device, transport)
     }
 
@@ -1316,10 +1362,6 @@ mod tests {
                     Ok(ReadStatus::Timeout)
                 }
             }
-
-            fn reset(&mut self) -> Result<(), TransportError> {
-                Ok(())
-            }
         }
 
         let die = Arc::new(AtomicBool::new(false));
@@ -1420,6 +1462,32 @@ mod tests {
         );
     }
 
+    /// `Device::reset` 必须丢弃旧 transport，重新调用 factory。
+    #[tokio::test]
+    async fn reset_reopens_the_transport() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let opens = Arc::new(AtomicUsize::new(0));
+        let transport = TestTransport::default();
+        let factory_transport = transport.clone();
+        let factory_opens = opens.clone();
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_factory(
+            &tm,
+            move || {
+                factory_opens.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(factory_transport.clone()))
+            },
+            test_config(),
+        );
+
+        device.ready().await.unwrap();
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
+
+        device.reset(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(opens.load(Ordering::SeqCst), 2);
+    }
+
     /// worker 卡在 USB 写里时，前台不能无限等 ack。
     #[tokio::test]
     async fn send_times_out_when_the_worker_is_stuck() {
@@ -1443,10 +1511,6 @@ mod tests {
             fn read_chunk(&mut self, _out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
                 thread::sleep(Duration::from_millis(1));
                 Ok(ReadStatus::Timeout)
-            }
-
-            fn reset(&mut self) -> Result<(), TransportError> {
-                Ok(())
             }
         }
 
@@ -1612,10 +1676,6 @@ mod tests {
                 self.entered.store(true, Ordering::SeqCst);
                 thread::sleep(Duration::from_millis(200));
                 Ok(ReadStatus::Timeout)
-            }
-
-            fn reset(&mut self) -> Result<(), TransportError> {
-                Ok(())
             }
         }
 

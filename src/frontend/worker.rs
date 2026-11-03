@@ -39,11 +39,11 @@ use mytm::{ProgressUpdater, TaskHandle, TaskManager};
 use pretty_hex::simple_hex;
 use snafu::Snafu;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// 打开设备的工厂。测试可以注入 [`crate::backend`] 里的内存 transport。
 pub(crate) type TransportFactory =
-    Box<dyn FnOnce() -> Result<Box<dyn Transport>, TransportError> + Send>;
+    Box<dyn FnMut() -> Result<Box<dyn Transport>, TransportError> + Send>;
 
 /// worker 上报的状态。
 ///
@@ -86,11 +86,18 @@ pub(crate) fn channels() -> (OutTx, OutRx, RecvTx, RecvRx) {
     (out_tx, out_rx, recv_tx, recv_rx)
 }
 
-/// 后台线程收到的写任务。
-pub(crate) struct OutJob {
+/// 后台线程收到的任务。
+pub(crate) enum OutJobKind {
     /// 已编码的命令区（不含 USB 外层 `1e <长度>`）。
-    pub cmd_area: Vec<u8>,
-    /// 写完后回报结果。
+    Write(Vec<u8>),
+    /// 丢弃当前 transport，重新 open 一次，相当于重启程序里的连接。
+    Reset,
+}
+
+/// 一个待执行的任务。
+pub(crate) struct OutJob {
+    pub kind: OutJobKind,
+    /// 完成后回报结果。
     pub ack: JobAck,
 }
 
@@ -130,14 +137,14 @@ pub(crate) fn spawn(
 }
 
 fn run(
-    factory: TransportFactory,
+    mut factory: TransportFactory,
     mv: ModelVersion,
     out_rx: OutRx,
     recv_tx: RecvTx,
     progress: ProgressUpdater<WorkerProgress>,
     ct: CancellationToken,
 ) -> Result<(), WorkerError> {
-    let mut transport = match factory() {
+    let mut transport = Some(match factory() {
         Ok(transport) => transport,
         Err(e) => {
             error!("open device failed: {e:?}");
@@ -145,7 +152,7 @@ fn run(
                 message: e.to_string(),
             });
         }
-    };
+    });
     // 唯一一次 `Pending -> Running`：`Device::ready()` 用它判断设备已打开。
     progress.update(WorkerProgress);
 
@@ -162,18 +169,47 @@ fn run(
         loop {
             match out_rx.try_recv() {
                 Ok(job) => {
-                    let result = match transport.write(&job.cmd_area) {
-                        Ok(WriteOutcome::Written) => Ok(()),
-                        // USB 不会返回 Blocked；真出现就先报错，避免静默丢包。
-                        Ok(WriteOutcome::Blocked) => {
-                            Err("USB transport unexpectedly blocked".to_string())
+                    let mut fatal_reset = None;
+                    let result = match job.kind {
+                        OutJobKind::Write(cmd_area) => {
+                            let transport = transport.as_mut().expect("transport is open");
+                            match transport.write(&cmd_area) {
+                                Ok(WriteOutcome::Written) => Ok(()),
+                                // USB 不会返回 Blocked；真出现就先报错，避免静默丢包。
+                                Ok(WriteOutcome::Blocked) => {
+                                    Err("USB transport unexpectedly blocked".to_string())
+                                }
+                                Err(e) => Err(e.to_string()),
+                            }
                         }
-                        Err(e) => Err(e.to_string()),
+                        OutJobKind::Reset => {
+                            // 先 drop 旧 transport：release interface / attach
+                            // kernel driver，再重新 open 一个新的 context 和
+                            // handle。和重启进程后的第一次 open 尽量一致。
+                            debug!("resetting device transport");
+                            drop(transport.take());
+                            match factory() {
+                                Ok(new_transport) => {
+                                    transport = Some(new_transport);
+                                    received.clear();
+                                    info!("device transport reopened");
+                                    Ok(())
+                                }
+                                Err(error) => {
+                                    let message = error.to_string();
+                                    fatal_reset = Some(message.clone());
+                                    Err(message)
+                                }
+                            }
+                        }
                     };
                     if let Err(e) = &result {
-                        error!("write failed: {e}");
+                        error!("command failed: {e}");
                     }
                     job.ack.send(result);
+                    if let Some(message) = fatal_reset {
+                        return Err(WorkerError::Open { message });
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -183,7 +219,11 @@ fn run(
             }
         }
 
-        match transport.read_chunk(&mut received) {
+        match transport
+            .as_mut()
+            .expect("transport is open")
+            .read_chunk(&mut received)
+        {
             Ok(ReadStatus::Data) => {
                 if !drain_frames(&assembler, &mut received, &recv_tx) {
                     debug!("frontend closed, device thread exits");
