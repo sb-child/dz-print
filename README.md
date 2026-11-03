@@ -121,12 +121,12 @@ DP27P 上并不完全可靠，日志里的结论只能当参考，最终仍要�
 
 ```bash
 # 主实验：同一个完整页，唯一区别是沉默后发不发 EndPage
-cargo run --bin probe_end_page -- --mode late      --hold --recv-timeout 500ms
-cargo run --bin probe_end_page -- --mode late-skip --hold --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode late      --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode late-skip --recv-timeout 500ms
 
 # 辅助实验：在同一个中途位置，只切换 EndPage
-cargo run --bin probe_end_page -- --mode early          --hold --recv-timeout 500ms
-cargo run --bin probe_end_page -- --mode early-end-page --hold --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode early          --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode early-end-page --recv-timeout 500ms
 ```
 
 模式：
@@ -136,12 +136,15 @@ cargo run --bin probe_end_page -- --mode early-end-page --hold --recv-timeout 50
 - `late`：不理会沉默，发完整页 + `0x25` + `0x73` + `EndPage`（复现失败场景）；
 - `late-skip`：发完整页；`0x73` 和 `0x70` 都失败时不发 `EndPage`。
 
-页面点阵是伪随机的，每行都不一样，压不掉，整页约 100KB；发送总时长由
-`--duration` 控制（默认 `30s`），提示之后大约还剩一半。如果不想抢时间，加
-`--hold`：程序在 `--prompt-at` 处停住，等操作员开盖并按 Enter，先探一次状态
-确认打印机已经沉默，再把剩余数据写进去。这样“沉默 → 继续灌数据 → EndPage”
-的时序每次一致，不依赖反应速度；如果开盖后打印机还在回包，程序会直接报错，
-避免产出一组假数据。
+**开盖必须发生在打印机正在打印的时候。** 实测：开盖时如果打印机已经把缓存打完、
+正在等新数据，它只回 `CoverOpened` 并继续应答，不会沉默；只有缓存满、电机在转
+的时候开盖才会沉默。所以这个 bin 的发送不节流，缓存靠 `0x77` 预算维持满的，
+发送时长由打印机消耗速度决定。默认一页 3000 行（伪随机点阵，压不掉，约 220KB），
+`--prompt-at 30` 之后还有大部分数据要灌。
+
+日志里 `send finished` 的实际耗时如果不到 4 秒，操作员会来不及反应，加大
+`--rows`（例如 6000）或加 `--speed min`。如果结束时打印机回的是 `CoverOpened`
+而不是沉默，程序会明确打印“这次不算复现”并跳过重连测量，不会产出假数据。
 
 结束后打印：
 
