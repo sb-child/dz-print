@@ -18,12 +18,6 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-/// 可选的设备信息查询最多等这么久。
-///
-/// 这些命令和打印头点数在同一次 batch 里发出，正常情况下回包已经排在
-/// 队列里；等这么久还没有，说明固件不支持该命令。
-const OPTIONAL_INFO_TIMEOUT: Duration = Duration::from_millis(500);
-
 /// 连上打印机后一次性读到的设备信息。
 #[derive(Debug, Clone)]
 pub struct PrinterInfo {
@@ -71,6 +65,9 @@ impl PrinterInfo {
 }
 
 /// 查询设备信息；只有打印头点数查询失败会返回错误。
+///
+/// 这 5 条命令是一次发出去的，共用同一个 deadline：正常情况下应答已经排在
+/// 队列里；慢的时候也不会每条各等一个超时，整体最多等 `timeout`。
 pub async fn query_info(dev: &Device, timeout: Duration) -> anyhow::Result<PrinterInfo> {
     dev.try_send_batch(&[
         &req::device_name::DeviceName {},
@@ -81,52 +78,57 @@ pub async fn query_info(dev: &Device, timeout: Duration) -> anyhow::Result<Print
     ])
     .await?;
 
-    let width =
-        match recv_optional::<resp::print_width::PrintWidth>(dev, resp::print_width::CMD, timeout)
-            .await
-        {
-            Some(width) if width.print_width == 0 => {
-                anyhow::bail!("设备回报的打印头点数为 0, 无法确定缩放宽度")
-            }
-            Some(width) if usize::from(width.print_width) > MAX_DOTS_PER_LINE => {
-                anyhow::bail!(
-                    "打印头点数 {} 超过协议上限 {MAX_DOTS_PER_LINE}",
-                    width.print_width
-                )
-            }
-            Some(width) => width,
-            None => {
-                return Err(FrontendError::Recv {
-                    source: RecvError::Timeout { timeout },
-                }
-                .into());
-            }
-        };
+    let deadline = tokio::time::Instant::now() + timeout;
+    let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
 
-    let device_name = recv_optional::<resp::device_name::DeviceName>(
+    // 只有纸宽 / 打印头点数是必需的：渲染要靠它算缩放宽度。
+    let width = match recv_optional::<resp::print_width::PrintWidth>(
         dev,
-        resp::device_name::CMD,
-        OPTIONAL_INFO_TIMEOUT,
+        resp::print_width::CMD,
+        remaining(),
     )
     .await
-    .map(|name| name.device_name);
+    {
+        Some(width) if width.print_width == 0 => {
+            anyhow::bail!("设备回报的打印头点数为 0, 无法确定缩放宽度")
+        }
+        Some(width) if usize::from(width.print_width) > MAX_DOTS_PER_LINE => {
+            anyhow::bail!(
+                "打印头点数 {} 超过协议上限 {MAX_DOTS_PER_LINE}",
+                width.print_width
+            )
+        }
+        Some(width) => width,
+        None => {
+            return Err(FrontendError::Recv {
+                source: RecvError::Timeout { timeout },
+            }
+            .into());
+        }
+    };
+
+    // 其余都是展示信息，读不到就用 `?` 占位，不影响打印。
+    let device_name =
+        recv_optional::<resp::device_name::DeviceName>(dev, resp::device_name::CMD, remaining())
+            .await
+            .map(|name| name.device_name);
 
     let hardware_version = recv_optional::<resp::hardware_version::HardwareVersion>(
         dev,
         resp::hardware_version::CMD,
-        OPTIONAL_INFO_TIMEOUT,
+        remaining(),
     )
     .await;
 
     let software_version = recv_optional::<resp::software_version::SoftwareVersion>(
         dev,
         resp::software_version::CMD,
-        OPTIONAL_INFO_TIMEOUT,
+        remaining(),
     )
     .await
     .map(|version| version.software_version);
 
-    let dpi = recv_optional::<resp::dpi::Dpi>(dev, resp::dpi::CMD, OPTIONAL_INFO_TIMEOUT)
+    let dpi = recv_optional::<resp::dpi::Dpi>(dev, resp::dpi::CMD, remaining())
         .await
         .map(|dpi| dpi.dpi);
 

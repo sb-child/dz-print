@@ -230,6 +230,35 @@ impl RespTrait for RawPayload {
     }
 }
 
+/// [`Device::wait_for_print_done_with`] 的轮询状态。
+///
+/// 拆出来是为了让主循环只表达“取一条状态 → 按状态走哪条路”；计数器本身
+/// 不参与分支判断以外的逻辑。
+struct PrintWait {
+    /// 是否见过忙碌状态。只有见过忙之后，空闲才能当成打印完成。
+    seen_busy: bool,
+    /// 连续空闲次数。
+    idle_polls: usize,
+    /// 连续多少次状态查询没有回包。
+    silent_polls: usize,
+    /// 上一次打过的状态，用来只在状态变化时记录日志。
+    logged: Option<PrinterStatus>,
+    /// 上一次 `0x73` 校验的时间。
+    last_verify: tokio::time::Instant,
+}
+
+impl PrintWait {
+    fn new(now: tokio::time::Instant) -> Self {
+        Self {
+            seen_busy: false,
+            idle_polls: 0,
+            silent_polls: 0,
+            logged: None,
+            last_verify: now,
+        }
+    }
+}
+
 /// 设备连接参数。
 #[derive(Debug, Clone)]
 pub struct DeviceConfig {
@@ -535,12 +564,16 @@ impl Device {
     /// 中间那段静默是必须的：DP27P 在开盖中止打印后会停止处理命令，立刻重连
     /// 读不到状态，断开一会儿再连才行（真机实测 1s 足够，几百毫秒不行）。
     ///
+    /// 等待 ack 的超时下限由静默窗口、`recv_timeout` 和一次 open 的余量推出，
+    /// 不是固定的 5 秒；传入更小的值会被抬到这个下限。
+    ///
     /// 只用于清掉卡住的 parser 和残留响应；当前 job 仍然作废。
     pub async fn reset(&self, timeout: Duration) -> Result<(), FrontendError> {
-        // worker 先静默 RESET_SETTLE，再 open（本身还有几百毫秒），前面还
-        // 可能排着一个写任务。
-        const MIN_RESET_TIMEOUT: Duration = Duration::from_secs(5);
-        let timeout = timeout.max(MIN_RESET_TIMEOUT);
+        // reset 至少要花：静默窗口 + 重新 open + 一次状态查询。前面还可能
+        // 排着一个写任务，所以再留一次 open 的余量，而不是另写一个 5 秒。
+        const OPEN_MARGIN: Duration = Duration::from_secs(1);
+        let min_timeout = worker::RESET_SETTLE + self.config.recv_timeout + OPEN_MARGIN;
+        let timeout = timeout.max(min_timeout);
 
         // 先把缓存里的旧响应丢掉，reset 之后只认新连接上的回包。
         // 必须在换 transport 之前清：换完之后打印机的第一个应答可能已经
@@ -678,7 +711,8 @@ impl Device {
 
     /// [`Self::wait_for_print_done`] 的内部实现。
     ///
-    /// `baseline` 是 `EndPage` 之前的 `0x73` 快照；`None` 表示不做计数校验。
+    /// `baseline` 是 `EndPage` 之前的 `0x73` 快照；`None` 表示没有可用的
+    /// 校验基准，只能退回“过了启动宽限期就接受空闲”的旧行为。
     async fn wait_for_print_done_with(
         &self,
         baseline: Option<resp::statistics::Statistics>,
@@ -687,18 +721,27 @@ impl Device {
         let started = tokio::time::Instant::now();
         let deadline = started + timeout;
         let poll = self.config.print_poll.max(Duration::from_millis(1));
-        let mut seen_busy = false;
-        let mut idle_polls = 0usize;
-        // 连续多少次查询没有回包。固件卡住时它连 `0x70` 都不回，
-        // 不设上限的话只能等到整个任务超时。
-        let mut silent_polls = 0usize;
-        // 只在状态变化时打日志，避免 100ms 轮询把日志刷满。
-        let mut logged: Option<PrinterStatus> = None;
-        // 没看到忙碌状态时，用 `0x73` 判断页面是不是已经打印过了。
-        let mut last_verify = started;
-        let verify = self.config.print_verify && baseline.is_some();
+        let mut wait = PrintWait::new(started);
+
+        // `print_verify` 打开但没有 baseline，说明 `EndPage` 前的 `0x73`
+        // 没读回来。这时没有别的判据，只能退回旧行为；至少要在日志里说明
+        // 这次并没有校验过。
+        let verify = if self.config.print_verify {
+            if baseline.is_none() {
+                warn!(
+                    timeout = ?self.config.recv_timeout,
+                    "print statistics are unavailable; accepting idle after the start grace \
+                     without verification"
+                );
+            }
+            baseline.as_ref()
+        } else {
+            debug!("print verification is disabled");
+            None
+        };
 
         loop {
+            // 睡眠前后各查一次 deadline：`poll` 可能刚好跨过整页超时。
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return Err(FrontendError::PrintTimeout { timeout });
@@ -709,159 +752,178 @@ impl Device {
             if remaining.is_zero() {
                 return Err(FrontendError::PrintTimeout { timeout });
             }
-            self.try_send_batch(&[&req::status::Status {}]).await?;
 
-            let status = match self
-                .recv_cmd_timeout::<resp::status::Status>(
-                    resp::status::CMD,
-                    remaining.min(self.config.recv_timeout),
-                )
-                .await
-            {
-                Ok(Some(status)) => {
-                    silent_polls = 0;
-                    status
-                }
-                // 单次查询超时、或只收到 `0x7b` 之类的推送，不代表打印结束。
-                Ok(None) => {
-                    silent_polls += 1;
-                    // 页面刚结束时固件偶尔会漏答一次，不算异常；连续两次再警告。
-                    if silent_polls == 1 {
-                        debug!(
-                            limit = self.config.print_silent_limit,
-                            timeout = ?self.config.recv_timeout,
-                            "printer did not answer the first status poll"
-                        );
-                    } else if silent_polls == self.config.print_silent_limit
-                        || silent_polls % 10 == 0
-                    {
-                        warn!(
-                            silent_polls,
-                            limit = self.config.print_silent_limit,
-                            timeout = ?self.config.recv_timeout,
-                            "printer did not answer the status poll"
-                        );
-                    }
-                    if silent_polls >= self.config.print_silent_limit {
-                        // 直接返回；reset 和状态读回由 print_bitmap_job 统一做，
-                        // 那里知道这次卡住的前因后果。
-                        return Err(FrontendError::PrinterSilent {
-                            polls: silent_polls,
-                            timeout: self.config.recv_timeout,
-                        });
-                    }
-                    continue;
-                }
-                Err(e) => return Err(e.into()),
+            // 单次漏答不算失败；连续 `print_silent_limit` 次才返回沉默。
+            // 真正的 reset / 状态读回由 `print_bitmap_job` 的出口统一做。
+            let Some(status) = self.poll_print_status(deadline, &mut wait).await? else {
+                continue;
             };
+
             debug!(
                 status = ?status.status,
                 page_key = status.page_key,
-                seen_busy,
-                idle_polls,
+                seen_busy = wait.seen_busy,
+                idle_polls = wait.idle_polls,
                 "print status"
             );
+            log_status_change(&mut wait, &status);
 
-            // 状态变化对用户有意义：`printing` → `cover is open` 这类要能直接看到。
-            if logged != Some(status.status) {
-                if status.status.is_error() {
-                    error!(
-                        status = ?status.status,
-                        reason = %status.status,
-                        page_key = status.page_key,
-                        "printer stopped with an error"
-                    );
-                } else if matches!(
-                    status.status,
-                    PrinterStatus::Printing | PrinterStatus::Rotating
-                ) {
-                    info!(
-                        status = ?status.status,
-                        reason = %status.status,
-                        "printer is busy"
-                    );
-                } else {
-                    debug!(
-                        status = ?status.status,
-                        reason = %status.status,
-                        "print status"
-                    );
-                }
-                logged = Some(status.status);
-            }
-
+            // 打印机明确报错：不再等，也不 reset（它还在正常通信）。
             if status.status.is_error() {
                 return Err(FrontendError::PrinterStatus {
                     status: status.status,
                 });
             }
 
-            if matches!(
-                status.status,
-                PrinterStatus::Printing | PrinterStatus::Rotating | PrinterStatus::PageNotReady
-            ) {
-                seen_busy = true;
-                idle_polls = 0;
+            // 忙：重置空闲计数。`PageNotReady` 也算忙，固件在为下一页做准备。
+            if is_busy(status.status) {
+                wait.seen_busy = true;
+                wait.idle_polls = 0;
                 continue;
             }
 
-            idle_polls += 1;
+            wait.idle_polls += 1;
 
-            if seen_busy {
-                if idle_polls >= self.config.print_idle_confirm {
+            // 见过忙之后，连续几次空闲才算完成，避免采样到两次忙之间的缝。
+            if wait.seen_busy {
+                if wait.idle_polls >= self.config.print_idle_confirm {
                     return Ok(status);
                 }
                 continue;
             }
 
-            // 还没看到忙碌状态。固件可能只是还没开始转电机，不能马上认为完成。
-            let elapsed = started.elapsed();
-            if !verify {
-                // 没有校验手段时保持旧行为。
-                if elapsed >= self.config.print_start_grace
-                    && idle_polls >= self.config.print_idle_confirm
-                {
-                    return Ok(status);
-                }
-                continue;
-            }
-
-            if elapsed < self.config.print_start_grace {
-                continue;
-            }
-
-            if tokio::time::Instant::now().duration_since(last_verify)
-                < self.config.print_verify_interval
+            // 还没见过忙：可能只是电机还没启动，交给启动判定。
+            if let Some(done) = self
+                .accept_unstarted(status, &mut wait, started, deadline, verify)
+                .await?
             {
-                continue;
-            }
-            last_verify = tokio::time::Instant::now();
-
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let before = baseline.as_ref().expect("verify requires a baseline");
-            if let Some(stats) = self
-                .read_statistics(remaining.min(self.config.recv_timeout))
-                .await
-                && statistics_progress(before, &stats)
-            {
-                info!(
-                    print_pages = stats.print_pages,
-                    print_lines = stats.print_lines,
-                    "printer made print progress without a visible busy status"
-                );
-                // 页面确实打印过；按正常完成逻辑再确认几次空闲，避免在它
-                // 还在走纸时提前返回。
-                seen_busy = true;
-                idle_polls = 0;
-                continue;
-            }
-
-            if started.elapsed() >= self.config.print_start_timeout {
-                return Err(FrontendError::PrintDidNotStart {
-                    timeout: self.config.print_start_timeout,
-                });
+                return Ok(done);
             }
         }
+    }
+
+    /// 发一次 `0x70` 并等状态，负责维护“连续沉默”计数。
+    ///
+    /// 返回 `Ok(None)` 表示这一轮没有回包但还没到失联阈值；达到
+    /// [`DeviceConfig::print_silent_limit`] 时返回
+    /// [`FrontendError::PrinterSilent`]。
+    async fn poll_print_status(
+        &self,
+        deadline: tokio::time::Instant,
+        wait: &mut PrintWait,
+    ) -> Result<Option<resp::status::Status>, FrontendError> {
+        self.try_send_batch(&[&req::status::Status {}]).await?;
+
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match self
+            .recv_cmd_timeout::<resp::status::Status>(
+                resp::status::CMD,
+                remaining.min(self.config.recv_timeout),
+            )
+            .await
+        {
+            Ok(Some(status)) => {
+                wait.silent_polls = 0;
+                Ok(Some(status))
+            }
+            // 单次查询超时、或只收到 `0x7b` 之类的推送，不代表打印结束。
+            Ok(None) => {
+                wait.silent_polls += 1;
+                // 页面刚结束时固件偶尔会漏答一次，第一轮只记 debug；
+                // 到阈值或每 10 次再警告，避免长超时把日志刷满。
+                if wait.silent_polls == 1 {
+                    debug!(
+                        limit = self.config.print_silent_limit,
+                        timeout = ?self.config.recv_timeout,
+                        "printer did not answer the first status poll"
+                    );
+                } else if wait.silent_polls == self.config.print_silent_limit
+                    || wait.silent_polls % 10 == 0
+                {
+                    warn!(
+                        silent_polls = wait.silent_polls,
+                        limit = self.config.print_silent_limit,
+                        timeout = ?self.config.recv_timeout,
+                        "printer did not answer the status poll"
+                    );
+                }
+
+                if wait.silent_polls >= self.config.print_silent_limit {
+                    return Err(FrontendError::PrinterSilent {
+                        polls: wait.silent_polls,
+                        timeout: self.config.recv_timeout,
+                    });
+                }
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// 在“还没见过忙”的情况下判断这一页是完成了、没开始，还是继续等。
+    ///
+    /// 返回 `Some(status)` 表示接受当前空闲状态为“打印完成”；`None` 表示
+    /// 继续轮询。`baseline` 为 `None` 时没有 `0x73` 校验手段，退回旧行为。
+    async fn accept_unstarted(
+        &self,
+        status: resp::status::Status,
+        wait: &mut PrintWait,
+        started: tokio::time::Instant,
+        deadline: tokio::time::Instant,
+        baseline: Option<&resp::statistics::Statistics>,
+    ) -> Result<Option<resp::status::Status>, FrontendError> {
+        let elapsed = started.elapsed();
+
+        // 没有校验手段时只能保持旧行为：启动宽限期之后，连续几次空闲就
+        // 认为页面已经打完。
+        let Some(before) = baseline else {
+            if elapsed >= self.config.print_start_grace
+                && wait.idle_polls >= self.config.print_idle_confirm
+            {
+                return Ok(Some(status));
+            }
+            return Ok(None);
+        };
+
+        // 宽限期内不查 `0x73`：固件从 `EndPage` 到电机启动可能超过 1 秒，
+        // 这时候的空闲只是还没开始，不是打完。
+        if elapsed < self.config.print_start_grace {
+            return Ok(None);
+        }
+
+        // 校验查询本身也要几百毫秒，按 `print_verify_interval` 限流。
+        if tokio::time::Instant::now().duration_since(wait.last_verify)
+            < self.config.print_verify_interval
+        {
+            return Ok(None);
+        }
+        wait.last_verify = tokio::time::Instant::now();
+
+        // 用累计计数器判断页面到底有没有打印：有增量说明只是太快、没采样到
+        // 忙碌状态，按正常完成逻辑再确认几次空闲，避免在它走纸时提前返回。
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if let Some(stats) = self
+            .read_statistics(remaining.min(self.config.recv_timeout))
+            .await
+            && statistics_progress(before, &stats)
+        {
+            info!(
+                print_pages = stats.print_pages,
+                print_lines = stats.print_lines,
+                "printer made print progress without a visible busy status"
+            );
+            wait.seen_busy = true;
+            wait.idle_polls = 0;
+            return Ok(None);
+        }
+
+        // 一直没有忙、计数器也没有前进：这一页没有真正开始。
+        if started.elapsed() >= self.config.print_start_timeout {
+            return Err(FrontendError::PrintDidNotStart {
+                timeout: self.config.print_start_timeout,
+            });
+        }
+        Ok(None)
     }
 
     /// 读一次 `0x73` 打印统计。
@@ -1024,6 +1086,45 @@ impl Device {
             }
         }
     }
+}
+
+/// 这些状态表示打印头 / 电机在动，或者固件正在为下一页做准备。
+fn is_busy(status: PrinterStatus) -> bool {
+    matches!(
+        status,
+        PrinterStatus::Printing | PrinterStatus::Rotating | PrinterStatus::PageNotReady
+    )
+}
+
+/// 只在状态变化时打日志，避免 `print_poll` 把日志刷满。
+fn log_status_change(wait: &mut PrintWait, status: &resp::status::Status) {
+    if wait.logged == Some(status.status) {
+        return;
+    }
+    if status.status.is_error() {
+        error!(
+            status = ?status.status,
+            reason = %status.status,
+            page_key = status.page_key,
+            "printer stopped with an error"
+        );
+    } else if matches!(
+        status.status,
+        PrinterStatus::Printing | PrinterStatus::Rotating
+    ) {
+        info!(
+            status = ?status.status,
+            reason = %status.status,
+            "printer is busy"
+        );
+    } else {
+        debug!(
+            status = ?status.status,
+            reason = %status.status,
+            "print status"
+        );
+    }
+    wait.logged = Some(status.status);
 }
 
 /// 判断 `0x73` 计数器有没有前进。

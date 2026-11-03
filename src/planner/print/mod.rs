@@ -81,9 +81,10 @@ use rle::select_rle;
 
 /// 单行最大点数。
 ///
-/// 取 `StartPage::data_pixel_width` 的上限 `1521`：它同时满足 `0x2b` 的
-/// `skips` / `data_len <= 191` 字节（`191 * 8 = 1528` 点）。
-pub const MAX_DOTS_PER_LINE: usize = 1521;
+/// 直接跟随 [`MAX_DATA_PIXEL_WIDTH`](crate::command::req::start_page::MAX_DATA_PIXEL_WIDTH)：
+/// 这个上限同时满足 `0x2b` 的 `skips` / `data_len <= 191` 字节
+/// （`191 * 8 = 1528` 点）。
+pub const MAX_DOTS_PER_LINE: usize = crate::command::req::start_page::MAX_DATA_PIXEL_WIDTH as usize;
 
 /// 单页最大行数。
 ///

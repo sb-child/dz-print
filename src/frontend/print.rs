@@ -281,89 +281,8 @@ impl Device {
                     // 否则 `size = 0` 会让这个分支无限循环。
                     flow.check_deadline()?;
                     tokio::time::sleep(flow.config().chunk_gap).await;
-                    self.try_send_batch(&[
-                        &req::status::Status {},
-                        &req::buffer_size::BufferSize {},
-                    ])
-                    .await?;
-                    // 两条查询的应答按命令字节分别取，顺序和中间夹的推送都不影响。
-                    // 两条共用一个 deadline，最坏只等一个 budget_timeout。
-                    let deadline = tokio::time::Instant::now() + flow.config().budget_timeout;
-                    let status_timeout =
-                        deadline.saturating_duration_since(tokio::time::Instant::now());
-                    let status = match self
-                        .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, status_timeout)
-                        .await
-                    {
-                        Ok(Some(status)) => {
-                            debug!(
-                                status = ?status.status,
-                                page_key = status.page_key,
-                                "status before budget"
-                            );
-                            Some(status)
-                        }
-                        Ok(None) => {
-                            // 单次漏答不算异常，继续看这个 deadline 里 `0x77`
-                            // 有没有回：两条一起超时才说明打印机停止处理命令，
-                            // 退化模式会在每块之后调用 check_after_budget_timeout。
-                            debug!(
-                                timeout = ?self.config.recv_timeout,
-                                "status before budget timed out"
-                            );
-                            None
-                        }
-                        Err(e @ RecvError::Closed) => return Err(e.into()),
-                        Err(e) => {
-                            debug!("status before budget failed: {e}");
-                            None
-                        }
-                    };
-                    // 无纸 / 开盖等错误状态必须立即中止，不要再多等一次
-                    // `0x77` 的响应。
-                    if let Some(status) = status
-                        && status.status.is_error()
-                    {
-                        error!(
-                            status = ?status.status,
-                            reason = %status.status,
-                            "printer reported an error during the print job"
-                        );
-                        return Err(FrontendError::PrinterStatus {
-                            status: status.status,
-                        });
-                    }
-                    let buffer_timeout =
-                        deadline.saturating_duration_since(tokio::time::Instant::now());
-                    match self
-                        .recv_cmd_timeout::<resp::buffer_size::BufferSize>(
-                            resp::buffer_size::CMD,
-                            buffer_timeout,
-                        )
-                        .await
-                    {
-                        Ok(Some(bs)) => {
-                            budget_timeout_seen = false;
-                            debug!(
-                                size = bs.size,
-                                budget = bs.budget(),
-                                status = bs.status,
-                                "buffer size"
-                            );
-                            flow.on_buffer_size(&bs);
-                        }
-                        Ok(None) => {
-                            warn!("buffer size timed out, fall back to 8 KiB");
-                            budget_timeout_seen = true;
-                            flow.on_budget_timeout();
-                        }
-                        Err(e @ RecvError::Closed) => return Err(e.into()),
-                        Err(e) => {
-                            warn!("buffer size failed, fall back to 8 KiB: {e}");
-                            budget_timeout_seen = true;
-                            flow.on_budget_timeout();
-                        }
-                    }
+                    self.query_budget(&mut flow, &mut budget_timeout_seen)
+                        .await?;
                 }
                 ChunkDecision::Wait => {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -385,6 +304,101 @@ impl Device {
         self.try_send_batch(&[&heat]).await?;
 
         Ok(flow.report())
+    }
+
+    /// 查询一次预算：`0x70` 和 `0x77` 打在同一个命令区里。
+    ///
+    /// 两条应答共用一个 deadline，最坏只等一个 `budget_timeout`。顺序上先看
+    /// `0x70`：它明确报错就没必要再等 `0x77`。`0x77` 超时或解析失败时退化到
+    /// 固定预算，并把 `budget_timeout_seen` 置上，后续每块之后都会再探一次
+    /// `0x70`。
+    async fn query_budget(
+        &self,
+        flow: &mut FlowPlanner,
+        budget_timeout_seen: &mut bool,
+    ) -> Result<(), FrontendError> {
+        self.try_send_batch(&[&req::status::Status {}, &req::buffer_size::BufferSize {}])
+            .await?;
+
+        // 两条查询的应答按命令字节分别取，顺序和中间夹的推送都不影响。
+        let deadline = tokio::time::Instant::now() + flow.config().budget_timeout;
+
+        let status_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let status = match self
+            .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, status_timeout)
+            .await
+        {
+            Ok(Some(status)) => {
+                debug!(
+                    status = ?status.status,
+                    page_key = status.page_key,
+                    "status before budget"
+                );
+                Some(status)
+            }
+            Ok(None) => {
+                // 单次漏答不算异常，继续看这个 deadline 里 `0x77` 有没有回：
+                // 两条一起超时才说明打印机停止处理命令，退化模式会在每块
+                // 之后调用 check_after_budget_timeout。
+                debug!(
+                    timeout = ?self.config.recv_timeout,
+                    "status before budget timed out"
+                );
+                None
+            }
+            Err(e @ RecvError::Closed) => return Err(e.into()),
+            Err(e) => {
+                debug!("status before budget failed: {e}");
+                None
+            }
+        };
+
+        // 无纸 / 开盖等错误状态必须立即中止，不要再多等一次 `0x77` 的响应。
+        if let Some(status) = status
+            && status.status.is_error()
+        {
+            error!(
+                status = ?status.status,
+                reason = %status.status,
+                "printer reported an error during the print job"
+            );
+            return Err(FrontendError::PrinterStatus {
+                status: status.status,
+            });
+        }
+
+        let buffer_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match self
+            .recv_cmd_timeout::<resp::buffer_size::BufferSize>(
+                resp::buffer_size::CMD,
+                buffer_timeout,
+            )
+            .await
+        {
+            Ok(Some(bs)) => {
+                *budget_timeout_seen = false;
+                debug!(
+                    size = bs.size,
+                    budget = bs.budget(),
+                    status = bs.status,
+                    "buffer size"
+                );
+                flow.on_buffer_size(&bs);
+            }
+            Ok(None) => {
+                warn!("buffer size timed out, fall back to 8 KiB");
+                *budget_timeout_seen = true;
+                flow.on_budget_timeout();
+            }
+            Err(e @ RecvError::Closed) => return Err(e.into()),
+            Err(e) => {
+                warn!("buffer size failed, fall back to 8 KiB: {e}");
+                *budget_timeout_seen = true;
+                flow.on_budget_timeout();
+            }
+        }
+
+        Ok(())
     }
 }
 

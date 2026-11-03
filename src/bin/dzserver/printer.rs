@@ -176,6 +176,8 @@ impl PrinterWorker {
             if Instant::now() >= deadline {
                 return ReadyState::TimedOut;
             }
+            // 设备不在（或刚被上一次查询失败丢掉）就重连；重连也受同一个
+            // deadline 约束，不会在打印机长期离线时无限等。
             if !self.ensure_device(job_cancel, token, Some(deadline)).await {
                 if job_cancel.is_cancelled() || token.is_cancelled() {
                     return ReadyState::Cancelled;
@@ -183,13 +185,18 @@ impl PrinterWorker {
                 if Instant::now() >= deadline {
                     return ReadyState::TimedOut;
                 }
-                return ReadyState::Cancelled;
+                // `ensure_device` 只有取消或预算用完才返回 false；取消已经在上
+                // 面处理，走到这里只可能是 deadline 被夹到 0 的边界情况。
+                return ReadyState::TimedOut;
             }
 
-            let status = {
-                let dev = self.device.as_ref().expect("device just connected");
-                query_status(dev, self.config.recv_timeout).await
+            // `ensure_device` 返回 true 时一定已经设置 `device`；这里仍然按
+            // 可选处理，避免以后调整状态机时直接 panic。
+            let Some(dev) = self.device.as_ref() else {
+                error!("printer disappeared after a successful connect");
+                return ReadyState::TimedOut;
             };
+            let status = query_status(dev, self.config.recv_timeout).await;
 
             match status {
                 Ok(status) if matches!(status, PrinterStatus::Printable | PrinterStatus::NoJob) => {
@@ -237,6 +244,8 @@ impl PrinterWorker {
             if job_cancel.is_cancelled() || token.is_cancelled() {
                 return false;
             }
+            // `deadline = None` 表示调用方希望一直重试（启动时的第一次连接）；
+            // 每次尝试仍只给 `CONNECT_TIMEOUT`，避免一次 open 卡死整轮。
             let remaining = deadline
                 .map(|deadline| deadline.saturating_duration_since(Instant::now()))
                 .unwrap_or(CONNECT_TIMEOUT);
@@ -283,6 +292,7 @@ impl PrinterWorker {
                 }
             }
 
+            // 退避不能超过剩余预算，否则最后会多睡一段再报告超时。
             let delay = deadline
                 .map(|deadline| {
                     RECONNECT_DELAY.min(deadline.saturating_duration_since(Instant::now()))
@@ -300,7 +310,12 @@ impl PrinterWorker {
     }
 
     async fn print_pages(&mut self, job: &RenderedJob) -> Result<(), PrintFailure> {
-        let dev = self.device.as_ref().expect("device is ready");
+        // 进入打印前 `wait_ready` 已经确认过连接，正常不会走到 else。
+        let Some(dev) = self.device.as_ref() else {
+            return Err(PrintFailure::Device(anyhow::anyhow!(
+                "printer is not connected"
+            )));
+        };
         let label = job_label(job.id).to_string();
         let mut sent_settings = self.sent_settings.take();
 

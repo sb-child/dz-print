@@ -182,19 +182,22 @@ fn run(
         loop {
             match out_rx.try_recv() {
                 Ok(job) => {
+                    // Reset 时重新 open 失败：先把 ack 回给前台，再让 worker
+                    // 退出。否则前台只能等到 `recv_timeout` 才知道写任务失败。
                     let mut fatal_reset = None;
                     let result = match job.kind {
-                        OutJobKind::Write(cmd_area) => {
-                            let transport = transport.as_mut().expect("transport is open");
-                            match transport.write(&cmd_area) {
+                        OutJobKind::Write(cmd_area) => match transport.as_mut() {
+                            Some(transport) => match transport.write(&cmd_area) {
                                 Ok(WriteOutcome::Written) => Ok(()),
                                 // USB 不会返回 Blocked；真出现就先报错，避免静默丢包。
                                 Ok(WriteOutcome::Blocked) => {
                                     Err("USB transport unexpectedly blocked".to_string())
                                 }
                                 Err(e) => Err(e.to_string()),
-                            }
-                        }
+                            },
+                            // 正常不可达：open 失败会直接返回；这里只是不 panic。
+                            None => Err("device transport is not open".to_string()),
+                        },
                         OutJobKind::Reset => {
                             // 先 drop 旧 transport：release interface / attach
                             // kernel driver，让连接真正断开。等固件把上一页
@@ -234,11 +237,13 @@ fn run(
             }
         }
 
-        match transport
-            .as_mut()
-            .expect("transport is open")
-            .read_chunk(&mut received)
-        {
+        // 正常不可达：上面的 Reset 失败会直接返回。这里按“设备已关闭”处理，
+        // 避免为了一个不变量在设备线程里 panic。
+        let Some(transport) = transport.as_mut() else {
+            error!("device transport is not open");
+            return Err(WorkerError::Closed);
+        };
+        match transport.read_chunk(&mut received) {
             Ok(ReadStatus::Data) => {
                 if !drain_frames(&assembler, &mut received, &recv_tx) {
                     debug!("frontend closed, device thread exits");
@@ -275,7 +280,9 @@ fn drain_frames(assembler: &Assembler, received: &mut Vec<u8>, tx: &RecvTx) -> b
             }
             Ok(None) => return true,
             Err(e) => {
-                // 测试平台不做重新同步，整段丢弃后继续读。
+                // 帧头已经不可信，无法判断下一条从哪里开始：整段丢弃，等固件
+                // 发下一条完整帧。代价是同一批里后面的帧也会丢，但比按错误
+                // 偏移继续解析安全。
                 warn!("drop invalid response frame: {e:?}");
                 received.clear();
                 return true;

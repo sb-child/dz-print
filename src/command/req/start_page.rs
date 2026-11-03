@@ -20,6 +20,14 @@ use crate::command::{
 use deku::DekuContainerWrite as _;
 use snafu::ResultExt;
 
+use super::gap_length::{MAX_GAP_LENGTH, MIN_GAP_LENGTH};
+
+/// 一页数据允许的最大像素宽度（点）。
+///
+/// 同时保证 `0x2b` 命令里的 `skips` / `data_len` 各不超过 191 字节
+/// （`191 * 8 = 1528` 点）。
+pub const MAX_DATA_PIXEL_WIDTH: u16 = 1521;
+
 /// 开始页
 #[derive(Debug, Clone, Default)]
 pub struct StartPage {
@@ -34,8 +42,8 @@ pub struct StartPage {
     /// - v0: 不支持，保持`false`。
     pub print_sep_line: bool,
     /// 打印数据最大像素宽度。
-    /// - v2: 范围`0..=1521`。
-    /// - v1: 范围`0..=1521`。
+    /// - v2: 范围 1..=[`MAX_DATA_PIXEL_WIDTH`]。
+    /// - v1: 范围 1..=[`MAX_DATA_PIXEL_WIDTH`]。
     /// - v0: 不支持，此参数不使用。
     pub data_pixel_width: u16,
     /// 设置纸张间隔类型。
@@ -43,7 +51,8 @@ pub struct StartPage {
     pub printer_gap_type: GapTypeSetting,
     /// 设置纸张间隔长度。
     /// - 单位 0.01mm。
-    /// - v2: 支持。范围`50..=4194303`。在`printer_gap_type != GapTypeSetting::Continuous`条件下生效。
+    /// - v2: 支持，范围为 [`MIN_GAP_LENGTH`]..=[`MAX_GAP_LENGTH`]；在
+    ///   `printer_gap_type != GapTypeSetting::Continuous` 时生效。
     /// - v1,v0: 不支持。
     pub printer_gap_length: u32,
 }
@@ -51,8 +60,8 @@ pub struct StartPage {
 impl ReqTrait for StartPage {
     fn pack(&self, mv: ModelVersion) -> Result<Vec<Envelope>, PackReqError> {
         let page_key_range = 1..=65534;
-        let data_pixel_width_range = 1..=1521;
-        let printer_gap_length_range = 50..=4194303;
+        let data_pixel_width_range = 1..=MAX_DATA_PIXEL_WIDTH;
+        let printer_gap_length_range = MIN_GAP_LENGTH..=MAX_GAP_LENGTH;
         let ek = match mv {
             ModelVersion::V0 => EnvelopeKind::Raw,
             ModelVersion::V1 => EnvelopeKind::AutoPackWithFixedChecksum,
@@ -108,8 +117,8 @@ impl ReqTrait for StartPage {
                     .contains(&self.data_pixel_width)
                     .ok_or(PackReqError::ParamOutOfRange {
                         param: "data_pixel_width".into(),
-                        value: self.data_pixel_width.into(),
-                        range: (Some(0), Some(1521)),
+                        value: i64::from(self.data_pixel_width),
+                        range: (Some(1), Some(i64::from(MAX_DATA_PIXEL_WIDTH))),
                     })?;
                 let data_byte_count = self.data_pixel_width.div_ceil(8);
                 vec![
@@ -143,8 +152,8 @@ impl ReqTrait for StartPage {
                     .contains(&self.data_pixel_width)
                     .ok_or(PackReqError::ParamOutOfRange {
                         param: "data_pixel_width".into(),
-                        value: self.data_pixel_width.into(),
-                        range: (Some(0), Some(1521)),
+                        value: i64::from(self.data_pixel_width),
+                        range: (Some(1), Some(i64::from(MAX_DATA_PIXEL_WIDTH))),
                     })?;
                 let data_byte_count = self.data_pixel_width.div_ceil(8);
                 let mut r = vec![
@@ -179,8 +188,11 @@ impl ReqTrait for StartPage {
                         .contains(&self.printer_gap_length)
                         .ok_or(PackReqError::ParamOutOfRange {
                             param: "printer_gap_length".into(),
-                            value: self.printer_gap_length.into(),
-                            range: (Some(50), Some(4194303)),
+                            value: i64::from(self.printer_gap_length),
+                            range: (
+                                Some(i64::from(MIN_GAP_LENGTH)),
+                                Some(i64::from(MAX_GAP_LENGTH)),
+                            ),
                         })?;
                     r.push(
                         GapLengthV2Tl {

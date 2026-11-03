@@ -220,7 +220,11 @@ impl FlowPlanner {
             if !chunk.is_empty() && chunk.len() + front.len() > want {
                 break;
             }
-            let cmd = self.queue.pop_front().expect("queue is not empty");
+            // `front` 刚从队首取到，正常情况下 remove 一定有值；按可选处理
+            // 只是为了不在库代码里留 panic。
+            let Some(cmd) = self.queue.pop_front() else {
+                break;
+            };
             self.remaining -= cmd.len();
             chunk.extend_from_slice(&cmd);
             if chunk.len() >= want {

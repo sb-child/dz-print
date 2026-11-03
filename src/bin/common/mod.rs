@@ -31,7 +31,10 @@ use clap::{Args, ValueEnum};
 use dz_print::{
     backend::usb::UsbSelector,
     command::{
-        req::{self, ReqTrait},
+        req::{
+            self, ReqTrait,
+            gap_length::{MAX_GAP_LENGTH, MIN_GAP_LENGTH},
+        },
         settings::{DarknessSetting, GapTypeSetting, SpeedSetting},
     },
     frontend::{Device, DeviceConfig, FrontendError, PrintJobOptions},
@@ -379,9 +382,13 @@ pub fn parse_gap_length(value: &str) -> Result<u32, String> {
     }
 
     let centi_mm = (mm * 100.0).round();
-    if !(50.0..=4_194_303.0).contains(&centi_mm) {
+    let min = f64::from(MIN_GAP_LENGTH);
+    let max = f64::from(MAX_GAP_LENGTH);
+    if !(min..=max).contains(&centi_mm) {
         return Err(format!(
-            "间隔长度 {mm}mm 超出范围，应在 0.5mm..=41943.03mm 之间"
+            "间隔长度 {mm}mm 超出范围，应在 {}mm..={}mm 之间",
+            min / 100.0,
+            max / 100.0
         ));
     }
     Ok(centi_mm as u32)

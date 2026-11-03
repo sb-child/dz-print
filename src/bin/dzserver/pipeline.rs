@@ -25,7 +25,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const GC_INTERVAL: Duration = Duration::from_secs(60);
 
 /// `Pipeline::new` 的全部外部参数。
@@ -233,8 +233,7 @@ async fn render_worker(ctx: RenderCtx, task_token: CancellationToken) -> anyhow:
         let job = {
             let mut rx = ingress.lock().await;
             tokio::select! {
-                _ = task_token.cancelled() => break,
-                _ = token.cancelled() => break,
+                _ = cancelled(&task_token, &token) => break,
                 job = rx.recv() => job,
             }
         };
@@ -244,7 +243,7 @@ async fn render_worker(ctx: RenderCtx, task_token: CancellationToken) -> anyhow:
 
         let id = job.id();
         let cancel = job.cancel().clone();
-        if cancel.is_cancelled() || task_token.is_cancelled() || token.is_cancelled() {
+        if is_cancelled(&cancel, &task_token, &token) {
             store.finish_cancelled(id);
             continue;
         }
@@ -274,29 +273,25 @@ async fn render_worker(ctx: RenderCtx, task_token: CancellationToken) -> anyhow:
 
         match result {
             Ok(rendered) => {
-                if rendered.cancel.is_cancelled()
-                    || task_token.is_cancelled()
-                    || token.is_cancelled()
-                {
+                if is_cancelled(&rendered.cancel, &task_token, &token) {
                     store.finish_cancelled(id);
                     continue;
                 }
 
                 let send = print_tx.send(rendered);
                 tokio::select! {
+                    // 只是这个 job 被取消：打印 worker 还活着，继续接下一个。
                     _ = cancel.cancelled() => {
                         store.finish_cancelled(id);
                     }
-                    _ = task_token.cancelled() => {
-                        store.finish_cancelled(id);
-                        break;
-                    }
-                    _ = token.cancelled() => {
+                    // worker / 整个 pipeline 在退出：这个 job 作废后不再取新任务。
+                    _ = cancelled(&task_token, &token) => {
                         store.finish_cancelled(id);
                         break;
                     }
                     result = send => {
                         if result.is_err() {
+                            // 打印队列关闭说明打印 worker 已经退出，继续渲染没有意义。
                             store.finish_cancelled(id);
                             break;
                         }
@@ -304,7 +299,7 @@ async fn render_worker(ctx: RenderCtx, task_token: CancellationToken) -> anyhow:
                 }
             }
             Err(error) => {
-                if cancel.is_cancelled() || task_token.is_cancelled() || token.is_cancelled() {
+                if is_cancelled(&cancel, &task_token, &token) {
                     store.finish_cancelled(id);
                 } else {
                     error!(job = %uuid::Uuid::from_bytes(id), %error, "render failed");
@@ -315,6 +310,26 @@ async fn render_worker(ctx: RenderCtx, task_token: CancellationToken) -> anyhow:
     }
 
     Ok(())
+}
+
+/// 等 worker token 或 pipeline token 任意一个取消。
+///
+/// 两个 token 的优先级在调用方看来是一样的（都是“该收摊了”），合并成一个
+/// future 之后 `select!` 里不用重复写两遍相同的分支。
+async fn cancelled(task_token: &CancellationToken, root: &CancellationToken) {
+    tokio::select! {
+        _ = task_token.cancelled() => {}
+        _ = root.cancelled() => {}
+    }
+}
+
+/// job token、worker token、pipeline token 任意一个已取消。
+fn is_cancelled(
+    job: &CancellationToken,
+    task_token: &CancellationToken,
+    root: &CancellationToken,
+) -> bool {
+    job.is_cancelled() || task_token.is_cancelled() || root.is_cancelled()
 }
 
 async fn wait_profile(
@@ -329,8 +344,7 @@ async fn wait_profile(
         }
         tokio::select! {
             _ = cancel.cancelled() => return None,
-            _ = task_token.cancelled() => return None,
-            _ = token.cancelled() => return None,
+            _ = cancelled(task_token, token) => return None,
             result = rx.changed() => {
                 if result.is_err() {
                     warn!("printer profile channel closed");

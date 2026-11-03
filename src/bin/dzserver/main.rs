@@ -20,7 +20,7 @@ use api::{MgmtEndpoint, PrintEndpoint};
 use clap::Parser;
 use common::PrintArgs;
 use dzsrv::{mgmt_server::MgmtServer, print_server::PrintServer};
-use pipeline::{Pipeline, PipelineConfig};
+use pipeline::{Pipeline, PipelineConfig, SHUTDOWN_GRACE};
 use std::net::SocketAddr;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -92,7 +92,8 @@ fn main() -> std::process::ExitCode {
 
     let result = runtime.block_on(run(cli));
     // 阻塞渲染无法中途打断，最多再等这么久；剩下的线程随进程退出。
-    runtime.shutdown_timeout(Duration::from_secs(5));
+    // 和 `pipeline::SHUTDOWN_GRACE` 用同一个值，避免注释和实际行为不一致。
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
     common::exit_code(result)
 }
 
