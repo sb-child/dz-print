@@ -147,6 +147,10 @@ pub enum FrontendError {
         "printer stopped answering status polls ({polls} timeouts of {timeout:?} in a row)"
     ))]
     PrinterSilent { polls: usize, timeout: Duration },
+    #[snafu(display(
+        "printer did not start within {timeout:?}: no busy status and no print counter progress"
+    ))]
+    PrintDidNotStart { timeout: Duration },
     #[snafu(display("device worker did not stop within {timeout:?}"))]
     ShutdownTimeout { timeout: Duration },
     #[snafu(display("device worker did not answer within {timeout:?}"))]
@@ -201,8 +205,28 @@ pub struct DeviceConfig {
     pub recv_timeout: Duration,
     /// 等待打印完成时轮询 `0x70` 的间隔。
     pub print_poll: Duration,
-    /// `EndPage` 后的启动宽限期，期间即使空闲也继续等。
+    /// `EndPage` 后的启动宽限期。过了这个时间还没看到忙碌状态，才会开始
+    /// 用 `0x73` 判断这一页是不是已经打印过了。
     pub print_start_grace: Duration,
+    /// 没看到忙碌状态、`0x73` 也没有增长时，最多等多久就判定打印没有开始。
+    ///
+    /// 固件从 `EndPage` 到电机真正启动可能超过 1 秒，所以不能一过
+    /// [`Self::print_start_grace`] 就返回成功。超过这个时间仍然没有
+    /// `Printing` / `Rotating`，也没有打印计数增量，返回
+    /// [`FrontendError::PrintDidNotStart`]。
+    pub print_start_timeout: Duration,
+    /// 没看到忙碌状态时，两次 `0x73` 校验之间的间隔。
+    pub print_verify_interval: Duration,
+    /// 是否用 `0x73` 校验打印是否真的发生。
+    ///
+    /// 打开后，如果一直没看到 `Printing` / `Rotating`，会在
+    /// [`Self::print_start_grace`] 之后比较 `0x73` 的累计值：有增长说明页面
+    /// 打得太快、只是没采样到忙碌状态；没有增长就继续等，直到
+    /// [`Self::print_start_timeout`] 返回 [`FrontendError::PrintDidNotStart`]。
+    ///
+    /// `EndPage` 前的 baseline 查询失败时退回旧行为（过了宽限期就接受空闲）；
+    /// 后续校验查询失败不会直接判失败，而是继续轮询到超时。
+    pub print_verify: bool,
     /// 至少连续几次空闲才认为打印完成。
     pub print_idle_confirm: usize,
     /// 连续多少次状态查询没有任何回应就判定打印机失联。
@@ -223,6 +247,9 @@ impl Default for DeviceConfig {
             recv_timeout: Duration::from_secs(3),
             print_poll: Duration::from_millis(100),
             print_start_grace: Duration::from_secs(1),
+            print_start_timeout: Duration::from_secs(3),
+            print_verify_interval: Duration::from_millis(500),
+            print_verify: true,
             print_idle_confirm: 2,
             print_silent_limit: 5,
             print_done_timeout: Duration::from_secs(600),
@@ -454,10 +481,35 @@ impl Device {
     /// 每 [`DeviceConfig::print_poll`] 查一次 `0x70`：先看到忙、再连续几次空闲
     /// 才算完成；错误状态直接返回。只认 `0x70` 的帧，`0x7b` 之类的推送会跳过。
     ///
+    /// 如果一直没有看到忙，不会立刻认为完成：
+    ///
+    /// - `print_verify` 打开时，在 [`DeviceConfig::print_start_grace`] 之后
+    ///   比较 `0x73` 的累计值；有增长说明页面已经打印（只是太快没采样到忙），
+    ///   没有增长就继续等，直到 [`DeviceConfig::print_start_timeout`] 返回
+    ///   [`FrontendError::PrintDidNotStart`]。
+    /// - `print_verify` 关闭或 `0x73` 查询失败时退回旧行为：过了宽限期就接受空闲。
+    ///
     /// 只在最后一页的 `EndPage` 之后调用，由结束打印的一方独占；期间不要用
     /// `try_recv_one` / `try_pop_raw` 从队头取帧，否则会抢走 `0x70` 的响应。
     pub async fn wait_for_print_done(
         &self,
+        timeout: Duration,
+    ) -> Result<resp::status::Status, FrontendError> {
+        let baseline = if self.config.print_verify {
+            self.read_statistics(self.config.recv_timeout.min(timeout))
+                .await
+        } else {
+            None
+        };
+        self.wait_for_print_done_with(baseline, timeout).await
+    }
+
+    /// [`Self::wait_for_print_done`] 的内部实现。
+    ///
+    /// `baseline` 是 `EndPage` 之前的 `0x73` 快照；`None` 表示不做计数校验。
+    async fn wait_for_print_done_with(
+        &self,
+        baseline: Option<resp::statistics::Statistics>,
         timeout: Duration,
     ) -> Result<resp::status::Status, FrontendError> {
         let started = tokio::time::Instant::now();
@@ -470,6 +522,9 @@ impl Device {
         let mut silent_polls = 0usize;
         // 只在状态变化时打日志，避免 100ms 轮询把日志刷满。
         let mut logged: Option<PrinterStatus> = None;
+        // 没看到忙碌状态时，用 `0x73` 判断页面是不是已经打印过了。
+        let mut last_verify = started;
+        let verify = self.config.print_verify && baseline.is_some();
 
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -564,22 +619,91 @@ impl Device {
                     status: status.status,
                 });
             }
+
             if matches!(
                 status.status,
                 PrinterStatus::Printing | PrinterStatus::Rotating | PrinterStatus::PageNotReady
             ) {
                 seen_busy = true;
                 idle_polls = 0;
-            } else {
-                idle_polls += 1;
-                // 一页打完得很快时可能还没观察到忙，先等过启动宽限期再接受空闲。
-                if (seen_busy || started.elapsed() >= self.config.print_start_grace)
+                continue;
+            }
+
+            idle_polls += 1;
+
+            if seen_busy {
+                if idle_polls >= self.config.print_idle_confirm {
+                    return Ok(status);
+                }
+                continue;
+            }
+
+            // 还没看到忙碌状态。固件可能只是还没开始转电机，不能马上认为完成。
+            let elapsed = started.elapsed();
+            if !verify {
+                // 没有校验手段时保持旧行为。
+                if elapsed >= self.config.print_start_grace
                     && idle_polls >= self.config.print_idle_confirm
                 {
                     return Ok(status);
                 }
+                continue;
+            }
+
+            if elapsed < self.config.print_start_grace {
+                continue;
+            }
+
+            if tokio::time::Instant::now().duration_since(last_verify)
+                < self.config.print_verify_interval
+            {
+                continue;
+            }
+            last_verify = tokio::time::Instant::now();
+
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let before = baseline.as_ref().expect("verify requires a baseline");
+            if let Some(stats) = self
+                .read_statistics(remaining.min(self.config.recv_timeout))
+                .await
+                && statistics_progress(before, &stats)
+            {
+                info!(
+                    print_pages = stats.print_pages,
+                    print_lines = stats.print_lines,
+                    "printer made print progress without a visible busy status"
+                );
+                // 页面确实打印过；按正常完成逻辑再确认几次空闲，避免在它
+                // 还在走纸时提前返回。
+                seen_busy = true;
+                idle_polls = 0;
+                continue;
+            }
+
+            if started.elapsed() >= self.config.print_start_timeout {
+                return Err(FrontendError::PrintDidNotStart {
+                    timeout: self.config.print_start_timeout,
+                });
             }
         }
+    }
+
+    /// 读一次 `0x73` 打印统计。
+    ///
+    /// 超时、解析失败或写失败都返回 `None`。打印结束判定把 `None` 当作
+    /// “没有校验手段”，退回旧行为，而不是直接判失败。
+    async fn read_statistics(&self, timeout: Duration) -> Option<resp::statistics::Statistics> {
+        if self
+            .try_send_batch(&[&req::statistics::Statistics {}])
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        self.recv_cmd_timeout::<resp::statistics::Statistics>(resp::statistics::CMD, timeout)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// 接收指定类型的回复。
@@ -726,6 +850,18 @@ impl Device {
     }
 }
 
+/// 判断 `0x73` 计数器有没有前进。
+///
+/// `PrintLines` / `PrintPages` 是 `u32`，长时间使用后会溢出到 0，所以不能
+/// 用 `after > before` 判断进度：只要值发生了变化就算有进展。打印机复位
+/// 也会被当成进展，这里宁可漏报也不误杀正常打印。
+fn statistics_progress(
+    before: &resp::statistics::Statistics,
+    after: &resp::statistics::Statistics,
+) -> bool {
+    after.print_pages != before.print_pages || after.print_lines != before.print_lines
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -742,7 +878,7 @@ mod tests {
         planner::print::RleMode,
     };
 
-    use super::{Device, DeviceConfig, FrontendError, RecvError};
+    use super::{Device, DeviceConfig, FrontendError, RecvError, statistics_progress};
 
     /// 内存 transport：记录写出的命令区，按队列回放响应帧。
     #[derive(Clone, Default)]
@@ -800,11 +936,95 @@ mod tests {
         frame(0x77, &[size, 0, 0, 0, 0, 0, 0, 0])
     }
 
+    fn stats_frame(stats: &resp::statistics::Statistics) -> Vec<u8> {
+        let mut data = Vec::with_capacity(16);
+        data.extend_from_slice(&stats.work_lines.to_be_bytes());
+        data.extend_from_slice(&stats.print_lines.to_be_bytes());
+        data.extend_from_slice(&stats.null_lines.to_be_bytes());
+        data.extend_from_slice(&stats.print_pages.to_be_bytes());
+        frame(0x73, &data)
+    }
+
+    /// 按写入的命令自动回包：`0x70` 回状态，`0x73` 回统计。
+    ///
+    /// 等待打印完成的测试需要控制“第几次 `0x73` 看到什么”，FIFO transport
+    /// 很难和状态轮询对齐。
+    #[derive(Clone, Default)]
+    struct RespondingTransport {
+        statuses: Arc<StdMutex<VecDeque<u8>>>,
+        stats: Arc<StdMutex<VecDeque<resp::statistics::Statistics>>>,
+        written: Arc<StdMutex<Vec<u8>>>,
+        incoming: Arc<StdMutex<VecDeque<Vec<u8>>>>,
+    }
+
+    impl RespondingTransport {
+        fn push_status(&self, status: u8) {
+            self.statuses.lock().unwrap().push_back(status);
+        }
+
+        fn push_stats(&self, stats: resp::statistics::Statistics) {
+            self.stats.lock().unwrap().push_back(stats);
+        }
+    }
+
+    impl Transport for RespondingTransport {
+        fn write(&mut self, cmd_area: &[u8]) -> Result<WriteOutcome, TransportError> {
+            self.written.lock().unwrap().extend_from_slice(cmd_area);
+            let mut incoming = self.incoming.lock().unwrap();
+            if cmd_area.windows(2).any(|w| w == [0x1f, 0x70]) {
+                let status = self.statuses.lock().unwrap().pop_front().unwrap_or(0x00);
+                incoming.push_back(status_frame(status));
+            }
+            if cmd_area.windows(2).any(|w| w == [0x1f, 0x73]) {
+                let stats = self.stats.lock().unwrap().pop_front().unwrap_or_default();
+                incoming.push_back(stats_frame(&stats));
+            }
+            Ok(WriteOutcome::Written)
+        }
+
+        fn read_chunk(&mut self, out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
+            if let Some(frame) = self.incoming.lock().unwrap().pop_front() {
+                out.extend_from_slice(&frame);
+                Ok(ReadStatus::Data)
+            } else {
+                thread::sleep(Duration::from_millis(1));
+                Ok(ReadStatus::Timeout)
+            }
+        }
+
+        fn reset(&mut self) -> Result<(), TransportError> {
+            Ok(())
+        }
+    }
+
+    fn respond(config: DeviceConfig) -> (Device, RespondingTransport) {
+        let transport = RespondingTransport::default();
+        let tm = mytm::TaskManager::new();
+        let device = Device::new_with_transport(&tm, transport.clone(), config);
+        (device, transport)
+    }
+
+    fn verify_config() -> DeviceConfig {
+        DeviceConfig {
+            recv_timeout: Duration::from_millis(50),
+            print_poll: Duration::from_millis(1),
+            print_start_grace: Duration::from_millis(10),
+            print_start_timeout: Duration::from_millis(60),
+            print_verify_interval: Duration::from_millis(5),
+            print_verify: true,
+            print_idle_confirm: 1,
+            print_silent_limit: 100,
+            print_done_timeout: Duration::from_millis(500),
+            ..Default::default()
+        }
+    }
+
     fn test_config() -> DeviceConfig {
         DeviceConfig {
             recv_timeout: Duration::from_millis(200),
             print_poll: Duration::from_millis(1),
             print_start_grace: Duration::ZERO,
+            print_verify: false,
             print_idle_confirm: 1,
             print_done_timeout: Duration::from_millis(500),
             ..Default::default()
@@ -821,6 +1041,22 @@ mod tests {
         let tm = mytm::TaskManager::new();
         let device = Device::new_with_transport(&tm, transport.clone(), test_config());
         (device, transport)
+    }
+
+    #[test]
+    fn statistics_progress_handles_wraparound() {
+        let before = resp::statistics::Statistics {
+            print_lines: u32::MAX,
+            print_pages: 7,
+            ..Default::default()
+        };
+        let wrapped = resp::statistics::Statistics {
+            print_lines: 0,
+            print_pages: 7,
+            ..Default::default()
+        };
+        assert!(statistics_progress(&before, &wrapped));
+        assert!(!statistics_progress(&before, &before));
     }
 
     #[tokio::test]
@@ -888,6 +1124,93 @@ mod tests {
                 err,
                 FrontendError::PrinterStatus {
                     status: PrinterStatus::NoPaper
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_print_done_errors_when_nothing_starts() {
+        let (device, transport) = respond(verify_config());
+
+        // 状态永远是 Printable，统计永远不增长：页面根本没开始打印。
+        let err = device
+            .wait_for_print_done(Duration::from_millis(500))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, FrontendError::PrintDidNotStart { .. }),
+            "{err:?}"
+        );
+        // 确认确实查过 0x73（baseline + 至少一次校验）。
+        let written = transport.written.lock().unwrap().clone();
+        let stats_queries = written.windows(2).filter(|w| *w == [0x1f, 0x73]).count();
+        assert!(stats_queries >= 2, "written = {written:?}");
+    }
+
+    #[tokio::test]
+    async fn wait_for_print_done_accepts_fast_print_confirmed_by_stats() {
+        let (device, transport) = respond(verify_config());
+
+        let before = resp::statistics::Statistics::default();
+        let after = resp::statistics::Statistics {
+            print_lines: 32,
+            print_pages: 1,
+            ..Default::default()
+        };
+        // 第一次 0x73 是 baseline，第二次是宽限期后的校验。
+        transport.push_stats(before);
+        transport.push_stats(after);
+
+        let status = device
+            .wait_for_print_done(Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert_eq!(status.status, PrinterStatus::Printable);
+    }
+
+    /// 固件启动慢时不能提前判完成：先空闲一段时间，再 Rotating。
+    #[tokio::test]
+    async fn wait_for_print_done_accepts_late_busy() {
+        let config = DeviceConfig {
+            print_start_grace: Duration::from_millis(20),
+            print_start_timeout: Duration::from_millis(200),
+            ..verify_config()
+        };
+        let (device, transport) = respond(config);
+
+        for _ in 0..30 {
+            transport.push_status(0x00);
+        }
+        transport.push_status(0x02); // Rotating
+        transport.push_status(0x00); // Printable
+
+        let status = device
+            .wait_for_print_done(Duration::from_millis(500))
+            .await
+            .unwrap();
+        assert_eq!(status.status, PrinterStatus::Printable);
+    }
+
+    /// 开盖错误在打印中途出现时仍然要立即返回，不能被宽限期吞掉。
+    #[tokio::test]
+    async fn wait_for_print_done_reports_cover_opened_during_verify() {
+        let (device, transport) = respond(verify_config());
+
+        transport.push_status(0x00);
+        transport.push_status(0x02); // Rotating
+        transport.push_status(0x22); // CoverOpened
+
+        let err = device
+            .wait_for_print_done(Duration::from_millis(500))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                FrontendError::PrinterStatus {
+                    status: PrinterStatus::CoverOpened
                 }
             ),
             "{err:?}"

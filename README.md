@@ -89,15 +89,19 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
 # 复现短页面打完前后掉打印头：连续打 3 张 32 行的图，
 # 把 0x70 轮询压到 1ms，并用 0x73 统计对账
 cargo run --bin test_usb -- --phase short-print \
-  --short-rows 32 --short-pages 3 --poll-ms 1 --grace-ms 2000 --print-timeout 20
+  --short-rows 32 --short-pages 3 --poll-ms 1 --print-timeout 20
 ```
 
 `short-print` 会逐页记录 `print_bitmap_job` 的返回值、`0x73` 统计增量和打印结束后
-队列里的残留帧。`--poll-ms` / `--grace-ms` / `--idle-confirm` 直接对应
+队列里的残留帧。`--poll-ms` / `--grace-ms` / `--start-timeout-ms` 直接对应
 `DeviceConfig` 里等待打印完成的参数；短页面想抓到转瞬即逝的状态时把 `--poll-ms`
 调到 1~5ms。注意实际采样率还受固件响应速度限制：DP27P 回一条 `0x70` 大约要
 100ms，所以即使 `--poll-ms 1`，真正能看到的间隔也只有 ~10Hz。`0x73` 计数器在
 DP27P 上并不完全可靠，日志里的结论只能当参考，最终仍要看纸面。
+
+`print_bitmap_job` 现在会在一直看不到 `Printing` / `Rotating` 时用 `0x73`
+确认页面是否真的打印过：到 `--grace-ms` 后统计没有增长就继续等，直到
+`--start-timeout-ms` 返回 `PrintDidNotStart`，避免固件启动慢时提前判完成。
 
 `dzcli` 目前只有 `clap` 参数骨架，功能还没接。
 

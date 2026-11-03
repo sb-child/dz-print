@@ -154,6 +154,14 @@ struct Cli {
     #[arg(long, default_value_t = 1000)]
     grace_ms: u64,
 
+    /// 没看到忙碌、`0x73` 也没有增长时，最多等多久判定打印没有开始（毫秒）
+    #[arg(long, default_value_t = 3000)]
+    start_timeout_ms: u64,
+
+    /// 没看到忙碌时两次 `0x73` 校验的间隔（毫秒）
+    #[arg(long, default_value_t = 500)]
+    verify_interval_ms: u64,
+
     /// 连续几次空闲才认为打印完成
     #[arg(long, default_value_t = 2)]
     idle_confirm: usize,
@@ -238,6 +246,8 @@ async fn main() -> anyhow::Result<()> {
             recv_timeout: Duration::from_millis(cli.recv_timeout_ms.max(1)),
             print_poll: Duration::from_millis(cli.poll_ms.max(1)),
             print_start_grace: Duration::from_millis(cli.grace_ms),
+            print_start_timeout: Duration::from_millis(cli.start_timeout_ms),
+            print_verify_interval: Duration::from_millis(cli.verify_interval_ms.max(1)),
             print_idle_confirm: cli.idle_confirm.max(1),
             print_silent_limit: cli.silent_limit.max(1),
             print_done_timeout: Duration::from_secs(cli.print_timeout.max(1)),
@@ -401,14 +411,15 @@ async fn phase_short_print(
                 return Err(error);
             }
         };
-        let reset = after.work_lines < prev.work_lines
+        // 累计计数器是 u32，可能溢出到 0，所以差值一律用 wrapping_sub。
+        let wrapped = after.work_lines < prev.work_lines
             || after.print_lines < prev.print_lines
             || after.null_lines < prev.null_lines
             || after.print_pages < prev.print_pages;
-        let work = after.work_lines.saturating_sub(prev.work_lines);
-        let printed = after.print_lines.saturating_sub(prev.print_lines);
-        let null = after.null_lines.saturating_sub(prev.null_lines);
-        let printed_pages = after.print_pages.saturating_sub(prev.print_pages);
+        let work = after.work_lines.wrapping_sub(prev.work_lines);
+        let printed = after.print_lines.wrapping_sub(prev.print_lines);
+        let null = after.null_lines.wrapping_sub(prev.null_lines);
+        let printed_pages = after.print_pages.wrapping_sub(prev.print_pages);
 
         info!(
             page,
@@ -416,21 +427,25 @@ async fn phase_short_print(
             print_lines = printed,
             null_lines = null,
             print_pages = printed_pages,
-            reset,
+            wrapped,
             "0x73 delta"
         );
 
-        if reset {
+        if wrapped {
             warn!(
                 page,
-                "0x73 计数器变小了，固件可能重启过；这一页的增量不可信"
+                "0x73 计数器变小了，按 u32 回绕/复位处理；上面的增量是回绕后的值"
             );
-        } else if detected {
+        }
+
+        if detected {
             info!(
                 page,
-                "错误已经在打印过程中被 0x70 检测到，这一页作废（不是漏检）"
+                "这一页已经被识别为失败（0x70 错误或 0x73 启动校验），不是漏检"
             );
-        } else if printed == 0 && printed_pages == 0 {
+        } else if after.print_lines == prev.print_lines && after.print_pages == prev.print_pages {
+            // 不能用 printed == 0 判断：回绕后 wrapping_sub 可能很大，
+            // 但真正“没有打印”的特征是前后两个累计值完全相同。
             suspicious += 1;
             if work > 0 {
                 warn!(
@@ -441,7 +456,7 @@ async fn phase_short_print(
             } else {
                 warn!(page, "走纸和打印行都没有增加：这一页实际没有打印");
             }
-        } else if printed < rows as u32 {
+        } else if !wrapped && printed < rows as u32 {
             warn!(
                 page,
                 printed, rows, "打印行数少于发送行数，这一页可能只打了一部分"
@@ -457,7 +472,7 @@ async fn phase_short_print(
         pages,
         errored,
         suspicious,
-        "打印对账结束：errored = 固件报错且已被检测到，suspicious = 返回成功但统计没有打印"
+        "打印对账结束：errored = 已识别为失败（0x70 错误或 0x73 启动校验），suspicious = 返回成功但统计没有打印"
     );
     if suspicious > 0 {
         bail!(
@@ -467,8 +482,8 @@ async fn phase_short_print(
     }
     if errored > 0 {
         bail!(
-            "{pages} 页里有 {errored} 页返回错误，且错误已经在 0x70 轮询中被检测到；\
-             如果纸面不完整，说明这次复现的是「固件有报错」的情况，不是漏检"
+            "{pages} 页里有 {errored} 页返回错误，且错误已经被检测到；\
+             如果纸面不完整，说明这次复现的是「固件有报错 / 启动超时」的情况，不是漏检"
         );
     }
     Ok(())
@@ -891,6 +906,8 @@ mod tests {
         assert_eq!(cli.short_pages, 3);
         assert_eq!(cli.poll_ms, 100);
         assert_eq!(cli.grace_ms, 1000);
+        assert_eq!(cli.start_timeout_ms, 3000);
+        assert_eq!(cli.verify_interval_ms, 500);
         assert_eq!(cli.idle_confirm, 2);
         assert_eq!(cli.silent_limit, 5);
         assert_eq!(cli.print_timeout, 600);
@@ -932,6 +949,10 @@ mod tests {
             "1",
             "--grace-ms",
             "250",
+            "--start-timeout-ms",
+            "1500",
+            "--verify-interval-ms",
+            "100",
             "--idle-confirm",
             "3",
             "--silent-limit",
@@ -950,6 +971,8 @@ mod tests {
         assert_eq!(cli.short_pages, 5);
         assert_eq!(cli.poll_ms, 1);
         assert_eq!(cli.grace_ms, 250);
+        assert_eq!(cli.start_timeout_ms, 1500);
+        assert_eq!(cli.verify_interval_ms, 100);
         assert_eq!(cli.idle_confirm, 3);
         assert_eq!(cli.silent_limit, 2);
         assert_eq!(cli.print_timeout, 30);

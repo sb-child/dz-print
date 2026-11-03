@@ -248,12 +248,20 @@ impl Device {
             );
             self.try_send_batch(&[&heat]).await?;
 
+            // 最后一页在 `EndPage` 之前抓一次 `0x73` 快照。之后如果一直看不到
+            // `Printing` / `Rotating`，就用这个快照判断页面到底有没有打印。
+            let baseline = if start >= bm.height() && self.config.print_verify {
+                self.read_statistics(self.config.recv_timeout).await
+            } else {
+                None
+            };
+
             self.try_send_batch(&[&req::end_page::EndPage {}]).await?;
             // `EndPage` 只是把数据交给固件；最后一页要等打印头真正走完，
             // 否则前台一退出，USB 句柄被释放，纸可能只走了一半。
             if start >= bm.height() {
                 let status = self
-                    .wait_for_print_done(self.config.print_done_timeout)
+                    .wait_for_print_done_with(baseline, self.config.print_done_timeout)
                     .await?;
                 info!(
                     status = ?status.status,
