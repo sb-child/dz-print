@@ -15,19 +15,25 @@
 //!
 //! 程序会在页面的指定百分比打印 `>>> OPEN THE COVER NOW <<<`，之后自动：
 //! 记录第一次沉默、是否发了 EndPage、断开 → 等待 `--settle` → 重新连接 →
-//! 反复读状态，最后打印一行 `RESULT ...` 方便复制。
+//! 连续读状态，最后打印一行 `RESULT ...` 方便复制。
+//!
+//! 页面点阵是伪随机的，所以每行都不一样、压不掉，整页约 100KB。发送总时长由
+//! `--duration` 控制（默认 30s），提示之后大约还剩一半时间，够操作员开盖。
+//! 如果还是不稳，加 `--hold`：程序会在提示位置停住，等操作员开盖并按 Enter，
+//! 先探一次状态确认打印机已经沉默，再把剩余数据写进去。这样每次实验的
+//! “沉默 → 继续灌数据 → EndPage”时序都是同一个，不依赖反应速度。
 //!
 //! 主实验是 `late` / `late-skip`：同一个完整页，唯一区别是沉默后发不发
 //! `EndPage`。`early` / `early-end-page` 是辅助实验：在同一个中途位置只切换
 //! `EndPage`，用来把“剩余页面长度”这个变量也控制住。
 //!
 //! ```text
-//! probe_end_page --mode late      --rows 1418 --prompt-at 80 --recv-timeout 500ms
-//! probe_end_page --mode late-skip --rows 1418 --prompt-at 80 --recv-timeout 500ms
+//! probe_end_page --mode late      --hold --prompt-at 50
+//! probe_end_page --mode late-skip --hold --prompt-at 50
 //! ```
 //!
-//! 如果 `late` 明显更慢、`late-skip` 回到 1~2 秒，就说明 EndPage 是关键，
-//! 并且候选修复有效。
+//! 比较两次的 `after_reopen`：如果 `late` 明显更慢、`late-skip` 稳定在 1~2 秒，
+//! 就说明 EndPage 是关键，并且候选修复有效。
 
 mod common;
 
@@ -82,18 +88,27 @@ struct Cli {
     #[arg(long, default_value_t = 2000)]
     chunk: usize,
 
-    /// 每块之后的停顿，给操作员反应时间
+    /// 整页数据的目标发送时长，程序据此算出每块之间停多久
+    ///
+    /// 这是为了让操作员有时间开盖：50% 提示出现后，后面还有大约一半的时长。
     #[arg(
         long,
         value_name = "DURATION",
         value_parser = humantime::parse_duration,
-        default_value = "50ms"
+        default_value = "30s"
     )]
-    pace: Duration,
+    duration: Duration,
 
     /// 打印到多少百分比时提示开盖
     #[arg(long, default_value_t = 50)]
     prompt_at: u8,
+
+    /// 到提示位置就停下，等操作员开盖并按 Enter 再继续发送
+    ///
+    /// 比“看到提示再抢时间开盖”可靠得多：程序会先探一次状态确认打印机已经
+    /// 沉默，再把剩下的数据写进去。
+    #[arg(long)]
+    hold: bool,
 
     /// 每隔多少字节强制探一次状态；省略时只在预算用完时探
     #[arg(long, value_name = "BYTES")]
@@ -192,7 +207,8 @@ fn print_intro(cli: &Cli) {
         mode = ?cli.mode,
         rows = cli.rows,
         chunk = cli.chunk,
-        pace = ?cli.pace,
+        duration = ?cli.duration,
+        hold = cli.hold,
         prompt_at = cli.prompt_at,
         probe_every = ?cli.probe_every,
         settle = ?cli.settle,
@@ -206,17 +222,29 @@ fn print_intro(cli: &Cli) {
         "2. 程序打印到约 {}% 时会打印 >>> OPEN THE COVER NOW <<<。",
         cli.prompt_at
     );
-    info!("3. 看到后立刻打开盖子，不要关回去。");
+    if cli.hold {
+        info!("3. 这时发送会停住；打开盖子，然后按 Enter 让程序继续。");
+        info!("   程序会先探一次状态，确认打印机已经沉默，再把剩下的数据写完。");
+    } else {
+        info!("3. 看到后立刻打开盖子，不要关回去。");
+        info!(
+            "   整页发送按 --duration 拉长到 {:?}，提示之后大约还有一半时间，\
+             不用抢。",
+            cli.duration
+        );
+    }
     info!("4. 程序会记录第一次沉默、是否发 EndPage、重新连接后的第一次成功读状态。");
     info!("5. 结束后把 RESULT 行和完整日志贴回来。");
     info!(
         "注意：如果日志里出现 `printer reported an error`，说明打印机还在回包\
          （例如 CoverOpened），这次不是沉默实验。"
     );
-    info!(
-        "提示：发送很快，看到 OPEN NOW 后要立刻开盖；反应慢就先把 --rows 调大\
-         （例如 3000），或者把 --pace 调大。"
-    );
+    if !cli.hold {
+        info!(
+            "提示：如果还是来不及，加 --hold 改成“停下等你按 Enter”，\
+             或者把 --duration 调大。"
+        );
+    }
     match cli.mode {
         Mode::Early => info!("mode=early：探测到沉默就停，不发 EndPage。"),
         Mode::EarlyEndPage => {
@@ -232,10 +260,40 @@ fn print_intro(cli: &Cli) {
 }
 
 fn wait_for_enter() {
-    print!("按 Enter 开始... ");
+    print!("按 Enter 继续... ");
     let _ = std::io::stdout().flush();
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
+}
+
+/// 开盖后确认沉默的探测次数与间隔。
+const COVER_CONFIRM_TRIES: usize = 5;
+const COVER_CONFIRM_GAP: Duration = Duration::from_millis(300);
+
+/// 暂停发送，等操作员开盖，然后确认打印机真的不再回包。
+///
+/// 返回确认沉默的时刻。如果打印机还在回包，说明盖子没开到位，本次不是沉默
+/// 实验，直接报错让操作员重跑。
+async fn hold_for_cover(dev: &Device, config: &DeviceConfig) -> Result<Instant> {
+    info!("------------------------------------------------------------");
+    info!("发送已暂停：现在打开盖子，然后按 Enter。");
+    info!("------------------------------------------------------------");
+    tokio::task::spawn_blocking(wait_for_enter).await?;
+
+    for attempt in 1..=COVER_CONFIRM_TRIES {
+        match probe_budget(dev, config.recv_timeout).await {
+            Probe::Silent { .. } => {
+                let at = Instant::now();
+                info!(attempt, "确认打印机已沉默，继续把剩余数据写进去");
+                return Ok(at);
+            }
+            Probe::Answer { status, .. } => {
+                warn!(attempt, ?status, "打印机还在回包，等一下再确认");
+                sleep(COVER_CONFIRM_GAP).await;
+            }
+        }
+    }
+    bail!("开盖后打印机仍在回包，本次不是沉默场景；确认盖子真的打开后重跑")
 }
 
 async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
@@ -269,6 +327,15 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
     .await?;
 
     let (areas, total_bytes) = encode_page(&page.commands, dev.model_version())?;
+    let chunks = total_bytes.div_ceil(cli.chunk).max(1);
+    let chunk_delay = cli.duration.div_f64(chunks as f64);
+    info!(
+        total_bytes,
+        chunks,
+        chunk_delay = ?chunk_delay,
+        duration = ?cli.duration,
+        "send plan"
+    );
     let started = Instant::now();
     let mut sent_bytes = 0usize;
     let mut sent_lines = 0usize;
@@ -331,17 +398,35 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
                     total_bytes, sent_lines, page_lines, ">>> OPEN THE COVER NOW <<<"
                 );
                 info!("============================================================");
+                if cli.hold {
+                    match hold_for_cover(&dev, &config).await {
+                        Ok(silence) => {
+                            first_silence.get_or_insert(silence);
+                            if matches!(cli.mode, Mode::Early | Mode::EarlyEndPage) {
+                                info!("已确认沉默，早期模式不再发剩余数据");
+                                break;
+                            }
+                            // 已经确认沉默了，后面不再探测，只把数据写完。
+                            budget_left = usize::MAX;
+                        }
+                        Err(error) => {
+                            warn!(%error, "本次没有复现沉默，停止实验");
+                            let _ = dev.shutdown(SHUTDOWN_TIMEOUT).await;
+                            return Ok(());
+                        }
+                    }
+                }
             }
         }
 
-        if !cli.pace.is_zero() {
-            sleep(cli.pace).await;
+        if !chunk_delay.is_zero() {
+            sleep(chunk_delay).await;
         }
 
         let forced = cli
             .probe_every
             .is_some_and(|every| sent_bytes.saturating_sub(last_probe_bytes) >= every);
-        if budget_left == 0 || forced {
+        if first_silence.is_none() && (budget_left == 0 || forced) {
             last_probe_bytes = sent_bytes;
             let probe_started = Instant::now();
             match probe_budget(&dev, config.recv_timeout).await {
@@ -380,7 +465,8 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
                     if matches!(cli.mode, Mode::Early | Mode::EarlyEndPage) {
                         break;
                     }
-                    budget_left = FALLBACK_BUDGET;
+                    // 沉默了就不再靠预算分块：后面每块都按 --duration 的节奏整块写完。
+                    budget_left = usize::MAX;
                 }
             }
         }
@@ -561,13 +647,21 @@ async fn connect(tm: &TaskManager, config: &DeviceConfig) -> Result<Device> {
 
 fn build_bitmap(width: usize, rows: usize) -> Result<Bitmap> {
     let mut bitmap = Bitmap::new(width, rows).context("创建位图失败")?;
+    // 用伪随机点阵：每一行都不一样，planner 就没法把相邻行压成 repeats。
+    // 否则 1418 行只剩几 KB，几百毫秒就发完，操作员根本来不及开盖。
+    let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
     for y in 0..rows {
         let mut line = bitmap.line_mut(y)?;
-        if y % 64 == 0 {
-            // 每 64 行一条实线，方便在纸上看进度。
+        if y % 128 == 0 {
+            // 每 128 行一条实线，方便在纸上看进度。
             line.fill(true);
-        } else {
-            for x in (0..width).step_by(8) {
+            continue;
+        }
+        for x in 0..width {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            if rng & 0b11 == 0 {
                 line.set(x, true);
             }
         }

@@ -121,16 +121,12 @@ DP27P 上并不完全可靠，日志里的结论只能当参考，最终仍要�
 
 ```bash
 # 主实验：同一个完整页，唯一区别是沉默后发不发 EndPage
-cargo run --bin probe_end_page -- --mode late \
-  --rows 1418 --prompt-at 80 --recv-timeout 500ms
-cargo run --bin probe_end_page -- --mode late-skip \
-  --rows 1418 --prompt-at 80 --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode late      --hold --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode late-skip --hold --recv-timeout 500ms
 
 # 辅助实验：在同一个中途位置，只切换 EndPage
-cargo run --bin probe_end_page -- --mode early \
-  --rows 1418 --prompt-at 50 --probe-every 2000 --recv-timeout 500ms
-cargo run --bin probe_end_page -- --mode early-end-page \
-  --rows 1418 --prompt-at 50 --probe-every 2000 --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode early          --hold --recv-timeout 500ms
+cargo run --bin probe_end_page -- --mode early-end-page --hold --recv-timeout 500ms
 ```
 
 模式：
@@ -140,16 +136,17 @@ cargo run --bin probe_end_page -- --mode early-end-page \
 - `late`：不理会沉默，发完整页 + `0x25` + `0x73` + `EndPage`（复现失败场景）；
 - `late-skip`：发完整页；`0x73` 和 `0x70` 都失败时不发 `EndPage`。
 
-`late` / `late-skip` 建议 `--prompt-at 80`：失败抓包就是“数据快发完时开盖，
-主机仍把剩下的数据和 EndPage 写进去”。`early` / `early-end-page` 用 50 左右，
-在同一个中途位置只切换 EndPage。默认 `--pace 50ms` 大致对应真机的发送速度；
-如果 80% 还反应不过来，把 `--rows` 调大（例如 3000）。
+页面点阵是伪随机的，每行都不一样，压不掉，整页约 100KB；发送总时长由
+`--duration` 控制（默认 `30s`），提示之后大约还剩一半。如果不想抢时间，加
+`--hold`：程序在 `--prompt-at` 处停住，等操作员开盖并按 Enter，先探一次状态
+确认打印机已经沉默，再把剩余数据写进去。这样“沉默 → 继续灌数据 → EndPage”
+的时序每次一致，不依赖反应速度；如果开盖后打印机还在回包，程序会直接报错，
+避免产出一组假数据。
 
-程序打印到 `--prompt-at` 指定的百分比时会打出 `>>> OPEN THE COVER NOW <<<`，
-看到后打开盖子。结束后打印：
+结束后打印：
 
 ```text
-RESULT mode=early rows=1418 sent_bytes=... sent_lines=... drop_elapsed=... reopen_elapsed=... prompt=... first_silence=... first_error=... endpage=... stats_ok=... attempts=... after_reopen=... answer=... from_silence=... from_endpage=...
+RESULT mode=late rows=1418 sent_bytes=... sent_lines=... drop_elapsed=... reopen_elapsed=... prompt=... first_silence=... first_error=... endpage=... stats_ok=... attempts=... after_reopen=... answer=... from_silence=... from_endpage=...
 ```
 
 `--settle` 控制断开到重连的等待（默认 `1.3s`）。重连后程序每隔
