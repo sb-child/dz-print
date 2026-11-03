@@ -96,9 +96,9 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
 
 ## 打印机沉默：job 作废，reset 是唯一清理方式
 
-开盖、缺纸或固件卡住时，打印机可能直接停止消费 USB 数据。此时它的 parser
-被前面没读完的命令堵住，再发多少 `0x70` 也只会排在队尾，**不会得到响应**。
-主机只能靠连续超时判定：
+开盖、缺纸或固件卡住时，打印机会直接停止处理命令，连续发多少 `0x70` 都
+**不会得到响应**。USB 写仍然会成功（中断 OUT 端点照常 ACK），所以不能靠
+「写失败」判断。主机只能靠连续超时判定：
 
 - `print_silent_limit` 默认 `2`；`--recv-timeout 500ms` 时约 1 秒，
   默认 3 秒时约 6 秒；
@@ -108,8 +108,12 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
 - `Device::reset` 的语义是**彻底重置连接**：worker 丢弃当前 transport
   （释放接口、把内核驱动接回去），再用原来的选择器重新 open 一个新的
   libusb context / DeviceHandle，claim 之前做 `handle.reset()`。它不等价于
-  在旧 handle 上调用 `libusb_reset_device()`，实测后者救不回被堵住的 parser；
-- reset 完成后只读一次 `0x70`：读到 `CoverOpened` / `NoPaper` 就报具体
-  状态，否则保留 `PrinterSilent`。job 仍然作废；
+  在旧 handle 上调用 `libusb_reset_device()`；
+- reset 只清主机侧状态。固件那边还在收拾上一页（电机、缓冲区），什么时候
+  重新处理命令没有保证，所以 reset 之后在 5 秒内反复探测 `0x70`，第一次
+  回包就停：读到 `CoverOpened` / `NoPaper` 就报具体状态，一直不回才保留
+  `PrinterSilent`。日志里的 `printer answered after reset` / `printer still
+  silent after reset` 会带上尝试次数和耗时；
+- 探测到 `Printable` 也不要继续当前 job：已经发出去的数据无法撤回；
 - `dzserver` 失败后走 `drop_device()` + 下一次任务重连，重连本身也是重新
   open；`wait_ready` 有 `print_done_timeout` 上限，不会无限堵住队列。

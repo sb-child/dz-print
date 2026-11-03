@@ -61,6 +61,17 @@ use tracing::{debug, error, info, warn};
 
 use super::{Device, FrontendError, RecvError};
 
+/// reset 之后等固件重新接受命令的总时限。
+///
+/// 开盖中止打印时电机可能还在走，固件在收拾完上一页之前不回命令。重新 open
+/// 只能清主机侧的 parser，固件什么时候恢复没有保证，所以给一个总时限反复
+/// 探测 `0x70`，而不是假定「重新打开完就能立刻查到」。
+#[cfg(not(test))]
+const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// 单元测试里用 5ms 的 `recv_timeout`，不能真的等 5 秒。
+#[cfg(test)]
+const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_millis(40);
+
 /// [`Device::print_bitmap_job_with`] 的页面参数。
 ///
 /// 默认是连续纸，和 [`Device::print_bitmap_job`] 的行为一致。
@@ -171,8 +182,10 @@ impl Device {
 
     /// 在 `0x77` 已经超时的情况下确认一次 `0x70`。
     ///
-    /// 如果状态也不回，说明固件的 parser 已经被前面的数据堵住。调用
-    /// [`Device::reset`] 重新打开连接，再读一次状态；job 仍然作废。
+    /// 如果状态也不回，说明打印机已经停止处理命令（开盖、缺纸或固件卡住）。
+    /// 调用 [`Device::reset`] 重新打开连接，再在
+    /// [`POST_RESET_PROBE_TIMEOUT`] 内反复探测 `0x70`，尽量把真实状态读回来；
+    /// job 仍然作废。
     async fn check_after_budget_timeout(&self) -> Result<(), FrontendError> {
         // 这里必须自己重新发一次 `0x70`。上一轮查询已经超时，或者刚刚
         // reset 换了 transport；直接 recv 等于等一个不存在的响应。
@@ -212,36 +225,59 @@ impl Device {
                     });
                 }
 
-                // reset 换成了新的 transport，旧请求已经跟着旧 transport
-                // 一起丢掉；必须在新连接上重新发一遍 `0x70`。
-                self.try_send_batch(&[&req::status::Status {}]).await?;
-                match self
-                    .recv_cmd_timeout::<resp::status::Status>(
-                        resp::status::CMD,
-                        self.config.recv_timeout,
-                    )
-                    .await
-                {
-                    Ok(Some(status)) => {
-                        warn!(
-                            status = ?status.status,
-                            reason = %status.status,
-                            "printer status after reset"
-                        );
-                        if status.status.is_error() {
-                            return Err(FrontendError::PrinterStatus {
-                                status: status.status,
-                            });
+                // reset 换成了新的 transport，旧请求已经跟着旧 transport 一起
+                // 丢掉；必须在新连接上重新发一遍 `0x70`。
+                //
+                // 重新 open 只清主机侧的 parser：固件那边还在收拾上一页
+                // （电机、缓冲区），多久能重新处理命令没有保证，所以这里在
+                // 有限时间内反复探测，第一次回包就停。
+                let started = tokio::time::Instant::now();
+                let deadline = started + POST_RESET_PROBE_TIMEOUT;
+                let mut attempts = 0usize;
+                loop {
+                    attempts += 1;
+                    self.try_send_batch(&[&req::status::Status {}]).await?;
+                    match self
+                        .recv_cmd_timeout::<resp::status::Status>(
+                            resp::status::CMD,
+                            self.config.recv_timeout,
+                        )
+                        .await
+                    {
+                        Ok(Some(status)) => {
+                            info!(
+                                attempts,
+                                elapsed = ?started.elapsed(),
+                                status = ?status.status,
+                                reason = %status.status,
+                                "printer answered after reset"
+                            );
+                            if status.status.is_error() {
+                                return Err(FrontendError::PrinterStatus {
+                                    status: status.status,
+                                });
+                            }
+                            break;
                         }
+                        Err(error @ RecvError::Closed) => return Err(error.into()),
+                        Ok(None) => {}
+                        Err(error) => debug!("status query after reset failed: {error}"),
                     }
-                    Ok(None) => warn!("printer still silent after reset"),
-                    Err(error) => warn!(%error, "status query after reset failed"),
+
+                    if deadline <= tokio::time::Instant::now() {
+                        warn!(
+                            attempts,
+                            elapsed = ?started.elapsed(),
+                            "printer still silent after reset"
+                        );
+                        break;
+                    }
                 }
 
                 // 即使读到了 Printable 也不能继续：已经发出去的数据无法
                 // 撤回，job 已经作废。
                 Err(FrontendError::PrinterSilent {
-                    polls: 1,
+                    polls: attempts,
                     timeout: self.config.recv_timeout,
                 })
             }

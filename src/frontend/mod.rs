@@ -500,6 +500,15 @@ impl Device {
         const MIN_RESET_TIMEOUT: Duration = Duration::from_secs(3);
         let timeout = timeout.max(MIN_RESET_TIMEOUT);
 
+        // 先把缓存里的旧响应丢掉，reset 之后只认新连接上的回包。
+        // 必须在换 transport 之前清：换完之后打印机的第一个应答可能已经
+        // 进了队列，那时再清就会把真正想要的响应也丢掉。
+        {
+            let mut state = self.recv.lock().await;
+            while state.rx.try_recv().is_ok() {}
+            state.queue.clear();
+        }
+
         let (ack_tx, ack_rx) = oneshot::oneshot();
         let sent = async {
             self.out_tx
@@ -515,16 +524,10 @@ impl Device {
                 .map_err(|message| FrontendError::Write { message })
         };
 
-        let result = match tokio::time::timeout(timeout, sent).await {
+        match tokio::time::timeout(timeout, sent).await {
             Ok(result) => result,
             Err(_) => Err(FrontendError::WorkerTimeout { timeout }),
-        };
-        if result.is_ok() {
-            let mut state = self.recv.lock().await;
-            while state.rx.try_recv().is_ok() {}
-            state.queue.clear();
         }
-        result
     }
 
     /// 等打印机把已经发送的页真正打完。
@@ -1434,16 +1437,25 @@ mod tests {
     /// 开盖 / 缺纸时固件可能连 `0x70` 都不回；发送阶段不能一直灌数据。
     #[tokio::test]
     async fn silent_printer_aborts_during_send() {
-        let transport = TestTransport::default();
+        let first = TestTransport::default();
+        let second = TestTransport::default();
         let config = DeviceConfig {
             recv_timeout: Duration::from_millis(5),
             print_silent_limit: 2,
             ..test_config()
         };
         let tm = mytm::TaskManager::new();
-        let factory_transport = transport.clone();
-        let device =
-            Device::new_with_factory(&tm, move || Ok(Box::new(factory_transport.clone())), config);
+        let mut transports = vec![first, second.clone()].into_iter();
+        let device = Device::new_with_factory(
+            &tm,
+            move || {
+                transports
+                    .next()
+                    .map(|transport| Box::new(transport) as Box<dyn crate::backend::Transport>)
+                    .ok_or(crate::backend::TransportError::NotFound)
+            },
+            config,
+        );
 
         // 页要足够长，才能在 `0x77` 超时 fallback 之后再次检查状态，
         // 覆盖“预算超时 + 状态超时 -> reset -> 重新发 0x70”的路径。
@@ -1463,14 +1475,62 @@ mod tests {
             "{result:?}"
         );
         // reset 之后必须在新 transport 上重新发 0x70，而不是干等。
-        let status_queries = transport
+        let status_queries = second
             .written()
             .windows(2)
             .filter(|bytes| *bytes == [0x1f, 0x70])
             .count();
         assert!(
-            status_queries >= 3,
-            "expected a fresh 0x70 after reset, saw {status_queries} queries"
+            status_queries >= 1,
+            "expected a fresh 0x70 on the reopened transport, saw {status_queries}"
+        );
+    }
+
+    /// reset 之后的新连接如果开始回 `0x70`，要把真实状态报出来。
+    #[tokio::test]
+    async fn status_from_the_reopened_transport_is_reported() {
+        let silent = TestTransport::default();
+        let recovered = TestTransport::default();
+        // 新连接一装好就已经能回答 `0x70`：开盖。
+        recovered.push_frame(status_frame(0x22));
+
+        let config = DeviceConfig {
+            recv_timeout: Duration::from_millis(5),
+            print_silent_limit: 2,
+            ..test_config()
+        };
+        let tm = mytm::TaskManager::new();
+        let mut transports = vec![silent, recovered].into_iter();
+        let device = Device::new_with_factory(
+            &tm,
+            move || {
+                transports
+                    .next()
+                    .map(|transport| Box::new(transport) as Box<dyn crate::backend::Transport>)
+                    .ok_or(crate::backend::TransportError::NotFound)
+            },
+            config,
+        );
+
+        let mut bitmap = Bitmap::new(576, 200).unwrap();
+        for y in 0..200 {
+            bitmap.line_mut(y).unwrap().set(0, true);
+        }
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            device.print_bitmap_job(&bitmap, RleMode::Off),
+        )
+        .await
+        .expect("print job hung");
+        assert!(
+            matches!(
+                result,
+                Err(FrontendError::PrinterStatus {
+                    status: PrinterStatus::CoverOpened
+                })
+            ),
+            "{result:?}"
         );
     }
 
