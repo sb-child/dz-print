@@ -103,6 +103,18 @@ impl JobStore {
         }
     }
 
+    /// 把任务标记为取消。
+    ///
+    /// 调用点很多，单独包一层避免每次都写 `finish(id, Cancelled, None, false)`。
+    pub fn finish_cancelled(&self, id: JobId) {
+        self.finish(id, JobState::Cancelled, None, false);
+    }
+
+    /// 把任务标记为渲染失败。
+    pub fn finish_render_failed(&self, id: JobId) {
+        self.finish(id, JobState::RenderFailed, None, false);
+    }
+
     pub fn finish(
         &self,
         id: JobId,
@@ -164,7 +176,7 @@ mod tests {
         assert!(token.is_cancelled());
         assert!(!store.cancel(&id));
 
-        store.finish(id, JobState::Cancelled, None, false);
+        store.finish_cancelled(id);
         assert_eq!(store.snapshot(&id).unwrap().state, JobState::Cancelled);
         assert!(!store.cancel(&id));
     }
@@ -174,7 +186,7 @@ mod tests {
         let store = JobStore::new();
         let id = [8u8; 16];
         store.insert(id, CancellationToken::new());
-        store.finish(id, JobState::RenderFailed, None, false);
+        store.finish_render_failed(id);
 
         store.gc(Duration::ZERO);
         assert!(store.snapshot(&id).is_none());

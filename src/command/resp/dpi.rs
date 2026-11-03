@@ -8,6 +8,8 @@ use crate::command::{
     resp_template::dpi::DpiV2V1V0Tl,
 };
 
+pub const CMD: u8 = 0x71;
+
 /// 设备 DPI。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Dpi {

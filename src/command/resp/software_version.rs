@@ -8,6 +8,8 @@ use crate::command::{
     resp_template::software_version::SoftwareVersionV2V1V0Tl,
 };
 
+pub const CMD: u8 = 0x7c;
+
 /// 软件版本。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SoftwareVersion {

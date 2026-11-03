@@ -8,23 +8,22 @@
 //! 都在这里，避免改一边漏一边。
 
 pub mod image;
+pub mod printer;
 #[cfg(any(feature = "bin-typst", feature = "bin-dzserver"))]
 pub mod typst;
 
 use std::time::Duration;
 
-use anyhow::{Context as _, ensure};
+use anyhow::Context as _;
 use clap::{Args, ValueEnum};
 use dz_print::{
     backend::usb::UsbSelector,
-    bitmap::Bitmap,
     command::{
         req::{self, ReqTrait},
-        resp,
         settings::{DarknessSetting, GapTypeSetting, SpeedSetting},
     },
-    frontend::{Device, DeviceConfig, PrintJobOptions},
-    planner::print::{MAX_DOTS_PER_LINE, RleMode},
+    frontend::{Device, DeviceConfig, FrontendError, PrintJobOptions},
+    planner::print::RleMode,
     raster::DitherMode,
 };
 use mytm::TaskManager;
@@ -36,11 +35,11 @@ pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// `--gap-length` 省略时用的间隔长度，单位 `0.01mm`（0.5mm）。
 pub const DEFAULT_GAP_LENGTH: u32 = 50;
 
-/// `--print-timeout` 的默认值，单位秒。
-const DEFAULT_PRINT_TIMEOUT: u64 = 600;
+/// `--print-timeout` 的默认值。
+const DEFAULT_PRINT_TIMEOUT: &str = "600s";
 
-/// `--recv-timeout` 的默认值，单位秒。
-const DEFAULT_RECV_TIMEOUT: u64 = 3;
+/// `--recv-timeout` 的默认值。
+const DEFAULT_RECV_TIMEOUT: &str = "3s";
 
 /// 抖动方式。
 #[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -167,16 +166,26 @@ pub struct PrintArgs {
     #[arg(long, value_enum, default_value = "off")]
     pub rle: RleArg,
 
-    /// 等打印结束的总超时，单位秒
-    #[arg(long, value_name = "SECS", default_value_t = DEFAULT_PRINT_TIMEOUT)]
-    pub print_timeout: u64,
+    /// 等打印结束的总超时，例如 `600s` / `10m`
+    #[arg(
+        long,
+        value_name = "DURATION",
+        value_parser = humantime::parse_duration,
+        default_value = DEFAULT_PRINT_TIMEOUT
+    )]
+    pub print_timeout: Duration,
 
-    /// 单条响应的等待超时，单位秒
+    /// 单条响应的等待超时，例如 `3s` / `500ms`
     ///
     /// 固件卡住时 `0x70` 不会回包，这个值决定每次状态查询等多久；
     /// 连续 5 次没有任何回应就会判定打印机失联并报错退出。
-    #[arg(long, value_name = "SECS", default_value_t = DEFAULT_RECV_TIMEOUT)]
-    pub recv_timeout: u64,
+    #[arg(
+        long,
+        value_name = "DURATION",
+        value_parser = humantime::parse_duration,
+        default_value = DEFAULT_RECV_TIMEOUT
+    )]
+    pub recv_timeout: Duration,
 }
 
 /// 真正需要发给打印机的设置；用来判断这一页要不要重发。
@@ -201,7 +210,7 @@ impl From<&PrintArgs> for PrintSettings {
 
 impl PrintSettings {
     /// 只发送设置过的字段，顺序固定为纸张类型 / 间隔 / 浓度 / 速度。
-    pub async fn send(&self, dev: &Device) -> anyhow::Result<()> {
+    pub async fn send(&self, dev: &Device) -> Result<(), FrontendError> {
         let mut reqs: Vec<Box<dyn ReqTrait>> = Vec::new();
         if let Some(gap_type) = self.gap_type {
             reqs.push(Box::new(req::gap_type::GapType { gap_type }));
@@ -240,20 +249,14 @@ impl PrintArgs {
     pub fn device_config(&self) -> DeviceConfig {
         DeviceConfig {
             selector: self.selector(),
-            recv_timeout: Duration::from_secs(self.recv_timeout.max(1)),
-            print_done_timeout: Duration::from_secs(self.print_timeout.max(1)),
+            // 0 会让每次查询立刻超时，没有意义；允许毫秒级，但不接受 0。
+            recv_timeout: self.recv_timeout.max(Duration::from_millis(1)),
+            print_done_timeout: self.print_timeout.max(Duration::from_millis(1)),
             ..Default::default()
         }
     }
 
-    /// 只发送用户给出的设置，顺序固定为纸张类型 / 间隔 / 浓度 / 速度。
-    #[allow(dead_code)]
-    pub async fn send_settings(&self, dev: &Device) -> anyhow::Result<()> {
-        PrintSettings::from(self).send(dev).await
-    }
-
     /// 把命令行里的纸张设置带进每页的 `StartPage`。
-    #[allow(dead_code)]
     pub fn job_options(&self) -> PrintJobOptions {
         let gap_type = self.gap_type.unwrap_or_default();
         let gap_length = match self.gap_length {
@@ -267,42 +270,28 @@ impl PrintArgs {
             gap_length,
         }
     }
-
-    #[allow(dead_code)]
-    pub async fn print_bitmap(
-        &self,
-        dev: &Device,
-        bm: &Bitmap,
-    ) -> anyhow::Result<dz_print::planner::flow::FlowReport> {
-        let report = dev
-            .print_bitmap_job_with(bm, self.rle.into(), self.job_options())
-            .await?;
-        info!(
-            chunks = report.chunks,
-            bytes = report.bytes,
-            budget_queries = report.budget_queries,
-            degraded = report.degraded,
-            "print finished"
-        );
-        Ok(report)
-    }
 }
 
-/// 连接打印机、执行 `body`，然后按固定顺序退出。
+/// 连接打印机、查询设备信息、执行 `body`，然后按固定顺序退出。
 ///
 /// 无论打印成功与否都会 `shutdown` + `tm.close()`，保证 worker 线程和 USB
 /// 句柄都释放掉再让进程结束；`body` 的错误优先返回，其次才是 shutdown 的错误。
+// dzserver 也会编译 common，但连接 / 退出由它自己的 printer worker 管理。
 #[allow(dead_code)]
 pub async fn with_device<F>(args: &PrintArgs, body: F) -> anyhow::Result<()>
 where
-    F: AsyncFnOnce(&Device) -> anyhow::Result<()>,
+    F: AsyncFnOnce(&Device, &printer::PrinterInfo) -> anyhow::Result<()>,
 {
     let tm = TaskManager::new();
-    let dev = Device::new(&tm, args.device_config());
+    let config = args.device_config();
+    let recv_timeout = config.recv_timeout;
+    let dev = Device::new(&tm, config);
 
     let result = async {
         dev.ready().await.context("设备没有就绪")?;
-        body(&dev).await
+        let info = printer::query_info(&dev, recv_timeout).await?;
+        info.log_connected();
+        body(&dev, &info).await
     }
     .await;
 
@@ -313,24 +302,6 @@ where
     Ok(())
 }
 
-#[allow(dead_code)]
-pub async fn print_head_dots(dev: &Device) -> anyhow::Result<u16> {
-    dev.try_send_batch(&[&req::print_width::PrintWidth {}])
-        .await?;
-    let width: resp::print_width::PrintWidth = dev.try_recv_one().await?;
-
-    ensure!(
-        width.print_width > 0,
-        "设备回报的打印头点数为 0, 无法确定缩放宽度"
-    );
-    ensure!(
-        usize::from(width.print_width) <= MAX_DOTS_PER_LINE,
-        "打印头点数 {} 超过协议上限 {MAX_DOTS_PER_LINE}",
-        width.print_width
-    );
-    Ok(width.print_width)
-}
-
 pub fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -338,6 +309,8 @@ pub fn init_tracing() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_file(true)
+        .with_line_number(true)
         .init();
 }
 
@@ -434,8 +407,8 @@ mod tests {
         assert!(cli.print.speed.is_none());
         assert_eq!(cli.print.raster, RasterArg::FloydSteinberg);
         assert_eq!(cli.print.rle, RleArg::Off);
-        assert_eq!(cli.print.print_timeout, DEFAULT_PRINT_TIMEOUT);
-        assert_eq!(cli.print.recv_timeout, DEFAULT_RECV_TIMEOUT);
+        assert_eq!(cli.print.print_timeout, Duration::from_secs(600));
+        assert_eq!(cli.print.recv_timeout, Duration::from_secs(3));
     }
 
     #[test]
@@ -456,9 +429,9 @@ mod tests {
             "--rle",
             "bits6x",
             "--print-timeout",
-            "120",
+            "2m",
             "--recv-timeout",
-            "2",
+            "500ms",
         ]);
 
         assert_eq!(cli.print.device.as_deref(), Some("DP27P-Y4094C023"));
@@ -468,8 +441,8 @@ mod tests {
         assert_eq!(cli.print.speed, Some(SpeedSetting::Max));
         assert_eq!(cli.print.raster, RasterArg::Threshold);
         assert_eq!(cli.print.rle, RleArg::Bits6x);
-        assert_eq!(cli.print.print_timeout, 120);
-        assert_eq!(cli.print.recv_timeout, 2);
+        assert_eq!(cli.print.print_timeout, Duration::from_secs(120));
+        assert_eq!(cli.print.recv_timeout, Duration::from_millis(500));
     }
 
     #[test]

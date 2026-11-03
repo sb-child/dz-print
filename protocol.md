@@ -348,8 +348,11 @@
     - 返回: `<DeviceName:string>`
       - `DeviceName`: 设备名，格式 `型号-序列号`，`0x00` 结尾。
       - 解析: `resp::DeviceName` 解码为 `Box<str>`。
-  - `0x7a` 硬件版本
-    - 返回: `0x26, 0x01, 0x04, 0x01, 0x04` = 硬件版本 2.6 (`"0x26"` -> `2.6`)
+  - `0x7a` 硬件版本 `rust:HardwareVersionV2V1V0Tl` [代码](src/command/req_template/hardware_version.rs)
+    - 返回: `<Version:u8> [其余...]`
+      - `Version`: BCD 编码，例如 `0x26` = `2.6`；任意半字节大于 9 时按原始 hex 显示。
+      - DP27P USB 实测: `1f 7a 26 01 04 01 04`，`01 04 01 04` 语义未知，放 `tail`。
+      - 解析: `resp::HardwareVersion` 提供 `major_minor()` 和 `Display`。
   - `0x7b` 缓冲容量查询 2（固件主动上报）`rust:BufferSize2V2V1V0Tl` [代码](src/command/resp_template/buffer_size2.rs)，见 [flow-control.md](flow-control.md)
     - 只有响应：`1f 7b <Size:变长> [其余...]`
       - `Size`: 同 `0x77`，单位 500 字节；`Size == 1` 时按 1000 字节计。

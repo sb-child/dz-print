@@ -8,12 +8,12 @@
 //! 结果通过 oneshot 回给异步 worker，避免把大位图再复制一份。
 
 use crate::{
-    common::{PrintArgs, PrintSettings, typst},
+    common::{PrintArgs, PrintSettings, printer::PrintPage, typst},
     job::JobId,
     printer::PrinterProfile,
 };
 use anyhow::{Context as _, anyhow, ensure};
-use dz_print::{bitmap::Bitmap, frontend::PrintJobOptions, planner::print::RleMode};
+
 use mytm::{TaskHandle, TaskManager};
 use std::{
     fs::File,
@@ -23,20 +23,10 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-/// 一页已经渲染好的位图，以及这一页需要的打印参数。
-#[derive(Debug)]
-pub struct RenderedPage {
-    pub bitmap: Bitmap,
-    pub rle: RleMode,
-    pub options: PrintJobOptions,
-    /// 这一页生效的 gap / darkness / speed；和上一页不同时打印 worker 重发。
-    pub settings: PrintSettings,
-}
-
 #[derive(Debug)]
 pub struct RenderedJob {
     pub id: JobId,
-    pub pages: Vec<RenderedPage>,
+    pub pages: Vec<PrintPage>,
     pub repeats: u32,
     pub cancel: CancellationToken,
 }
@@ -106,15 +96,15 @@ impl JobSpec {
                 repeats,
                 cancel,
             } => {
-                let pages = render_typst(
-                    temp.path(),
-                    &tar,
-                    profile.head_dots,
+                let pages = render_typst(TypstRender {
+                    temp_root: temp.path(),
+                    tar: &tar,
+                    head_dots: profile.head_dots,
                     args,
                     fonts,
                     package_cache,
-                    cancel.clone(),
-                )?;
+                    cancel: cancel.clone(),
+                })?;
                 drop(temp);
                 Ok(RenderedJob {
                     id,
@@ -132,7 +122,7 @@ fn render_image(
     head_dots: u16,
     args: &PrintArgs,
     cancel: CancellationToken,
-) -> anyhow::Result<Vec<RenderedPage>> {
+) -> anyhow::Result<Vec<PrintPage>> {
     ensure!(!cancel.is_cancelled(), "job cancelled");
 
     let img = crate::common::image::load_image(input)?;
@@ -147,7 +137,7 @@ fn render_image(
     );
 
     let bitmap = crate::common::image::to_bitmap(&img, args.raster.into())?;
-    Ok(vec![RenderedPage {
+    Ok(vec![PrintPage {
         bitmap,
         rle: args.rle.into(),
         options: args.job_options(),
@@ -155,16 +145,26 @@ fn render_image(
     }])
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_typst(
-    temp_root: &Path,
-    tar: &Path,
+struct TypstRender<'a> {
+    temp_root: &'a Path,
+    tar: &'a Path,
     head_dots: u16,
-    args: &PrintArgs,
-    fonts: &typst::FontSet,
-    package_cache: &Path,
+    args: &'a PrintArgs,
+    fonts: &'a typst::FontSet,
+    package_cache: &'a Path,
     cancel: CancellationToken,
-) -> anyhow::Result<Vec<RenderedPage>> {
+}
+
+fn render_typst(input: TypstRender<'_>) -> anyhow::Result<Vec<PrintPage>> {
+    let TypstRender {
+        temp_root,
+        tar,
+        head_dots,
+        args,
+        fonts,
+        package_cache,
+        cancel,
+    } = input;
     ensure!(!cancel.is_cancelled(), "job cancelled");
 
     let doc_dir = temp_root.join("doc");
@@ -205,7 +205,7 @@ fn render_typst(
             height = bitmap.height(),
             "typst page rendered"
         );
-        pages.push(RenderedPage {
+        pages.push(PrintPage {
             bitmap,
             rle: page_args.rle.into(),
             options: page_args.job_options(),

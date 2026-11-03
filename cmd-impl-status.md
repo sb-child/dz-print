@@ -105,7 +105,7 @@
 | `0x77` | `BufferSizeV2V1V0Tl`                 | `BufferSizeV2V1V0Tl`      | ?        |
 | `0x78` | todo                                 | todo                      | ?        |
 | `0x79` | `DeviceNameV2V1V0Tl`                 | `DeviceNameV2V1V0Tl`      | ?        |
-| `0x7a` | todo                                 | todo                      | ?        |
+| `0x7a` | `HardwareVersionV2V1V0Tl`            | `HardwareVersionV2V1V0Tl` | ?        |
 | `0x7b` | 无                                   | `BufferSize2V2V1V0Tl`     | ?        |
 | `0x7c` | `SoftwareVersionV2V1V0Tl`            | `SoftwareVersionV2V1V0Tl` | ?        |
 | `0x7d` | `BluetoothMacV2V1V0Tl`               | `BluetoothMacV2V1V0Tl`    | ?        |
@@ -119,7 +119,7 @@
 > `0x70` / `0x71` / `0x72` 已在 DP27P / DP305P 上实测通过，但机型兼容性还没系统验证，先按 `?` 记。
 > `0x45` 协议里写的是 v2 支持、v1/v0 也许支持，表里按已确认的 v2 记。
 > `0x7b` 只有固件主动上报，SDK 里没有构造请求的代码，req 列按「无」记。
-> `0x48` / `0x52` / `0x57` / `0x59` / `0x5b` / `0x7a` 的回包已在 DP27P 上实测，布局待落成类型；`0x66` 在 DP27P USB 上多种变体均无响应，设置 `0x00` / `0x01` / `0x02` 也不改变 `0x42`。
+> `0x48` / `0x52` / `0x57` / `0x59` / `0x5b` 的回包已在 DP27P 上实测，布局待落成类型；`0x66` 在 DP27P USB 上多种变体均无响应，设置 `0x00` / `0x01` / `0x02` 也不改变 `0x42`。
 > `0x7f` 在 DP27P 上固定回 16 字节全 `00`，激活状态和参数都不影响。
 > `0x29` / `0x2c` / `0x2d` / `0x3a` ~ `0x3d` 的 req 层统一是 `req::PrintLineRle`：只在 `v2` 发送，`repeats` 用 `0x2e` 展开；`v1` / `v0` 请改用 `req::PrintLine`。
 > RLE 帧的 `<RleByteLen>` / `<符号数>` 是协议字段，`PrintLineRle` 用 `ManualPack` 发送，`Assembler` 不再补一层长度。

@@ -20,7 +20,7 @@ use api::{MgmtEndpoint, PrintEndpoint};
 use clap::Parser;
 use common::PrintArgs;
 use dzsrv::{mgmt_server::MgmtServer, print_server::PrintServer};
-use pipeline::Pipeline;
+use pipeline::{Pipeline, PipelineConfig};
 use std::net::SocketAddr;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -62,9 +62,14 @@ struct Cli {
     #[arg(long, default_value_t = 100)]
     max_repeats: u32,
 
-    /// 终态任务在 JobStore 里保留的秒数
-    #[arg(long, default_value_t = 3600)]
-    job_ttl: u64,
+    /// 终态任务在 JobStore 里保留多久，例如 `1h`
+    #[arg(
+        long,
+        value_name = "DURATION",
+        value_parser = humantime::parse_duration,
+        default_value = "1h"
+    )]
+    job_ttl: Duration,
 
     #[command(flatten)]
     print: PrintArgs,
@@ -98,18 +103,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let tm = mytm::TaskManager::new();
     let root = CancellationToken::new();
 
-    let pipeline = Pipeline::start(
+    let pipeline = Pipeline::new(
         &tm,
         root.clone(),
-        cli.print.clone(),
-        fonts,
-        &cli.state_dir,
-        cli.render_workers,
-        cli.queue_capacity,
-        cli.print_queue_capacity,
-        cli.max_job_bytes,
-        cli.max_repeats,
-        Duration::from_secs(cli.job_ttl.max(1)),
+        PipelineConfig {
+            args: cli.print.clone(),
+            fonts,
+            state_dir: cli.state_dir.clone(),
+            render_workers: cli.render_workers,
+            queue_capacity: cli.queue_capacity,
+            print_queue_capacity: cli.print_queue_capacity,
+            max_job_bytes: cli.max_job_bytes,
+            max_repeats: cli.max_repeats,
+            job_ttl: cli.job_ttl,
+        },
     )?;
 
     let api = pipeline.api_state();
@@ -201,18 +208,20 @@ mod tests {
         let fonts = Arc::new(common::typst::load_fonts(&[]).unwrap());
         let tm = mytm::TaskManager::new();
         let root = CancellationToken::new();
-        let pipeline = Pipeline::start(
+        let pipeline = Pipeline::new(
             &tm,
             root.clone(),
-            cli.print.clone(),
-            fonts,
-            &cli.state_dir,
-            cli.render_workers,
-            cli.queue_capacity,
-            cli.print_queue_capacity,
-            cli.max_job_bytes,
-            cli.max_repeats,
-            Duration::from_secs(cli.job_ttl),
+            PipelineConfig {
+                args: cli.print.clone(),
+                fonts,
+                state_dir: cli.state_dir.clone(),
+                render_workers: cli.render_workers,
+                queue_capacity: cli.queue_capacity,
+                print_queue_capacity: cli.print_queue_capacity,
+                max_job_bytes: cli.max_job_bytes,
+                max_repeats: cli.max_repeats,
+                job_ttl: cli.job_ttl,
+            },
         )
         .unwrap();
 

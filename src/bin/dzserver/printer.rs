@@ -5,7 +5,10 @@
 //! 打印队列的唯一消费者：连接、等就绪、逐页打印、错误后作废当前 job 并重连。
 
 use crate::{
-    common::{PrintArgs, PrintSettings, SHUTDOWN_TIMEOUT},
+    common::{
+        PrintArgs, PrintSettings, SHUTDOWN_TIMEOUT,
+        printer::{PagePrintError, print_pages, query_info},
+    },
     job::{JobId, JobState, JobStore},
     render::RenderedJob,
 };
@@ -91,13 +94,13 @@ impl PrinterWorker {
         let id = job.id;
 
         if job.cancel.is_cancelled() || token.is_cancelled() {
-            self.store.finish(id, JobState::Cancelled, None, false);
+            self.store.finish_cancelled(id);
             return;
         }
 
         self.store.set_state(id, JobState::PrintPending);
         if !self.wait_ready(&job.cancel, token).await {
-            self.store.finish(id, JobState::Cancelled, None, false);
+            self.store.finish_cancelled(id);
             return;
         }
 
@@ -109,7 +112,7 @@ impl PrinterWorker {
             "print started"
         );
 
-        match self.print_pages(&job, token).await {
+        match self.print_pages(&job).await {
             Ok(()) => {
                 self.store.finish(
                     id,
@@ -120,7 +123,7 @@ impl PrinterWorker {
                 info!(job = %job_label(id), "print completed");
             }
             Err(PrintFailure::Cancelled) => {
-                self.store.finish(id, JobState::Cancelled, None, false);
+                self.store.finish_cancelled(id);
                 warn!(job = %job_label(id), "print cancelled");
                 self.drop_device().await;
             }
@@ -212,16 +215,17 @@ impl PrinterWorker {
             };
 
             match ready {
-                Ok(Ok(())) => match query_head_dots(&dev, self.config.recv_timeout).await {
-                    Ok(head_dots) => {
-                        info!(head_dots, "printer connected");
+                Ok(Ok(())) => match query_info(&dev, self.config.recv_timeout).await {
+                    Ok(printer_info) => {
+                        printer_info.log_connected();
+                        let head_dots = printer_info.head_dots;
                         let _ = self.profile_tx.send(Some(PrinterProfile { head_dots }));
                         self.device = Some(dev);
                         self.sent_settings = None;
                         return true;
                     }
                     Err(error) => {
-                        warn!(%error, "read print head width failed");
+                        warn!(%error, "query printer info failed");
                         let _ = dev.shutdown(SHUTDOWN_TIMEOUT).await;
                     }
                 },
@@ -243,47 +247,29 @@ impl PrinterWorker {
         }
     }
 
-    async fn print_pages(
-        &mut self,
-        job: &RenderedJob,
-        token: &CancellationToken,
-    ) -> Result<(), PrintFailure> {
+    async fn print_pages(&mut self, job: &RenderedJob) -> Result<(), PrintFailure> {
         let dev = self.device.as_ref().expect("device is ready");
-        for repeat in 0..=job.repeats {
-            for (index, page) in job.pages.iter().enumerate() {
-                if job.cancel.is_cancelled() || token.is_cancelled() {
-                    return Err(PrintFailure::Cancelled);
-                }
+        let label = job_label(job.id).to_string();
+        let mut sent_settings = self.sent_settings.take();
 
-                if self.sent_settings.as_ref() != Some(&page.settings) {
-                    page.settings
-                        .send(dev)
-                        .await
-                        .map_err(PrintFailure::Device)?;
-                    self.sent_settings = Some(page.settings.clone());
-                }
+        let result = print_pages(
+            dev,
+            &label,
+            &job.pages,
+            job.repeats,
+            &mut sent_settings,
+            &job.cancel,
+        )
+        .await;
 
-                let print = dev.print_bitmap_job_with(&page.bitmap, page.rle, page.options);
-                let result = tokio::select! {
-                    _ = job.cancel.cancelled() => return Err(PrintFailure::Cancelled),
-                    _ = token.cancelled() => return Err(PrintFailure::Cancelled),
-                    result = print => result,
-                };
-
-                let report =
-                    result.map_err(|error| PrintFailure::Device(anyhow::Error::new(error)))?;
-                info!(
-                    job = %job_label(job.id),
-                    repeat = repeat + 1,
-                    page = index + 1,
-                    chunks = report.chunks,
-                    bytes = report.bytes,
-                    "page printed"
-                );
+        self.sent_settings = sent_settings;
+        match result {
+            Ok(()) => Ok(()),
+            Err(PagePrintError::Cancelled) => Err(PrintFailure::Cancelled),
+            Err(PagePrintError::Device(error)) => {
+                Err(PrintFailure::Device(anyhow::Error::new(error)))
             }
         }
-
-        Ok(())
     }
 
     async fn drop_device(&mut self) {
@@ -300,23 +286,6 @@ impl PrinterWorker {
 enum PrintFailure {
     Cancelled,
     Device(anyhow::Error),
-}
-
-async fn query_head_dots(dev: &Device, timeout: Duration) -> Result<u16, FrontendError> {
-    dev.try_send_batch(&[&req::print_width::PrintWidth {}])
-        .await?;
-    let width = dev
-        .recv_cmd_timeout::<resp::print_width::PrintWidth>(resp::print_width::CMD, timeout)
-        .await?;
-    let Some(width) = width else {
-        return Err(FrontendError::Recv {
-            source: RecvError::Timeout { timeout },
-        });
-    };
-    if width.print_width == 0 {
-        return Err(FrontendError::WidthOverflow { width: 0 });
-    }
-    Ok(width.print_width)
 }
 
 async fn query_status(dev: &Device, timeout: Duration) -> Result<PrinterStatus, FrontendError> {

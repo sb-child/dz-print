@@ -28,6 +28,15 @@ use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
+/// `ApiState` 里与 gRPC 生命周期无关的配置。
+#[derive(Clone)]
+pub(crate) struct ApiConfig {
+    pub temp_root: PathBuf,
+    pub accepting: Arc<AtomicBool>,
+    pub max_job_bytes: usize,
+    pub max_repeats: u32,
+}
+
 #[derive(Clone)]
 pub(crate) struct ApiState {
     store: JobStore,
@@ -41,26 +50,22 @@ pub(crate) struct ApiState {
 }
 
 impl ApiState {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         store: JobStore,
         ingress: mpsc::Sender<JobSpec>,
         root: CancellationToken,
         tm: TaskManager,
-        temp_root: PathBuf,
-        accepting: Arc<AtomicBool>,
-        max_job_bytes: usize,
-        max_repeats: u32,
+        config: ApiConfig,
     ) -> Self {
         Self {
             store,
             ingress,
             root,
             tm,
-            temp_root,
-            accepting,
-            max_job_bytes,
-            max_repeats,
+            temp_root: config.temp_root,
+            accepting: config.accepting,
+            max_job_bytes: config.max_job_bytes,
+            max_repeats: config.max_repeats,
         }
     }
 

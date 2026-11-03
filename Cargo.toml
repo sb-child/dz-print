@@ -51,6 +51,7 @@ prost = { version = "0.14.4", optional = true }
 tokio-stream = { version = "0.1.19", features = ["net"], optional = true }
 tonic-prost = { version = "0.14.9", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
+humantime = "2.4.0"
 
 [[bin]]
 name = "dzcli"

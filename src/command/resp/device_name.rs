@@ -8,6 +8,8 @@ use crate::command::{
     resp_template::device_name::DeviceNameV2V1V0Tl,
 };
 
+pub const CMD: u8 = 0x79;
+
 /// 设备名。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceName {

@@ -19,9 +19,11 @@ use tracing::info;
 mod common;
 
 use common::{
-    PrintArgs,
+    PrintArgs, PrintSettings,
     image::{fit_to_print_head, load_image, to_bitmap},
+    printer::{PrintPage, print_page},
 };
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "打印一张 jpg / png 图片")]
@@ -44,16 +46,21 @@ async fn main() -> std::process::ExitCode {
             // 图片路径 / 格式错误要在连接打印机之前报出来。
             let img = load_image(&cli.image)?;
             let args = cli.print.clone();
-            common::with_device(&args, async |dev| print_image(dev, args.clone(), img).await).await
+            common::with_device(&args, async |dev, info| {
+                print_image(dev, info.head_dots, args.clone(), img).await
+            })
+            .await
         }
         .await,
     )
 }
 
-async fn print_image(dev: &Device, args: PrintArgs, img: DynamicImage) -> anyhow::Result<()> {
-    let dots = common::print_head_dots(dev).await?;
-    info!("print head dots = {dots}");
-
+async fn print_image(
+    dev: &Device,
+    dots: u16,
+    args: PrintArgs,
+    img: DynamicImage,
+) -> anyhow::Result<()> {
     let (width, height) = (img.width(), img.height());
     let img = fit_to_print_head(img, dots);
     info!("image {width}x{height} -> {}x{}", img.width(), img.height());
@@ -66,7 +73,14 @@ async fn print_image(dev: &Device, args: PrintArgs, img: DynamicImage) -> anyhow
         DitherMode::from(args.raster)
     );
 
-    args.send_settings(dev).await?;
-    args.print_bitmap(dev, &bitmap).await?;
+    let page = PrintPage {
+        bitmap,
+        rle: args.rle.into(),
+        options: args.job_options(),
+        settings: PrintSettings::from(&args),
+    };
+    let mut sent = None;
+    let cancel = CancellationToken::new();
+    print_page(dev, "image", &page, 1, 0, &mut sent, &cancel).await?;
     Ok(())
 }

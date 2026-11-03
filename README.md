@@ -39,7 +39,8 @@ cargo run --bin dzprint_image -- --image /tmp/print.png \
 ```
 
 - 行数据默认不压缩。RLE 在 DP27P 上打真实照片会在纸中间插入空白，只建议给简单线稿实验用。
-- `--print-timeout` 是等打印结束的总超时，`--recv-timeout` 是单条响应的等待超时。
+- `--print-timeout` 是等打印结束的总超时，`--recv-timeout` 是单条响应的等待超时；
+  两者都用 `humantime` 写法，例如 `600s` / `10m` / `500ms`。
 - `RUST_LOG=debug` 打开细节日志。
 
 ### 打印 Typst 文档：`dzprint_typst`
@@ -76,8 +77,11 @@ cargo run --bin dzserver -- /var/lib/dzserver 127.0.0.1:50051 \
   gap / darkness / speed 变化时重发设置。
 - 打印中开盖、缺纸、USB 拔出会作废当前 job，等打印机重新就绪后继续打印下一个；
   排队中的 job 可以用 `Mgmt.Cancel` 取消。
+- 连接成功后会输出设备名、硬件版本、软件版本、DPI、纸宽和打印头点数；查询失败的
+  展示字段只记 `warn!`，不影响打印。
 - 常用参数：`--render-workers`、`--queue-capacity`、`--max-job-bytes`、
   `--max-repeats`、`--job-ttl`，以及和 `dzprint_image` 相同的纸张 / 浓度 / 速度参数。
+  `--job-ttl` 用 `humantime` 写法，例如 `1h` / `30m`。
 
 ### 真机测试：`test_usb`
 
@@ -89,19 +93,20 @@ cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
 # 复现短页面打完前后掉打印头：连续打 3 张 32 行的图，
 # 把 0x70 轮询压到 1ms，并用 0x73 统计对账
 cargo run --bin test_usb -- --phase short-print \
-  --short-rows 32 --short-pages 3 --poll-ms 1 --print-timeout 20
+  --short-rows 32 --short-pages 3 --poll 1ms --print-timeout 20s
 ```
 
 `short-print` 会逐页记录 `print_bitmap_job` 的返回值、`0x73` 统计增量和打印结束后
-队列里的残留帧。`--poll-ms` / `--grace-ms` / `--start-timeout-ms` 直接对应
-`DeviceConfig` 里等待打印完成的参数；短页面想抓到转瞬即逝的状态时把 `--poll-ms`
-调到 1~5ms。注意实际采样率还受固件响应速度限制：DP27P 回一条 `0x70` 大约要
-100ms，所以即使 `--poll-ms 1`，真正能看到的间隔也只有 ~10Hz。`0x73` 计数器在
+队列里的残留帧。`--poll` / `--grace` / `--start-timeout` / `--verify-interval`
+直接对应 `DeviceConfig` 里等待打印完成的参数，都用 `humantime` 写法（例如
+`1ms` / `250ms` / `3s`）；短页面想抓到转瞬即逝的状态时把 `--poll` 调到
+`1ms`~`5ms`。注意实际采样率还受固件响应速度限制：DP27P 回一条 `0x70` 大约要
+100ms，所以即使 `--poll 1ms`，真正能看到的间隔也只有 ~10Hz。`0x73` 计数器在
 DP27P 上并不完全可靠，日志里的结论只能当参考，最终仍要看纸面。
 
 `print_bitmap_job` 现在会在一直看不到 `Printing` / `Rotating` 时用 `0x73`
-确认页面是否真的打印过：到 `--grace-ms` 后统计没有增长就继续等，直到
-`--start-timeout-ms` 返回 `PrintDidNotStart`，避免固件启动慢时提前判完成。
+确认页面是否真的打印过：到 `--grace` 后统计没有增长就继续等，直到
+`--start-timeout` 返回 `PrintDidNotStart`，避免固件启动慢时提前判完成。
 
 `dzcli` 目前只有 `clap` 参数骨架，功能还没接。
 

@@ -13,7 +13,7 @@
 //! - `--rle`：打印测试使用的 RLE 模式。
 //! - `--rows`：`print` 阶段测试图的行数。
 //! - `--short-rows` / `--short-pages`：`short-print` 阶段每页行数和页数。
-//! - `--poll-ms` / `--grace-ms`：等待打印完成时的 `0x70` 轮询间隔和启动宽限期。
+//! - `--poll` / `--grace`：等待打印完成时的 `0x70` 轮询间隔和启动宽限期（`humantime` 写法）。
 //!
 //! `--phase print` 和 `--phase short-print` 会真的驱动打印头并走纸。
 
@@ -144,23 +144,23 @@ struct Cli {
     #[arg(long, default_value_t = 3)]
     short_pages: usize,
 
-    /// 等待打印完成时轮询 `0x70` 的间隔（毫秒）
+    /// 等待打印完成时轮询 `0x70` 的间隔，例如 `100ms`
     ///
-    /// 短页面想抓到转瞬即逝的 `Printing` / 错误状态时调到 1~5。
-    #[arg(long, default_value_t = 100)]
-    poll_ms: u64,
+    /// 短页面想抓到转瞬即逝的 `Printing` / 错误状态时调到 `1ms`~`5ms`。
+    #[arg(long, value_name = "DURATION", value_parser = humantime::parse_duration, default_value = "100ms")]
+    poll: Duration,
 
-    /// `EndPage` 后至少等多久才接受空闲（毫秒）
-    #[arg(long, default_value_t = 1000)]
-    grace_ms: u64,
+    /// `EndPage` 后至少等多久才接受空闲，例如 `1s`
+    #[arg(long, value_name = "DURATION", value_parser = humantime::parse_duration, default_value = "1s")]
+    grace: Duration,
 
-    /// 没看到忙碌、`0x73` 也没有增长时，最多等多久判定打印没有开始（毫秒）
-    #[arg(long, default_value_t = 3000)]
-    start_timeout_ms: u64,
+    /// 没看到忙碌、`0x73` 也没有增长时，最多等多久判定打印没有开始
+    #[arg(long, value_name = "DURATION", value_parser = humantime::parse_duration, default_value = "3s")]
+    start_timeout: Duration,
 
-    /// 没看到忙碌时两次 `0x73` 校验的间隔（毫秒）
-    #[arg(long, default_value_t = 500)]
-    verify_interval_ms: u64,
+    /// 没看到忙碌时两次 `0x73` 校验的间隔
+    #[arg(long, value_name = "DURATION", value_parser = humantime::parse_duration, default_value = "500ms")]
+    verify_interval: Duration,
 
     /// 连续几次空闲才认为打印完成
     #[arg(long, default_value_t = 2)]
@@ -170,19 +170,19 @@ struct Cli {
     #[arg(long, default_value_t = 5)]
     silent_limit: usize,
 
-    /// 等待打印完成的总超时（秒）
-    #[arg(long, default_value_t = 600)]
-    print_timeout: u64,
+    /// 等待打印完成的总超时，例如 `600s`
+    #[arg(long, value_name = "DURATION", value_parser = humantime::parse_duration, default_value = "600s")]
+    print_timeout: Duration,
 
-    /// 单条响应的等待超时（毫秒）
-    #[arg(long, default_value_t = 3000)]
-    recv_timeout_ms: u64,
+    /// 单条响应的等待超时，例如 `3s`
+    #[arg(long, value_name = "DURATION", value_parser = humantime::parse_duration, default_value = "3s")]
+    recv_timeout: Duration,
 
-    /// `short-print` 在打印返回后再等多久读 `0x73`（毫秒）
+    /// `short-print` 在打印返回后再等多久读 `0x73`，例如 `500ms`
     ///
     /// 给固件留出更新累计计数器的时间，避免把「还没记上」误判成「没打印」。
-    #[arg(long, default_value_t = 500)]
-    settle_ms: u64,
+    #[arg(long, value_name = "DURATION", value_parser = humantime::parse_duration, default_value = "500ms")]
+    settle: Duration,
 }
 
 /// 无参数读取命令：`1f <cmd>`。
@@ -243,14 +243,14 @@ async fn main() -> anyhow::Result<()> {
         &tm,
         DeviceConfig {
             selector,
-            recv_timeout: Duration::from_millis(cli.recv_timeout_ms.max(1)),
-            print_poll: Duration::from_millis(cli.poll_ms.max(1)),
-            print_start_grace: Duration::from_millis(cli.grace_ms),
-            print_start_timeout: Duration::from_millis(cli.start_timeout_ms),
-            print_verify_interval: Duration::from_millis(cli.verify_interval_ms.max(1)),
+            recv_timeout: cli.recv_timeout.max(Duration::from_millis(1)),
+            print_poll: cli.poll.max(Duration::from_millis(1)),
+            print_start_grace: cli.grace,
+            print_start_timeout: cli.start_timeout,
+            print_verify_interval: cli.verify_interval.max(Duration::from_millis(1)),
             print_idle_confirm: cli.idle_confirm.max(1),
             print_silent_limit: cli.silent_limit.max(1),
-            print_done_timeout: Duration::from_secs(cli.print_timeout.max(1)),
+            print_done_timeout: cli.print_timeout.max(Duration::from_millis(1)),
             ..Default::default()
         },
     );
@@ -296,7 +296,7 @@ async fn run_phase(dev: &Device, phase: Phase, cli: &Cli) -> Result<()> {
                 cli.rle.into(),
                 cli.short_rows,
                 cli.short_pages,
-                Duration::from_millis(cli.settle_ms),
+                cli.settle,
             )
             .await
         }
@@ -342,7 +342,7 @@ async fn phase_print(dev: &Device, rle: RleMode, rows: usize) -> anyhow::Result<
 ///
 /// 关键点是页面要短：数据发完、`EndPage` 之后的空窗期很短，`wait_for_print_done`
 /// 可能在固件真正启动打印前后就直接看到空闲并返回成功。这个阶段会把
-/// `--poll-ms` 压到 1~5ms 时观察到的最终结果、`0x73` 统计增量和队列里残留的
+/// `--poll` 压到 `1ms`~`5ms` 时观察到的最终结果、`0x73` 统计增量和队列里残留的
 /// 响应帧都打出来，方便判断固件到底有没有报错。
 ///
 /// **会真的走纸。**
@@ -579,6 +579,7 @@ async fn phase_device_info(dev: &Device) -> anyhow::Result<()> {
         &req::manufacturer::Manufacturer {},
         &req::device_name::DeviceName {},
         &req::software_version::SoftwareVersion {},
+        &req::hardware_version::HardwareVersion {},
         &req::bluetooth_mac::BluetoothMac {},
         &req::device_info::DeviceInfo {},
     ])
@@ -617,6 +618,14 @@ async fn phase_device_info(dev: &Device) -> anyhow::Result<()> {
 
     let version: resp::software_version::SoftwareVersion = dev.try_recv_one().await?;
     info!("software version = {}", version.software_version);
+
+    let hardware: resp::hardware_version::HardwareVersion = dev.try_recv_one().await?;
+    info!(
+        "hardware version = {}, raw = {:#04x}, tail = {}",
+        hardware,
+        hardware.raw,
+        simple_hex(&hardware.tail)
+    );
 
     let mac: resp::bluetooth_mac::BluetoothMac = dev.try_recv_one().await?;
     info!(
@@ -833,7 +842,6 @@ async fn phase_raw_probes(dev: &Device) -> anyhow::Result<()> {
         (0x57, "支持的电机模式"),
         (0x59, "支持的语言"),
         (0x5b, "未确认"),
-        (0x7a, "硬件版本"),
     ];
 
     info!("[6] 未建模命令探测");
@@ -904,15 +912,15 @@ mod tests {
         assert_eq!(cli.rows, 64 * 50);
         assert_eq!(cli.short_rows, 32);
         assert_eq!(cli.short_pages, 3);
-        assert_eq!(cli.poll_ms, 100);
-        assert_eq!(cli.grace_ms, 1000);
-        assert_eq!(cli.start_timeout_ms, 3000);
-        assert_eq!(cli.verify_interval_ms, 500);
+        assert_eq!(cli.poll, Duration::from_millis(100));
+        assert_eq!(cli.grace, Duration::from_secs(1));
+        assert_eq!(cli.start_timeout, Duration::from_secs(3));
+        assert_eq!(cli.verify_interval, Duration::from_millis(500));
         assert_eq!(cli.idle_confirm, 2);
         assert_eq!(cli.silent_limit, 5);
-        assert_eq!(cli.print_timeout, 600);
-        assert_eq!(cli.recv_timeout_ms, 3000);
-        assert_eq!(cli.settle_ms, 500);
+        assert_eq!(cli.print_timeout, Duration::from_secs(600));
+        assert_eq!(cli.recv_timeout, Duration::from_secs(3));
+        assert_eq!(cli.settle, Duration::from_millis(500));
     }
 
     #[test]
@@ -945,38 +953,38 @@ mod tests {
             "16",
             "--short-pages",
             "5",
-            "--poll-ms",
-            "1",
-            "--grace-ms",
-            "250",
-            "--start-timeout-ms",
-            "1500",
-            "--verify-interval-ms",
-            "100",
+            "--poll",
+            "1ms",
+            "--grace",
+            "250ms",
+            "--start-timeout",
+            "1500ms",
+            "--verify-interval",
+            "100ms",
             "--idle-confirm",
             "3",
             "--silent-limit",
             "2",
             "--print-timeout",
-            "30",
-            "--recv-timeout-ms",
-            "500",
-            "--settle-ms",
-            "100",
+            "30s",
+            "--recv-timeout",
+            "500ms",
+            "--settle",
+            "100ms",
         ])
         .unwrap();
 
         assert_eq!(cli.phase, vec![Phase::ShortPrint]);
         assert_eq!(cli.short_rows, 16);
         assert_eq!(cli.short_pages, 5);
-        assert_eq!(cli.poll_ms, 1);
-        assert_eq!(cli.grace_ms, 250);
-        assert_eq!(cli.start_timeout_ms, 1500);
-        assert_eq!(cli.verify_interval_ms, 100);
+        assert_eq!(cli.poll, Duration::from_millis(1));
+        assert_eq!(cli.grace, Duration::from_millis(250));
+        assert_eq!(cli.start_timeout, Duration::from_millis(1500));
+        assert_eq!(cli.verify_interval, Duration::from_millis(100));
         assert_eq!(cli.idle_confirm, 3);
         assert_eq!(cli.silent_limit, 2);
-        assert_eq!(cli.print_timeout, 30);
-        assert_eq!(cli.recv_timeout_ms, 500);
-        assert_eq!(cli.settle_ms, 100);
+        assert_eq!(cli.print_timeout, Duration::from_secs(30));
+        assert_eq!(cli.recv_timeout, Duration::from_millis(500));
+        assert_eq!(cli.settle, Duration::from_millis(100));
     }
 }

@@ -34,6 +34,7 @@ pub mod device_name;
 pub mod dpi;
 pub mod gap_length;
 pub mod gap_type;
+pub mod hardware_version;
 pub mod high_command;
 pub mod manufacturer;
 pub mod print_width;

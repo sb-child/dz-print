@@ -34,10 +34,12 @@ use anyhow::Context as _;
 use clap::Parser;
 use common::{
     PrintArgs, PrintSettings,
+    printer::{PrintPage, print_page},
     typst::{self, PageSettings, TypstWorld, compile, render_bitmap},
 };
 use dz_print::frontend::Device;
 use std::{collections::HashMap, path::PathBuf};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use typst_layout::PagedDocument;
 
@@ -86,24 +88,26 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let args = cli.print.clone();
-    common::with_device(&args, async |dev| {
-        print_document(dev, &cli.print, &doc, &overrides).await
+    common::with_device(&args, async |dev, info| {
+        print_document(dev, info.head_dots, &cli.print, &doc, &overrides).await
     })
     .await
 }
 
 async fn print_document(
     dev: &Device,
+    dots: u16,
     base: &PrintArgs,
     doc: &PagedDocument,
     overrides: &HashMap<usize, PageSettings>,
 ) -> anyhow::Result<()> {
-    let dots = common::print_head_dots(dev).await?;
-    info!("print head dots = {dots}, pages = {}", doc.pages().len());
+    info!("pages = {}", doc.pages().len());
 
     let mut args = base.clone();
     // 上一次真正发给打印机的设置，用来避免每页都重复发一遍。
     let mut sent: Option<PrintSettings> = None;
+    // 命令行暂时没有取消入口，保留 token 让打印循环和 server 共用同一套接口。
+    let cancel = CancellationToken::new();
 
     for (index, page) in doc.pages().iter().enumerate() {
         let page_no = index + 1;
@@ -121,18 +125,14 @@ async fn print_document(
             "rendered page"
         );
 
-        let current = PrintSettings::from(&args);
-        if sent.as_ref() != Some(&current) {
-            args.send_settings(dev).await?;
-            sent = Some(current);
-        }
-
-        info!(
-            page = page_no,
-            rle = ?args.rle,
-            "printing page"
-        );
-        args.print_bitmap(dev, &bitmap).await?;
+        let page = PrintPage {
+            bitmap,
+            rle: args.rle.into(),
+            options: args.job_options(),
+            settings: PrintSettings::from(&args),
+        };
+        info!(page = page_no, rle = ?args.rle, "printing page");
+        print_page(dev, "document", &page, page_no, 0, &mut sent, &cancel).await?;
     }
     Ok(())
 }

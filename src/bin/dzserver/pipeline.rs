@@ -5,7 +5,7 @@
 //! 流水线：入口队列 -> N 个渲染 worker -> 打印队列 -> 1 个打印 worker。
 
 use crate::{
-    api::ApiState,
+    api::{ApiConfig, ApiState},
     common::{PrintArgs, typst::FontSet},
     job::{JobState, JobStore},
     printer::{PrinterProfile, PrinterWorker},
@@ -14,7 +14,7 @@ use crate::{
 use anyhow::Context as _;
 use mytm::{TaskHandle, TaskManager};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -27,6 +27,22 @@ use tracing::{error, info, warn};
 
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 const GC_INTERVAL: Duration = Duration::from_secs(60);
+
+/// `Pipeline::new` 的全部外部参数。
+///
+/// 参数都来自命令行；打包成一个结构体后，新增选项只改这里和 `main.rs`，
+/// 不用再动那串 11 个位置参数。
+pub struct PipelineConfig {
+    pub args: PrintArgs,
+    pub fonts: Arc<FontSet>,
+    pub state_dir: PathBuf,
+    pub render_workers: usize,
+    pub queue_capacity: usize,
+    pub print_queue_capacity: usize,
+    pub max_job_bytes: usize,
+    pub max_repeats: u32,
+    pub job_ttl: Duration,
+}
 
 pub struct Pipeline {
     store: JobStore,
@@ -43,20 +59,23 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    #[allow(clippy::too_many_arguments)]
-    pub fn start(
+    pub fn new(
         tm: &TaskManager,
         root: CancellationToken,
-        args: PrintArgs,
-        fonts: Arc<FontSet>,
-        state_dir: &Path,
-        render_workers: usize,
-        queue_capacity: usize,
-        print_queue_capacity: usize,
-        max_job_bytes: usize,
-        max_repeats: u32,
-        job_ttl: Duration,
+        config: PipelineConfig,
     ) -> anyhow::Result<Self> {
+        let PipelineConfig {
+            args,
+            fonts,
+            state_dir,
+            render_workers,
+            queue_capacity,
+            print_queue_capacity,
+            max_job_bytes,
+            max_repeats,
+            job_ttl,
+        } = config;
+
         let temp_root = state_dir.join("jobs");
         let package_cache = state_dir.join("typst-packages");
         std::fs::create_dir_all(&temp_root)
@@ -75,31 +94,21 @@ impl Pipeline {
         let mut render_handles = Vec::with_capacity(render_workers.max(1));
 
         for index in 0..render_workers.max(1) {
-            let tm = tm.clone();
-            let store = store.clone();
-            let ingress_rx = ingress_rx.clone();
-            let print_tx = print_tx.clone();
-            let profile_rx = profile_rx.clone();
-            let args = args.clone();
-            let fonts = fonts.clone();
-            let package_cache = package_cache.clone();
-            let token = root.child_token();
+            let ctx = RenderCtx {
+                tm: tm.clone(),
+                store: store.clone(),
+                ingress: ingress_rx.clone(),
+                print_tx: print_tx.clone(),
+                profile_rx: profile_rx.clone(),
+                args: args.clone(),
+                fonts: fonts.clone(),
+                package_cache: package_cache.clone(),
+                token: root.child_token(),
+            };
 
-            let handle = tm.spawn_typed(move |tm, _progress, task_token| async move {
+            let handle = tm.spawn_typed(move |_tm, _progress, task_token| async move {
                 info!(worker = index, "render worker started");
-                let result = render_worker(
-                    tm,
-                    store,
-                    ingress_rx,
-                    print_tx,
-                    profile_rx,
-                    args,
-                    fonts,
-                    package_cache,
-                    task_token,
-                    token,
-                )
-                .await;
+                let result = render_worker(ctx, task_token).await;
                 info!(worker = index, "render worker stopped");
                 result
             });
@@ -152,10 +161,12 @@ impl Pipeline {
             self.ingress_tx.clone(),
             self.root.clone(),
             self.tm.clone(),
-            self.temp_root.clone(),
-            self.accepting.clone(),
-            self.max_job_bytes,
-            self.max_repeats,
+            ApiConfig {
+                temp_root: self.temp_root.clone(),
+                accepting: self.accepting.clone(),
+                max_job_bytes: self.max_job_bytes,
+                max_repeats: self.max_repeats,
+            },
         )
     }
 
@@ -164,35 +175,66 @@ impl Pipeline {
         self.root.cancel();
 
         for handle in &self.render_handles {
-            let _ = tokio::time::timeout(SHUTDOWN_GRACE, handle.wait_terminal()).await;
+            if tokio::time::timeout(SHUTDOWN_GRACE, handle.wait_terminal())
+                .await
+                .is_err()
+            {
+                warn!(timeout = ?SHUTDOWN_GRACE, "render worker did not stop in time");
+            }
         }
-        let _ = tokio::time::timeout(SHUTDOWN_GRACE, self.gc_handle.wait_terminal()).await;
-        let _ = tokio::time::timeout(SHUTDOWN_GRACE, self.print_handle.wait_terminal()).await;
+        if tokio::time::timeout(SHUTDOWN_GRACE, self.gc_handle.wait_terminal())
+            .await
+            .is_err()
+        {
+            warn!(timeout = ?SHUTDOWN_GRACE, "gc worker did not stop in time");
+        }
+        if tokio::time::timeout(SHUTDOWN_GRACE, self.print_handle.wait_terminal())
+            .await
+            .is_err()
+        {
+            warn!(timeout = ?SHUTDOWN_GRACE, "print worker did not stop in time");
+        }
 
         self.tm.close();
         info!(jobs = self.store.len(), "pipeline stopped");
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn render_worker(
+/// 一个渲染 worker 的固定依赖。
+///
+/// `token` 是 `root` 的子 token，root 取消时它一定也会取消，所以这里不再
+/// 单独保存 root。
+struct RenderCtx {
     tm: TaskManager,
     store: JobStore,
     ingress: Arc<AsyncMutex<mpsc::Receiver<JobSpec>>>,
     print_tx: mpsc::Sender<RenderedJob>,
-    mut profile_rx: watch::Receiver<Option<PrinterProfile>>,
+    profile_rx: watch::Receiver<Option<PrinterProfile>>,
     args: PrintArgs,
     fonts: Arc<FontSet>,
     package_cache: PathBuf,
     token: CancellationToken,
-    root: CancellationToken,
-) -> anyhow::Result<()> {
+}
+
+async fn render_worker(ctx: RenderCtx, task_token: CancellationToken) -> anyhow::Result<()> {
+    let RenderCtx {
+        tm,
+        store,
+        ingress,
+        print_tx,
+        mut profile_rx,
+        args,
+        fonts,
+        package_cache,
+        token,
+    } = ctx;
+
     loop {
         let job = {
             let mut rx = ingress.lock().await;
             tokio::select! {
+                _ = task_token.cancelled() => break,
                 _ = token.cancelled() => break,
-                _ = root.cancelled() => break,
                 job = rx.recv() => job,
             }
         };
@@ -202,14 +244,15 @@ async fn render_worker(
 
         let id = job.id();
         let cancel = job.cancel().clone();
-        if cancel.is_cancelled() || token.is_cancelled() || root.is_cancelled() {
-            store.finish(id, JobState::Cancelled, None, false);
+        if cancel.is_cancelled() || task_token.is_cancelled() || token.is_cancelled() {
+            store.finish_cancelled(id);
             continue;
         }
 
-        let Some(profile) = wait_profile(&mut profile_rx, &cancel, &token, &root).await else {
-            store.finish(id, JobState::Cancelled, None, false);
-            if token.is_cancelled() || root.is_cancelled() {
+        let Some(profile) = wait_profile(&mut profile_rx, &cancel, &task_token, &token).await
+        else {
+            store.finish_cancelled(id);
+            if task_token.is_cancelled() || token.is_cancelled() {
                 break;
             }
             if cancel.is_cancelled() {
@@ -231,38 +274,41 @@ async fn render_worker(
 
         match result {
             Ok(rendered) => {
-                if rendered.cancel.is_cancelled() || token.is_cancelled() || root.is_cancelled() {
-                    store.finish(id, JobState::Cancelled, None, false);
+                if rendered.cancel.is_cancelled()
+                    || task_token.is_cancelled()
+                    || token.is_cancelled()
+                {
+                    store.finish_cancelled(id);
                     continue;
                 }
 
                 let send = print_tx.send(rendered);
                 tokio::select! {
                     _ = cancel.cancelled() => {
-                        store.finish(id, JobState::Cancelled, None, false);
+                        store.finish_cancelled(id);
                     }
-                    _ = token.cancelled() => {
-                        store.finish(id, JobState::Cancelled, None, false);
+                    _ = task_token.cancelled() => {
+                        store.finish_cancelled(id);
                         break;
                     }
-                    _ = root.cancelled() => {
-                        store.finish(id, JobState::Cancelled, None, false);
+                    _ = token.cancelled() => {
+                        store.finish_cancelled(id);
                         break;
                     }
                     result = send => {
                         if result.is_err() {
-                            store.finish(id, JobState::Cancelled, None, false);
+                            store.finish_cancelled(id);
                             break;
                         }
                     }
                 }
             }
             Err(error) => {
-                if cancel.is_cancelled() || token.is_cancelled() || root.is_cancelled() {
-                    store.finish(id, JobState::Cancelled, None, false);
+                if cancel.is_cancelled() || task_token.is_cancelled() || token.is_cancelled() {
+                    store.finish_cancelled(id);
                 } else {
                     error!(job = %uuid::Uuid::from_bytes(id), %error, "render failed");
-                    store.finish(id, JobState::RenderFailed, None, false);
+                    store.finish_render_failed(id);
                 }
             }
         }
@@ -274,8 +320,8 @@ async fn render_worker(
 async fn wait_profile(
     rx: &mut watch::Receiver<Option<PrinterProfile>>,
     cancel: &CancellationToken,
+    task_token: &CancellationToken,
     token: &CancellationToken,
-    root: &CancellationToken,
 ) -> Option<PrinterProfile> {
     loop {
         if let Some(profile) = *rx.borrow() {
@@ -283,8 +329,8 @@ async fn wait_profile(
         }
         tokio::select! {
             _ = cancel.cancelled() => return None,
+            _ = task_token.cancelled() => return None,
             _ = token.cancelled() => return None,
-            _ = root.cancelled() => return None,
             result = rx.changed() => {
                 if result.is_err() {
                     warn!("printer profile channel closed");
