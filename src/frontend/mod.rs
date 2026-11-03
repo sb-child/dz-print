@@ -484,6 +484,12 @@ impl Device {
     /// 这时只能复位端点，再重新查询状态。当前 job 仍然作废，本方法只负责
     /// 把设备恢复到能接受下一次任务的状态。
     pub async fn reset(&self, timeout: Duration) -> Result<(), FrontendError> {
+        // `UsbTransport::reset` 内部要等设备稳定再重新 claim 接口，约 1 秒；
+        // 前面还可能有最多一个 `WRITE_TIMEOUT`（500ms）的写任务。用
+        // `recv_timeout` 当 reset 超时会误判成 worker 卡死。
+        const MIN_RESET_TIMEOUT: Duration = Duration::from_secs(3);
+        let timeout = timeout.max(MIN_RESET_TIMEOUT);
+
         let (ack_tx, ack_rx) = oneshot::oneshot();
         let sent = async {
             self.out_tx
