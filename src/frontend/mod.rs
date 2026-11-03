@@ -1441,10 +1441,12 @@ mod tests {
             ..test_config()
         };
         let tm = mytm::TaskManager::new();
-        let device = Device::new_with_transport(&tm, transport, config);
+        let factory_transport = transport.clone();
+        let device =
+            Device::new_with_factory(&tm, move || Ok(Box::new(factory_transport.clone())), config);
 
         // 页要足够长，才能在 `0x77` 超时 fallback 之后再次检查状态，
-        // 覆盖“预算超时 + 状态超时 -> 作废 job”的路径。
+        // 覆盖“预算超时 + 状态超时 -> reset -> 重新发 0x70”的路径。
         let mut bitmap = Bitmap::new(576, 200).unwrap();
         for y in 0..200 {
             bitmap.line_mut(y).unwrap().set(0, true);
@@ -1459,6 +1461,16 @@ mod tests {
         assert!(
             matches!(result, Err(FrontendError::PrinterSilent { .. })),
             "{result:?}"
+        );
+        // reset 之后必须在新 transport 上重新发 0x70，而不是干等。
+        let status_queries = transport
+            .written()
+            .windows(2)
+            .filter(|bytes| *bytes == [0x1f, 0x70])
+            .count();
+        assert!(
+            status_queries >= 3,
+            "expected a fresh 0x70 after reset, saw {status_queries} queries"
         );
     }
 

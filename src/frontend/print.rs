@@ -174,6 +174,10 @@ impl Device {
     /// 如果状态也不回，说明固件的 parser 已经被前面的数据堵住。调用
     /// [`Device::reset`] 重新打开连接，再读一次状态；job 仍然作废。
     async fn check_after_budget_timeout(&self) -> Result<(), FrontendError> {
+        // 这里必须自己重新发一次 `0x70`。上一轮查询已经超时，或者刚刚
+        // reset 换了 transport；直接 recv 等于等一个不存在的响应。
+        self.try_send_batch(&[&req::status::Status {}]).await?;
+
         match self
             .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, self.config.recv_timeout)
             .await
@@ -208,6 +212,9 @@ impl Device {
                     });
                 }
 
+                // reset 换成了新的 transport，旧请求已经跟着旧 transport
+                // 一起丢掉；必须在新连接上重新发一遍 `0x70`。
+                self.try_send_batch(&[&req::status::Status {}]).await?;
                 match self
                     .recv_cmd_timeout::<resp::status::Status>(
                         resp::status::CMD,
