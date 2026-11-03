@@ -498,7 +498,10 @@ impl Device {
     pub async fn reset(&self, timeout: Duration) -> Result<(), FrontendError> {
         // 重新 open 内部有 1 秒稳定等待，前面还可能排着一个写任务。
         const MIN_RESET_TIMEOUT: Duration = Duration::from_secs(3);
-        let timeout = timeout.max(MIN_RESET_TIMEOUT);
+        let settle = worker::reset_settle_delay().unwrap_or_default();
+        let timeout = timeout
+            .max(MIN_RESET_TIMEOUT)
+            .max(MIN_RESET_TIMEOUT + settle);
 
         // 先把缓存里的旧响应丢掉，reset 之后只认新连接上的回包。
         // 必须在换 transport 之前清：换完之后打印机的第一个应答可能已经

@@ -38,6 +38,7 @@ use crossfire::{AsyncRx, MAsyncTx, MRx, TryRecvError, Tx, oneshot::TxOneshot, sp
 use mytm::{ProgressUpdater, TaskHandle, TaskManager};
 use pretty_hex::simple_hex;
 use snafu::Snafu;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
@@ -103,6 +104,19 @@ pub(crate) struct OutJob {
 
 /// 托管的 worker 句柄。
 pub(crate) type WorkerHandle = TaskHandle<WorkerProgress, (), WorkerError>;
+
+/// 诊断用：`DZ_RESET_SETTLE_MS` 让旧连接关闭后先静默一会儿再重新 open。
+///
+/// 真机现象：开盖中止打印后立刻重新 open 读不到状态，但新进程过几秒再连就
+/// 能读到。用这个变量扫一下到底需要多久，扫完就删掉。
+pub(crate) fn reset_settle_delay() -> Option<Duration> {
+    let raw = std::env::var("DZ_RESET_SETTLE_MS").ok()?;
+    raw.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+}
 
 /// 用 USB transport 打开设备并启动 worker。
 ///
@@ -188,6 +202,10 @@ fn run(
                             // handle。和重启进程后的第一次 open 尽量一致。
                             debug!("resetting device transport");
                             drop(transport.take());
+                            if let Some(delay) = reset_settle_delay() {
+                                info!(?delay, "waiting before reopening the device");
+                                std::thread::sleep(delay);
+                            }
                             match factory() {
                                 Ok(new_transport) => {
                                     transport = Some(new_transport);

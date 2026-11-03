@@ -64,12 +64,12 @@ use super::{Device, FrontendError, RecvError};
 /// reset 之后等固件重新接受命令的总时限。
 ///
 /// 开盖中止打印后，固件会有一段时间不接受命令（现场实测：中止后 5 秒内
-/// 完全没有回包，十几秒后才恢复，重新打开 USB 连接本身不能让它提前恢复）。
-/// 重新 open 只能清主机侧的 parser，所以这里给一个总时限反复探测 `0x70`。
-/// 探测期间每秒打一行 `info!`，方便对着真机日志判断固件到底多久恢复。
+/// 完全没有回包，重新打开 USB 连接本身不能让它提前恢复）。重新 open 只能
+/// 清主机侧的 parser，所以这里给一个总时限反复探测 `0x70`。探测期间每秒打
+/// 一行 `info!`，方便对着真机日志判断固件到底多久恢复。
 #[cfg(not(test))]
-const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-/// 单元测试里用 5ms 的 `recv_timeout`，不能真的等 30 秒。
+const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// 单元测试里用 5ms 的 `recv_timeout`，不能真的等 10 秒。
 #[cfg(test)]
 const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_millis(40);
 
