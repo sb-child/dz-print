@@ -140,9 +140,38 @@ impl Device {
                     )
                     .await
                     {
-                        Ok(Ok(())) => debug!("EndPage cleanup sent"),
-                        Ok(Err(error)) => debug!(%error, "EndPage cleanup failed"),
-                        Err(_) => debug!(timeout = ?timeout, "EndPage cleanup timed out"),
+                        Ok(Ok(())) => {
+                            warn!(
+                                "sent EndPage after print failure; \
+                                 close the cover and retry, power-cycle if it stays silent"
+                            );
+                            // 探一下固件有没有因为 EndPage 恢复响应。它决定了
+                            // 下一次运行能不能直接复用这台打印机。
+                            match self
+                                .recv_cmd_timeout::<resp::status::Status>(
+                                    resp::status::CMD,
+                                    timeout,
+                                )
+                                .await
+                            {
+                                Ok(Some(status)) => warn!(
+                                    status = ?status.status,
+                                    "printer answered after EndPage cleanup"
+                                ),
+                                Ok(None) => warn!("printer still silent after EndPage cleanup"),
+                                Err(error) => {
+                                    warn!(%error, "status probe after EndPage cleanup failed");
+                                }
+                            }
+                        }
+                        Ok(Err(error)) => warn!(
+                            %error,
+                            "EndPage cleanup failed; the printer may need a power cycle"
+                        ),
+                        Err(_) => warn!(
+                            timeout = ?timeout,
+                            "EndPage cleanup timed out; the printer may need a power cycle"
+                        ),
                     }
                     return Err(error);
                 }
