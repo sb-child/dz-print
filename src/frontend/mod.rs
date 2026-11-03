@@ -1394,7 +1394,7 @@ mod tests {
             ..test_config()
         };
         let tm = mytm::TaskManager::new();
-        let device = Device::new_with_transport(&tm, transport, config);
+        let device = Device::new_with_transport(&tm, transport.clone(), config);
 
         let mut bitmap = Bitmap::new(8, 1).unwrap();
         bitmap.line_mut(0).unwrap().set(0, true);
@@ -1408,6 +1408,14 @@ mod tests {
         assert!(
             matches!(result, Err(FrontendError::PrinterSilent { .. })),
             "{result:?}"
+        );
+        // 失败后要补一条 EndPage，避免固件停在“页面没结束”的状态。
+        assert!(
+            transport
+                .written()
+                .windows(2)
+                .any(|bytes| bytes == [0x1f, 0x28]),
+            "EndPage cleanup was not sent"
         );
     }
 
