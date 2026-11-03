@@ -169,6 +169,76 @@ impl Device {
         Ok(total)
     }
 
+    /// 在 `0x77` 已经超时的情况下确认一次 `0x70`。
+    ///
+    /// 如果状态也不回，说明固件的 parser 已经被前面的数据堵住；此时复位
+    /// USB、清掉残留响应，再探一次状态。无论探测结果如何，当前 job 都作废。
+    async fn check_after_budget_timeout(&self) -> Result<(), FrontendError> {
+        match self
+            .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, self.config.recv_timeout)
+            .await
+        {
+            Ok(Some(status)) => {
+                if status.status.is_error() {
+                    error!(
+                        status = ?status.status,
+                        reason = %status.status,
+                        "printer reported an error during the print job"
+                    );
+                    return Err(FrontendError::PrinterStatus {
+                        status: status.status,
+                    });
+                }
+                Ok(())
+            }
+            Ok(None) => {
+                warn!("status also timed out after buffer timeout; resetting USB device");
+                if let Err(error) = self.reset(self.config.recv_timeout).await {
+                    warn!(%error, "USB reset failed");
+                    return Err(FrontendError::PrinterSilent {
+                        polls: 1,
+                        timeout: self.config.recv_timeout,
+                    });
+                }
+
+                match self
+                    .recv_cmd_timeout::<resp::status::Status>(
+                        resp::status::CMD,
+                        self.config.recv_timeout,
+                    )
+                    .await
+                {
+                    Ok(Some(status)) => {
+                        warn!(
+                            status = ?status.status,
+                            reason = %status.status,
+                            "printer status after USB reset"
+                        );
+                        if status.status.is_error() {
+                            return Err(FrontendError::PrinterStatus {
+                                status: status.status,
+                            });
+                        }
+                    }
+                    Ok(None) => warn!("printer still silent after USB reset"),
+                    Err(error) => warn!(%error, "status query after USB reset failed"),
+                }
+
+                // 设备恢复了也不能继续这一页：已经发出去的数据无法撤回，
+                // 继续发会在纸中间留下空洞。job 仍然作废。
+                Err(FrontendError::PrinterSilent {
+                    polls: 1,
+                    timeout: self.config.recv_timeout,
+                })
+            }
+            Err(error @ RecvError::Closed) => Err(error.into()),
+            Err(error) => {
+                debug!("status before budget failed: {error}");
+                Ok(())
+            }
+        }
+    }
+
     /// 发完一页的 `StartPage` / 数据 / 加热统计，但不发 `EndPage`。
     ///
     /// 失败时直接返回，调用方应当作废当前 job 并关闭 / 重开设备；不要在这
@@ -213,6 +283,9 @@ impl Device {
         // 都没有回包时不要继续灌数据，否则要等整页发完、`EndPage` 之后
         // 才会在 `wait_for_print_done` 里发现。
         let mut silent_polls = 0usize;
+        // 上一轮预算查询里 `0x77` 已经超时。下一次连 `0x70` 也不回时，
+        // 说明固件很可能被堵住了，直接复位 USB，而不是继续轮询。
+        let mut budget_timeout_seen = false;
 
         loop {
             match flow.step() {
@@ -222,6 +295,11 @@ impl Device {
                         tokio::time::sleep(flow.config().chunk_gap).await;
                     }
                     flow.check_deadline()?;
+                    // 退化模式不会再回到 QueryBudget；每块之后补一次状态
+                    // 查询，确认 `0x77` 超时不是固件已经被堵住的信号。
+                    if budget_timeout_seen {
+                        self.check_after_budget_timeout().await?;
+                    }
                 }
                 ChunkDecision::QueryBudget => {
                     // 设备长时间不给预算时也要受整任务超时约束，
@@ -270,6 +348,13 @@ impl Device {
                                     "printer did not answer the status poll during print"
                                 );
                             }
+
+                            // `0x77` 上一次已经超时，这次连 `0x70` 也没回：
+                            // 继续查只会排在堵住的 parser 后面。
+                            if budget_timeout_seen {
+                                self.check_after_budget_timeout().await?;
+                            }
+
                             if silent_polls >= self.config.print_silent_limit {
                                 return Err(FrontendError::PrinterSilent {
                                     polls: silent_polls,
@@ -309,6 +394,7 @@ impl Device {
                     {
                         Ok(Some(bs)) => {
                             silent_polls = 0;
+                            budget_timeout_seen = false;
                             debug!(
                                 size = bs.size,
                                 budget = bs.budget(),
@@ -319,11 +405,13 @@ impl Device {
                         }
                         Ok(None) => {
                             warn!("buffer size timed out, fall back to 8 KiB");
+                            budget_timeout_seen = true;
                             flow.on_budget_timeout();
                         }
                         Err(e @ RecvError::Closed) => return Err(e.into()),
                         Err(e) => {
                             warn!("buffer size failed, fall back to 8 KiB: {e}");
+                            budget_timeout_seen = true;
                             flow.on_budget_timeout();
                         }
                     }

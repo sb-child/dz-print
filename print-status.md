@@ -103,7 +103,10 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
 - `print_silent_limit` 默认 `2`；`--recv-timeout 500ms` 时约 1 秒，
   默认 3 秒时约 6 秒；
 - 判定沉默后当前 job 直接作废，不要补 `EndPage`、也不要重试当前页；
-- 清理 USB 缓冲的唯一可靠方式是关闭设备后重新打开。`UsbTransport::open`
-  会对设备做一次 `handle.reset()`，所以 CLI 下次运行、`dzserver` 的
+- 如果 `0x77` 已经超时、下一轮 `0x70` 也不回，发送循环会立即
+  `Device::reset()` 清 USB 端点，再探测一次状态；无论探测结果如何，
+  当前 job 仍然作废。这样下一次任务不用重新插拔就能开始；
+- 清理 USB 缓冲的唯一可靠方式是 reset / 关闭后重新打开。`UsbTransport::open`
+  也会对设备做一次 `handle.reset()`，所以 CLI 下次运行、`dzserver` 的
   drop/reconnect 都能恢复；
 - 同一次连接里继续轮询状态没有意义，只会延迟退出。
