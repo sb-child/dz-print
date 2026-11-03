@@ -343,7 +343,9 @@ case 123:                             // 0x7b
 ```
 发送循环 A0：
     若 当前预算 == 0:
-        进入 B0：延迟 50ms，发 0x70 + 0x77，等响应（超时 5s）
+        进入 B0：延迟 50ms，发 0x70 + 0x77，等响应（SDK 默认超时 5s；
+                  dz-print 的 frontend 用 DeviceConfig.recv_timeout，且两条
+                  响应共用一个 deadline，见下文）
     否则:
         y1()：取 min(预算, 9000) 字节写入链路，预算 -= 实发字节数
         回到 A0
@@ -371,6 +373,13 @@ new d() → d(112)          // 0x70 无载荷
 ```
 
 也就是 `1f 70 00 <ck> 1f 77 02 00 00 <ck>` 这样的连续命令区（9 字节，正好塞进一帧）。
+
+`frontend::Device::print_bitmap_job_with` 会覆盖 `FlowConfig` 里写死的超时：
+
+- `budget_timeout` = `DeviceConfig.recv_timeout`（默认 3s，可用 `--recv-timeout` 调小）；
+- `job_timeout` = `DeviceConfig.print_done_timeout`（默认 600s，可用 `--print-timeout` 调）；
+- `0x70` 和 `0x77` 两条响应共用一个 deadline，最坏只等一个 `budget_timeout`，
+  而不是两个超时相加。开盖、缺纸这类错误状态因此能更快中止打印。
 
 ### 4.3 打印前握手
 
@@ -475,7 +484,8 @@ async fn pump(link: &mut Link, mut data: &[u8]) -> Result<()> {
 - **单页最多 16383 行**：v2 的 `0x26 TotalLines` 是变长字段，上限 `16383`。
   高于这个行数的位图必须拆页：每页重新发 `0x20` / `0x26` / `0x28`，`page_idx`
   递增，页间保持 `Continuous`。`planner::print::print_bitmap_pages` 负责切页，
-  `FlowPlanner` 每页新建一个（60 秒任务超时也按页计算）。
+  `FlowPlanner` 每页新建一个（任务超时也按页计算，frontend 用
+  `DeviceConfig.print_done_timeout` 覆盖默认的 60 秒）。
 - **`0x70` 载荷长度随固件变**：DP27P 8 字节、DP305P 28 字节。只读 `[0]`。
 - **DP305P 的 Bulk 口零响应**：接口 0 是 Printer class（`01`/`81`），12 条查询全部无回；
   同一批命令走接口 1 的 HID Interrupt（`02`/`82`）全部正常。选端点时要选"同一个接口的

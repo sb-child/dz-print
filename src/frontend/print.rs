@@ -52,7 +52,7 @@ use crate::{
         settings::GapTypeSetting,
     },
     planner::{
-        flow::{ChunkDecision, FlowPlanner, FlowReport},
+        flow::{ChunkDecision, FlowConfig, FlowPlanner, FlowReport},
         print::{MAX_LINES_PER_PAGE, PrintError, RleMode, into_reqs, print_bitmap_page},
     },
 };
@@ -143,7 +143,14 @@ impl Device {
 
             let reqs = into_reqs(&page.commands);
             let refs: Vec<&dyn ReqTrait> = reqs.iter().map(|c| c.as_ref()).collect();
-            let mut flow = FlowPlanner::default();
+            // 预算查询和整页发送都受设备配置约束，不要用 planner 里写死的
+            // 5 秒 / 60 秒：用户把 `--recv-timeout` 调到 500ms 时，开盖这类
+            // 错误应该尽快报出来，而不是先等两个 5 秒超时。
+            let mut flow = FlowPlanner::new(FlowConfig {
+                budget_timeout: self.config.recv_timeout.max(Duration::from_millis(1)),
+                job_timeout: self.config.print_done_timeout.max(Duration::from_millis(1)),
+                ..FlowConfig::default()
+            });
             flow.push_commands(&self.assembler, &refs)?;
 
             loop {
@@ -166,9 +173,15 @@ impl Device {
                         ])
                         .await?;
                         // 两条查询的应答按命令字节分别取，顺序和中间夹的推送都不影响。
-                        let timeout = flow.config().budget_timeout;
+                        // 两条共用一个 deadline，最坏只等一个 budget_timeout。
+                        let deadline = tokio::time::Instant::now() + flow.config().budget_timeout;
+                        let status_timeout =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
                         let status = match self
-                            .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, timeout)
+                            .recv_cmd_timeout::<resp::status::Status>(
+                                resp::status::CMD,
+                                status_timeout,
+                            )
                             .await
                         {
                             Ok(Some(status)) => {
@@ -189,10 +202,12 @@ impl Device {
                                 None
                             }
                         };
+                        let buffer_timeout =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
                         match self
                             .recv_cmd_timeout::<resp::buffer_size::BufferSize>(
                                 resp::buffer_size::CMD,
-                                timeout,
+                                buffer_timeout,
                             )
                             .await
                         {
