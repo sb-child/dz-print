@@ -7,14 +7,14 @@
 use crate::{
     common::{
         PrintArgs, PrintSettings, SHUTDOWN_TIMEOUT,
-        printer::{PagePrintError, print_pages, query_info},
+        printer::{PagePrintError, print_pages, query_info, query_status, reopen_and_query_status},
     },
     job::{JobId, JobState, JobStore},
     render::RenderedJob,
 };
 use dz_print::{
-    command::{req, resp, status::PrinterStatus},
-    frontend::{Device, DeviceConfig, FrontendError, RecvError},
+    command::status::PrinterStatus,
+    frontend::{Device, DeviceConfig, FrontendError},
 };
 use mytm::TaskManager;
 use std::time::{Duration, Instant};
@@ -148,11 +148,27 @@ impl PrinterWorker {
                 self.drop_device().await;
             }
             Err(PrintFailure::Device(error)) => {
-                let (status, io_error) = classify_error(&error);
+                let (mut status, mut io_error) = classify_error(&error);
                 error!(job = %job_label(id), %error, "print failed");
+
+                self.drop_device().await;
+
+                // 沉默类错误本身没有状态码；关闭旧设备、重新 open 之后再读
+                // 一次 `0x70`，尽量把 `CoverOpened` / `NoPaper` 报告给客户端。
+                if should_recover_status(&error)
+                    && let Some(recovered) =
+                        reopen_and_query_status(&self.tm, &self.config, self.config.recv_timeout)
+                            .await
+                {
+                    warn!(?recovered, "printer status after reopening");
+                    if recovered.is_error() {
+                        status = Some(recovered);
+                        io_error = false;
+                    }
+                }
+
                 self.store
                     .finish(id, JobState::PrintCompleted, status, io_error);
-                self.drop_device().await;
             }
         }
     }
@@ -347,17 +363,11 @@ enum ReadyState {
     TimedOut,
 }
 
-async fn query_status(dev: &Device, timeout: Duration) -> Result<PrinterStatus, FrontendError> {
-    dev.try_send_batch(&[&req::status::Status {}]).await?;
-    let status = dev
-        .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, timeout)
-        .await?;
-    match status {
-        Some(status) => Ok(status.status),
-        None => Err(FrontendError::Recv {
-            source: RecvError::Timeout { timeout },
-        }),
-    }
+fn should_recover_status(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<FrontendError>(),
+        Some(FrontendError::PrinterSilent { .. } | FrontendError::PrintTimeout { .. })
+    )
 }
 
 fn classify_error(error: &anyhow::Error) -> (Option<PrinterStatus>, bool) {

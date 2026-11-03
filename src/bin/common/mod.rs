@@ -39,7 +39,7 @@ use dz_print::{
     raster::DitherMode,
 };
 use mytm::TaskManager;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// 退出前等 worker 线程真正停下（释放 USB 句柄）的超时。
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -307,9 +307,9 @@ where
     let tm = TaskManager::new();
     let config = args.device_config();
     let recv_timeout = config.recv_timeout;
-    let dev = Device::new(&tm, config);
+    let dev = Device::new(&tm, config.clone());
 
-    let result = async {
+    let mut result = async {
         dev.ready().await.context("设备没有就绪")?;
         let info = printer::query_info(&dev, recv_timeout).await?;
         info.log_connected();
@@ -318,10 +318,38 @@ where
     .await;
 
     let stopped = dev.shutdown(SHUTDOWN_TIMEOUT).await;
+
+    // 打印机沉默时当前 job 已经作废，但用户通常想知道具体原因。in-place
+    // reset 救不回来，只有关闭后重新 open（新 context / handle + reset）
+    // 才能重新读到状态；顺便把 `CoverOpened` 这类具体错误报出来。
+    if result.as_ref().is_err_and(should_probe_status) {
+        match printer::reopen_and_query_status(&tm, &config, recv_timeout).await {
+            Some(status) if status.is_error() => {
+                warn!(?status, "printer reported an error after reopening");
+                result = Err(anyhow::Error::new(FrontendError::PrinterStatus { status }));
+            }
+            Some(status) => {
+                warn!(
+                    ?status,
+                    "printer answered after reopening; the job was discarded"
+                );
+            }
+            None => warn!("could not query printer status after reopening"),
+        }
+    }
+
     tm.close();
     result?;
     stopped?;
     Ok(())
+}
+
+/// 沉默类错误才值得重新打开设备去读状态；普通渲染 / 参数错误不碰 USB。
+fn should_probe_status(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<FrontendError>(),
+        Some(FrontendError::PrinterSilent { .. } | FrontendError::PrintTimeout { .. })
+    )
 }
 
 pub fn init_tracing() {

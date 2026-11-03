@@ -109,4 +109,7 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
 - 清理 USB 缓冲的唯一可靠方式是**关闭设备后重新打开**。`UsbTransport::open`
   会新建 context / handle，并在 claim 接口之前做一次 `handle.reset()`，
   所以 CLI 下次运行、`dzserver` 的 drop/reconnect 都能恢复；
+- CLI 在沉默错误退出前会做一次这样的 close + open，并读一次 `0x70`：
+  如果能读到 `CoverOpened` / `NoPaper`，最终错误会换成具体状态；读不到
+  就保留 `PrinterSilent`。`dzserver` 失败后也会重建连接读一次状态；
 - 同一次连接里继续轮询状态没有意义，只会延迟退出。

@@ -7,13 +7,14 @@
 //! 只有打印头点数是必需的（渲染需要它）；设备名、版本、DPI、纸宽都是
 //! 展示信息，查询失败只 `warn!`，不影响打印。
 
-use super::PrintSettings;
+use super::{PrintSettings, SHUTDOWN_TIMEOUT};
 use dz_print::{
     bitmap::Bitmap,
-    command::{req, resp, resp::RespTrait},
-    frontend::{Device, FrontendError, PrintJobOptions, RecvError},
+    command::{req, resp, resp::RespTrait, status::PrinterStatus},
+    frontend::{Device, DeviceConfig, FrontendError, PrintJobOptions, RecvError},
     planner::print::{MAX_DOTS_PER_LINE, RleMode},
 };
+use mytm::TaskManager;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -138,6 +139,54 @@ pub async fn query_info(dev: &Device, timeout: Duration) -> anyhow::Result<Print
         head_dots: width.print_width,
         paper_width: Some(width.paper_width),
     })
+}
+
+/// 读一次 `0x70` 打印机状态。
+pub async fn query_status(dev: &Device, timeout: Duration) -> Result<PrinterStatus, FrontendError> {
+    dev.try_send_batch(&[&req::status::Status {}]).await?;
+    let status = dev
+        .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, timeout)
+        .await?;
+    match status {
+        Some(status) => Ok(status.status),
+        None => Err(FrontendError::Recv {
+            source: RecvError::Timeout { timeout },
+        }),
+    }
+}
+
+const RECOVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 关闭旧设备后重新打开，读一次 `0x70`；拿不到就返回 `None`。
+///
+/// in-place reset 不会重建 libusb context / handle，实测救不回被堵住的
+/// parser；只有 close + open 才能重新读到状态。
+pub async fn reopen_and_query_status(
+    tm: &TaskManager,
+    config: &DeviceConfig,
+    timeout: Duration,
+) -> Option<PrinterStatus> {
+    let dev = Device::new(tm, config.clone());
+    let ready = tokio::time::timeout(RECOVER_CONNECT_TIMEOUT, dev.ready()).await;
+    let status = match ready {
+        Ok(Ok(())) => match query_status(&dev, timeout).await {
+            Ok(status) => Some(status),
+            Err(error) => {
+                warn!(%error, "query status after reopening failed");
+                None
+            }
+        },
+        Ok(Err(error)) => {
+            warn!(%error, "reopen printer failed");
+            None
+        }
+        Err(_) => {
+            warn!(timeout = ?RECOVER_CONNECT_TIMEOUT, "reopen printer timed out");
+            None
+        }
+    };
+    let _ = dev.shutdown(SHUTDOWN_TIMEOUT).await;
+    status
 }
 
 /// 读一条可选响应；超时或解析失败都返回 `None`，不阻塞连接。
