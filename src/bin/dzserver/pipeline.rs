@@ -303,7 +303,7 @@ async fn render_worker(ctx: RenderCtx, task_token: CancellationToken) -> anyhow:
                     store.finish_cancelled(id);
                 } else {
                     error!(job = %uuid::Uuid::from_bytes(id), %error, "render failed");
-                    store.finish_render_failed(id);
+                    store.finish_render_failed(id, format!("{error:#}"));
                 }
             }
         }

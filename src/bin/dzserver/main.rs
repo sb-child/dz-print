@@ -257,9 +257,8 @@ mod tests {
                 job_id: vec![0; 16],
             })
             .await
-            .unwrap()
-            .into_inner();
-        assert!(!missing.exists);
+            .expect_err("unknown job should be NOT_FOUND");
+        assert_eq!(missing.code(), tonic::Code::NotFound);
 
         let handle = print
             .print_image(PrintImageReq {
@@ -278,7 +277,13 @@ mod tests {
             .await
             .unwrap()
             .into_inner();
-        assert!(status.exists);
+        // 没有设备就发布不了打印头点数，任务会一直停在入口队列。
+        assert_eq!(status.state, dzsrv::JobState::Queued as i32);
+        assert!(status.failure.is_none());
+        assert_eq!(
+            status.printer_status,
+            dzsrv::PrinterStatus::Unspecified as i32
+        );
 
         let cancelled = mgmt
             .cancel(JobHandle {
@@ -287,7 +292,7 @@ mod tests {
             .await
             .unwrap()
             .into_inner();
-        assert!(cancelled.cancelled);
+        assert!(cancelled.accepted);
 
         let status = mgmt
             .status(JobHandle {
@@ -296,7 +301,8 @@ mod tests {
             .await
             .unwrap()
             .into_inner();
-        assert_eq!(status.job_status, dzsrv::Status::Cancelled as i32);
+        assert_eq!(status.state, dzsrv::JobState::Cancelled as i32);
+        assert!(status.failure.is_none());
 
         root.cancel();
         let _ = server_task.await;

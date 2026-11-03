@@ -9,7 +9,7 @@ use crate::{
         PrintArgs, PrintSettings, SHUTDOWN_TIMEOUT,
         printer::{PagePrintError, print_pages, query_info, query_status},
     },
-    job::{JobId, JobState, JobStore},
+    job::{FailureReason, FailureStage, JobFailure, JobId, JobState, JobStore},
     render::RenderedJob,
 };
 use dz_print::{
@@ -98,8 +98,8 @@ impl PrinterWorker {
             return;
         }
 
-        self.store.set_state(id, JobState::PrintPending);
-        match self.wait_ready(&job.cancel, token).await {
+        self.store.set_state(id, JobState::WaitingForPrinter);
+        match self.wait_ready(id, &job.cancel, token).await {
             ReadyState::Ready => {}
             ReadyState::Cancelled => {
                 self.store.finish_cancelled(id);
@@ -113,12 +113,10 @@ impl PrinterWorker {
                     timeout = ?self.config.print_done_timeout,
                     "printer did not become ready; failing this job"
                 );
-                self.store.finish(
-                    id,
-                    JobState::PrintCompleted,
-                    Some(PrinterStatus::EnvNotReady),
-                    false,
-                );
+                let failure =
+                    not_ready_failure(self.device.is_some(), self.config.print_done_timeout);
+                self.store
+                    .finish_failed(id, failure, Some(PrinterStatus::EnvNotReady));
                 self.drop_device().await;
                 return;
             }
@@ -134,12 +132,8 @@ impl PrinterWorker {
 
         match self.print_pages(&job).await {
             Ok(()) => {
-                self.store.finish(
-                    id,
-                    JobState::PrintCompleted,
-                    Some(PrinterStatus::Printable),
-                    false,
-                );
+                self.store
+                    .finish_succeeded(id, Some(PrinterStatus::Printable));
                 info!(job = %job_label(id), "print completed");
             }
             Err(PrintFailure::Cancelled) => {
@@ -148,10 +142,9 @@ impl PrinterWorker {
                 self.drop_device().await;
             }
             Err(PrintFailure::Device(error)) => {
-                let (status, io_error) = classify_error(&error);
+                let (failure, status) = classify_error(&error);
                 error!(job = %job_label(id), %error, "print failed");
-                self.store
-                    .finish(id, JobState::PrintCompleted, status, io_error);
+                self.store.finish_failed(id, failure, status);
                 self.drop_device().await;
             }
         }
@@ -163,6 +156,7 @@ impl PrinterWorker {
     /// 超时后当前 job 失败，避免打印机一直不可用时把打印队列堵死。
     async fn wait_ready(
         &mut self,
+        job_id: JobId,
         job_cancel: &CancellationToken,
         token: &CancellationToken,
     ) -> ReadyState {
@@ -197,6 +191,12 @@ impl PrinterWorker {
                 return ReadyState::TimedOut;
             };
             let status = query_status(dev, self.config.recv_timeout).await;
+
+            // 等待期间的状态也要让客户端看得到：等 600s 的任务应该能说明
+            // 自己是因为开盖还是缺纸在等。
+            if let Ok(status) = status {
+                self.store.set_printer_status(job_id, status);
+            }
 
             match status {
                 Ok(status) if matches!(status, PrinterStatus::Printable | PrinterStatus::NoJob) => {
@@ -362,30 +362,76 @@ enum ReadyState {
     TimedOut,
 }
 
-fn classify_error(error: &anyhow::Error) -> (Option<PrinterStatus>, bool) {
+/// 一直等不到可打印状态时生成的失败。
+///
+/// 设备根本没连上（`found = false`）和连上了但环境不正常，对客户端来说是
+/// 两件事：前者要检查线 / 电源，后者要检查盖子 / 纸张。
+fn not_ready_failure(found: bool, timeout: Duration) -> JobFailure {
+    let (stage, reason, what) = if found {
+        (
+            FailureStage::WaitForPrinter,
+            FailureReason::DeviceNotReady,
+            "设备一直回不到可打印状态",
+        )
+    } else {
+        (
+            FailureStage::Connect,
+            FailureReason::DeviceNotFound,
+            "一直没有找到可用的设备",
+        )
+    };
+    JobFailure::new(stage, reason, format!("{what}（等待 {timeout:?}）"))
+}
+
+/// 把打印错误翻译成对外的失败描述，以及当时读到的设备状态。
+///
+/// `reason` 从「卡住的原因」取，`printer_status` 从「重置之后读回的结果」取：
+/// 这两件事经常不一样（例如设备沉默、但 reset 之后能读到 `CoverOpened`）。
+fn classify_error(error: &anyhow::Error) -> (JobFailure, Option<PrinterStatus>) {
+    let message = format!("{error:#}");
+    let failure = |stage, reason| JobFailure::new(stage, reason, message.clone());
+
     match error.downcast_ref::<FrontendError>() {
-        Some(FrontendError::PrinterStatus { status }) => (Some(*status), false),
-        // 打印卡住之后统一收尾：读回错误码就报它；读到正常状态说明只是瞬时
-        // 卡了一下（例如盖子松动又合上），按普通失败处理；新连接上也读不到
-        // 才算 IO / 设备错误。
-        Some(FrontendError::Stalled { outcome, .. }) => match outcome {
-            StallOutcome::Status(status) if status.is_error() => (Some(*status), false),
-            StallOutcome::Status(_) => (None, false),
-            StallOutcome::Silent => (None, true),
-        },
-        // 页面没开始打印，但没有具体的打印机状态码；让 gRPC 侧落到
-        // PS_OTHER_ERROR，而不是 PS_PRINTABLE。
-        Some(FrontendError::PrintDidNotStart { .. }) => (None, false),
+        Some(FrontendError::PrinterStatus { status }) => (
+            failure(FailureStage::Print, FailureReason::PrinterStatus),
+            Some(*status),
+        ),
+        Some(FrontendError::Stalled { cause, outcome }) => {
+            let reason = match cause.as_ref() {
+                FrontendError::PrinterSilent { .. } => FailureReason::PrinterSilent,
+                FrontendError::PrintTimeout { .. } => FailureReason::PrintTimeout,
+                FrontendError::PrintDidNotStart { .. } => FailureReason::PrintDidNotStart,
+                FrontendError::WorkerGone | FrontendError::WorkerTimeout { .. } => {
+                    FailureReason::Io
+                }
+                _ => FailureReason::Internal,
+            };
+            let status = match outcome {
+                StallOutcome::Status(status) => Some(*status),
+                StallOutcome::Silent => None,
+            };
+            (failure(FailureStage::Print, reason), status)
+        }
+        Some(FrontendError::PrintDidNotStart { .. }) => (
+            failure(FailureStage::Print, FailureReason::PrintDidNotStart),
+            None,
+        ),
+        Some(FrontendError::PrinterSilent { .. }) => (
+            failure(FailureStage::Print, FailureReason::PrinterSilent),
+            None,
+        ),
+        Some(FrontendError::PrintTimeout { .. }) => (
+            failure(FailureStage::Print, FailureReason::PrintTimeout),
+            None,
+        ),
         Some(
-            FrontendError::PrinterSilent { .. }
-            | FrontendError::PrintTimeout { .. }
-            | FrontendError::Write { .. }
+            FrontendError::Write { .. }
             | FrontendError::Recv { .. }
             | FrontendError::WorkerGone
             | FrontendError::WorkerTimeout { .. }
             | FrontendError::ShutdownTimeout { .. },
-        ) => (None, true),
-        _ => (None, false),
+        ) => (failure(FailureStage::Print, FailureReason::Io), None),
+        _ => (failure(FailureStage::Print, FailureReason::Internal), None),
     }
 }
 
@@ -397,47 +443,84 @@ fn job_label(id: JobId) -> Uuid {
 mod tests {
     use super::*;
 
-    #[test]
-    fn print_did_not_start_is_not_an_io_error() {
-        let error = anyhow::Error::new(FrontendError::PrintDidNotStart {
-            timeout: Duration::from_secs(3),
-        });
-        let (status, io_error) = classify_error(&error);
-        assert!(status.is_none());
-        assert!(!io_error);
-    }
-
-    fn stalled(outcome: StallOutcome) -> anyhow::Error {
+    fn stalled(cause: FrontendError, outcome: StallOutcome) -> anyhow::Error {
         anyhow::Error::new(FrontendError::Stalled {
-            cause: Box::new(FrontendError::PrinterSilent {
-                polls: 2,
-                timeout: Duration::from_millis(500),
-            }),
+            cause: Box::new(cause),
             outcome,
         })
     }
 
+    fn silent_cause() -> FrontendError {
+        FrontendError::PrinterSilent {
+            polls: 2,
+            timeout: Duration::from_millis(500),
+        }
+    }
+
+    #[test]
+    fn print_did_not_start_has_its_own_reason() {
+        let (failure, status) =
+            classify_error(&anyhow::Error::new(FrontendError::PrintDidNotStart {
+                timeout: Duration::from_secs(3),
+            }));
+        assert_eq!(failure.reason, FailureReason::PrintDidNotStart);
+        assert_eq!(failure.stage, FailureStage::Print);
+        assert!(status.is_none());
+    }
+
     #[test]
     fn stalled_keeps_a_concrete_printer_status() {
-        let (status, io_error) =
-            classify_error(&stalled(StallOutcome::Status(PrinterStatus::CoverOpened)));
+        let (failure, status) = classify_error(&stalled(
+            silent_cause(),
+            StallOutcome::Status(PrinterStatus::CoverOpened),
+        ));
+        assert_eq!(failure.reason, FailureReason::PrinterSilent);
         assert_eq!(status, Some(PrinterStatus::CoverOpened));
-        assert!(!io_error);
     }
 
     #[test]
-    fn stalled_and_recovered_is_a_plain_failure() {
-        // 盖子松了一下又合上：打印机读回可打印，但这一页已经作废。
-        let (status, io_error) =
-            classify_error(&stalled(StallOutcome::Status(PrinterStatus::Printable)));
-        assert!(status.is_none());
-        assert!(!io_error);
+    fn stalled_and_recovered_still_reports_the_silent_cause() {
+        // 盖子松了一下又合上：打印机已经能应答，但这一页已经作废。
+        let (failure, status) = classify_error(&stalled(
+            silent_cause(),
+            StallOutcome::Status(PrinterStatus::Printable),
+        ));
+        assert_eq!(failure.reason, FailureReason::PrinterSilent);
+        assert_eq!(status, Some(PrinterStatus::Printable));
     }
 
     #[test]
-    fn stalled_and_still_silent_is_an_io_error() {
-        let (status, io_error) = classify_error(&stalled(StallOutcome::Silent));
+    fn stalled_and_still_silent_has_no_status() {
+        let (failure, status) = classify_error(&stalled(silent_cause(), StallOutcome::Silent));
+        assert_eq!(failure.reason, FailureReason::PrinterSilent);
         assert!(status.is_none());
-        assert!(io_error);
+    }
+
+    #[test]
+    fn a_timeout_cause_is_not_reported_as_silence() {
+        let (failure, _) = classify_error(&stalled(
+            FrontendError::PrintTimeout {
+                timeout: Duration::from_secs(600),
+            },
+            StallOutcome::Silent,
+        ));
+        assert_eq!(failure.reason, FailureReason::PrintTimeout);
+    }
+
+    #[test]
+    fn usb_errors_are_io() {
+        let (failure, _) = classify_error(&anyhow::Error::new(FrontendError::WorkerGone));
+        assert_eq!(failure.reason, FailureReason::Io);
+    }
+
+    #[test]
+    fn a_missing_device_is_a_connect_failure() {
+        let failure = not_ready_failure(false, Duration::from_secs(600));
+        assert_eq!(failure.stage, FailureStage::Connect);
+        assert_eq!(failure.reason, FailureReason::DeviceNotFound);
+
+        let failure = not_ready_failure(true, Duration::from_secs(600));
+        assert_eq!(failure.stage, FailureStage::WaitForPrinter);
+        assert_eq!(failure.reason, FailureReason::DeviceNotReady);
     }
 }

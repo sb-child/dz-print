@@ -45,24 +45,51 @@ gRPC 入口 → 入口队列（--queue-capacity）
 
 ## 任务状态
 
-`Status` 依次是 `IN_QUEUE` → `RENDERING` → `PRINT_PENDING` → `PRINTING` →
-`PRINT_COMPLETED`；失败 / 取消是 `RENDER_FAILED` / `CANCELLED`。
+`Status.state` 依次是 `JOB_STATE_QUEUED` → `RENDERING` →
+`WAITING_FOR_PRINTER` → `PRINTING`，然后进三个互斥的终态之一：
+`SUCCEEDED` / `FAILED` / `CANCELLED`。终态不会再变。
+
+成功和失败是分开的，客户端不需要再从 `printer_status` 反推：
+
+```text
+SUCCEEDED  → 纸已经打完
+FAILED     → failure { stage, reason, message } 说明为什么
+CANCELLED  → 被取消，不算失败
+```
+
+`printer_status` 只是设备状态的快照：等待打印机阶段会持续刷新（能看出是在等
+开盖还是等装纸），打印阶段不轮询，取的是开始打印前读到的最后一个值。
+
+失败原因的分层：
+
+- `stage`：`RENDER`（输入问题）、`CONNECT`（找不到设备）、
+  `WAIT_FOR_PRINTER`（设备环境一直不正常）、`PRINT`（发送或等页完成）；
+- `reason`：机器可判的具体原因，例如 `FAILURE_REASON_PRINTER_SILENT`
+  （设备不再应答 USB，任务作废）、`FAILURE_REASON_PRINTER_STATUS`
+  （设备明确报错，具体码在 `printer_status`）；
+- `message`：给人看的完整错误，格式不保证稳定。
+
+`reason` 来自库里的 `Stalled.cause`，`printer_status` 来自 `Stalled.outcome`
+（重置之后读回的结果），两者可能不一致：设备先沉默、reset 之后才读到
+`PS_COVER_OPENED`。
 
 终态任务在内存里保留 `--job-ttl`（默认 `1h`，`humantime` 写法），之后由 GC
-回收。
+回收；回收之后 `Mgmt.Status` 返回 `NOT_FOUND`。
 
-`PRINT_COMPLETED` 只表示“这个 job 结束了”，是否真的印出来了要看
-`printer_status`：proto 没有独立的“打印失败”终态，失败时仍然是
-`PRINT_COMPLETED` + 具体错误码（例如 `PS_COVER_OPENED`），USB 层错误是
-`PS_IO_ERROR`。
+字段含义、状态机和“失败之后要不要重试”都写在
+[proto/dzsrv.proto](proto/dzsrv.proto) 里，客户端只看那份注释就够。
 
 ## 取消
 
-`Mgmt.Cancel` 是幂等的；对已经到终态的任务返回 `cancelled=false`。
+`Mgmt.Cancel` 是幂等的，返回 `CancelReply { accepted, state }`：
 
-- 排队、渲染、等打印机就绪：立刻生效；
-- 正在打印：页与页之间检查取消，当前这一页会打完（协议没有“中止当前页”的
-  命令），之后任务标记为 `CANCELLED`，并丢弃设备连接、下一个任务重连。
+- 接受了 → `accepted = true`，任务会走到 `JOB_STATE_CANCELLED`；
+- 已经是终态或之前取消过 → `accepted = false`，`state` 说明当时的状态；
+- 任务不存在 → `NOT_FOUND`。
+
+排队、渲染、等打印机就绪时立刻生效；正在打印时页与页之间检查取消，当前这一页
+会打完（协议没有“中止当前页”的命令），之后任务标记为 `CANCELLED`，并丢弃设备
+连接、下一个任务重连。
 
 ## 打印机掉了怎么办
 

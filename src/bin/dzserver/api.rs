@@ -6,10 +6,11 @@
 
 use crate::{
     dzsrv::{
-        JobCancel, JobHandle, JobStatus, PrintImageReq, PrintTypstReq, PrinterStatus,
-        Status as PrintStatus, mgmt_server::Mgmt, print_server::Print,
+        CancelReply, FailureReason as ProtoFailureReason, FailureStage as ProtoFailureStage,
+        JobFailure as ProtoJobFailure, JobHandle, JobState as ProtoJobState, JobStatus,
+        PrintImageReq, PrintTypstReq, PrinterStatus, mgmt_server::Mgmt, print_server::Print,
     },
-    job::{JobId, JobSnapshot, JobState, JobStore},
+    job::{FailureReason, FailureStage, JobFailure, JobId, JobSnapshot, JobState, JobStore},
     render::JobSpec,
     render::run_blocking,
 };
@@ -217,69 +218,90 @@ impl MgmtEndpoint {
 #[tonic::async_trait]
 impl Mgmt for MgmtEndpoint {
     async fn status(&self, request: Request<JobHandle>) -> Result<Response<JobStatus>, Status> {
-        let Some(id) = parse_id(&request.into_inner().job_id) else {
-            return Ok(Response::new(empty_status()));
-        };
-        let Some(snapshot) = self.state.store.snapshot(&id) else {
-            return Ok(Response::new(empty_status()));
-        };
+        let id = parse_id(&request.into_inner().job_id)?;
+        let JobSnapshot {
+            state,
+            failure,
+            printer_status: device_status,
+        } = self
+            .state
+            .store
+            .snapshot(&id)
+            .ok_or_else(|| Status::not_found("任务不存在或已经被回收"))?;
 
         Ok(Response::new(JobStatus {
-            exists: true,
-            job_status: job_state(&snapshot) as i32,
-            printer_status: printer_status(&snapshot) as i32,
+            state: job_state(state) as i32,
+            printer_status: printer_status(device_status) as i32,
+            failure: failure.map(job_failure),
         }))
     }
 
-    async fn cancel(&self, request: Request<JobHandle>) -> Result<Response<JobCancel>, Status> {
-        let Some(id) = parse_id(&request.into_inner().job_id) else {
-            return Ok(Response::new(JobCancel { cancelled: false }));
-        };
-        let cancelled = self.state.store.cancel(&id);
-        Ok(Response::new(JobCancel { cancelled }))
+    async fn cancel(&self, request: Request<JobHandle>) -> Result<Response<CancelReply>, Status> {
+        let id = parse_id(&request.into_inner().job_id)?;
+        let (accepted, state) = self
+            .state
+            .store
+            .cancel(&id)
+            .ok_or_else(|| Status::not_found("任务不存在或已经被回收"))?;
+        Ok(Response::new(CancelReply {
+            accepted,
+            state: job_state(state) as i32,
+        }))
     }
 }
 
-fn parse_id(bytes: &[u8]) -> Option<JobId> {
-    bytes.try_into().ok()
+fn parse_id(bytes: &[u8]) -> Result<JobId, Status> {
+    <[u8; 16]>::try_from(bytes).map_err(|_| Status::invalid_argument("job_id 必须是 16 字节 UUID"))
 }
 
-fn empty_status() -> JobStatus {
-    JobStatus {
-        exists: false,
-        job_status: PrintStatus::InQueue as i32,
-        printer_status: PrinterStatus::PsNotCompleted as i32,
-    }
-}
-
-fn job_state(snapshot: &JobSnapshot) -> PrintStatus {
-    match snapshot.state {
-        JobState::InQueue => PrintStatus::InQueue,
-        JobState::Rendering => PrintStatus::Rendering,
-        JobState::RenderFailed => PrintStatus::RenderFailed,
-        JobState::PrintPending => PrintStatus::PrintPending,
-        JobState::Printing => PrintStatus::Printing,
-        JobState::PrintCompleted => PrintStatus::PrintCompleted,
-        JobState::Cancelled => PrintStatus::Cancelled,
+fn job_state(state: JobState) -> ProtoJobState {
+    match state {
+        JobState::Queued => ProtoJobState::Queued,
+        JobState::Rendering => ProtoJobState::Rendering,
+        JobState::WaitingForPrinter => ProtoJobState::WaitingForPrinter,
+        JobState::Printing => ProtoJobState::Printing,
+        JobState::Succeeded => ProtoJobState::Succeeded,
+        JobState::Failed => ProtoJobState::Failed,
+        JobState::Cancelled => ProtoJobState::Cancelled,
     }
 }
 
-fn printer_status(snapshot: &JobSnapshot) -> PrinterStatus {
-    if snapshot.state == JobState::Cancelled {
-        return PrinterStatus::PsJobCanceled;
+fn job_failure(failure: JobFailure) -> ProtoJobFailure {
+    ProtoJobFailure {
+        stage: failure_stage(failure.stage) as i32,
+        reason: failure_reason(failure.reason) as i32,
+        message: failure.message,
     }
-    if snapshot.io_error {
-        return PrinterStatus::PsIoError;
+}
+
+fn failure_stage(stage: FailureStage) -> ProtoFailureStage {
+    match stage {
+        FailureStage::Render => ProtoFailureStage::Render,
+        FailureStage::Connect => ProtoFailureStage::Connect,
+        FailureStage::WaitForPrinter => ProtoFailureStage::WaitForPrinter,
+        FailureStage::Print => ProtoFailureStage::Print,
     }
-    match snapshot.printer_status {
+}
+
+fn failure_reason(reason: FailureReason) -> ProtoFailureReason {
+    match reason {
+        FailureReason::Render => ProtoFailureReason::Render,
+        FailureReason::DeviceNotFound => ProtoFailureReason::DeviceNotFound,
+        FailureReason::DeviceNotReady => ProtoFailureReason::DeviceNotReady,
+        FailureReason::PrinterStatus => ProtoFailureReason::PrinterStatus,
+        FailureReason::PrinterSilent => ProtoFailureReason::PrinterSilent,
+        FailureReason::PrintTimeout => ProtoFailureReason::PrintTimeout,
+        FailureReason::PrintDidNotStart => ProtoFailureReason::PrintDidNotStart,
+        FailureReason::Io => ProtoFailureReason::Io,
+        FailureReason::Internal => ProtoFailureReason::Internal,
+    }
+}
+
+/// 设备状态只是诊断信息，成败已经由 `JobState` 决定。
+fn printer_status(status: Option<LibPrinterStatus>) -> PrinterStatus {
+    match status {
         Some(status) => convert_printer_status(status),
-        None => match snapshot.state {
-            // 成功完成时 printer_status 一定是 Some(Printable)；这里只有
-            // 没被分类到具体 PrinterStatus 的失败（例如 PrintDidNotStart），
-            // 不能再返回 PsPrintable，否则客户端会把失败当成成功。
-            JobState::PrintCompleted => PrinterStatus::PsOtherError,
-            _ => PrinterStatus::PsNotCompleted,
-        },
+        None => PrinterStatus::Unspecified,
     }
 }
 
@@ -310,6 +332,7 @@ fn convert_printer_status(status: LibPrinterStatus) -> PrinterStatus {
         LibPrinterStatus::NoRibbon2 => PrinterStatus::PsNoRibbon2,
         LibPrinterStatus::UnmatchedRibbon2 => PrinterStatus::PsUnmatchedRibbon2,
         LibPrinterStatus::LabelCanOpened => PrinterStatus::PsLabelCanOpened,
+        // 协议里没定义的码：设备回了错误，但具体原因只有服务端日志知道。
         LibPrinterStatus::Unknown(_) => PrinterStatus::PsOtherError,
     }
 }
@@ -319,12 +342,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn completed_without_a_printer_status_is_an_error() {
-        let snapshot = JobSnapshot {
-            state: JobState::PrintCompleted,
-            printer_status: None,
-            io_error: false,
-        };
-        assert_eq!(printer_status(&snapshot), PrinterStatus::PsOtherError);
+    fn a_job_without_a_status_is_not_reported_as_ready() {
+        assert_eq!(printer_status(None), PrinterStatus::Unspecified);
+    }
+
+    #[test]
+    fn a_job_reports_the_status_the_device_gave() {
+        assert_eq!(
+            printer_status(Some(LibPrinterStatus::Printable)),
+            PrinterStatus::PsPrintable
+        );
+    }
+
+    #[test]
+    fn unknown_device_statuses_become_other_error() {
+        assert_eq!(
+            printer_status(Some(LibPrinterStatus::Unknown(0x7f))),
+            PrinterStatus::PsOtherError
+        );
+    }
+
+    #[test]
+    fn failure_keeps_stage_reason_and_message() {
+        let failure = job_failure(JobFailure::new(
+            FailureStage::Print,
+            FailureReason::PrinterSilent,
+            "printer stopped answering",
+        ));
+        assert_eq!(failure.stage, ProtoFailureStage::Print as i32);
+        assert_eq!(failure.reason, ProtoFailureReason::PrinterSilent as i32);
+        assert_eq!(failure.message, "printer stopped answering");
+    }
+
+    #[test]
+    fn job_id_must_be_sixteen_bytes() {
+        assert!(parse_id(&[0u8; 16]).is_ok());
+        assert!(parse_id(&[0u8; 15]).is_err());
     }
 }

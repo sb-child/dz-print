@@ -1,95 +1,328 @@
+// 局域网打印服务的接口定义。
+//
+// 目标：只看这个文件就能写出客户端，不需要读 `src/bin/dzserver` 的实现。
+//
+// # 任务生命周期
+//
+// ```text
+//               ┌──────────► JOB_STATE_CANCELLED   （终态）
+//               │
+// QUEUED ──► RENDERING ──► WAITING_FOR_PRINTER ──► PRINTING ──► SUCCEEDED （终态）
+//   │            │                   │                 │
+//   │            └──► FAILED ◄───────┴─────────────────┘         （终态）
+//   └──────────────► FAILED / CANCELLED
+// ```
+//
+// - `SUCCEEDED` 是唯一的“成功”终态，纸已经打完；
+// - `FAILED` 是唯一的“失败”终态，原因在 `JobStatus.failure`；
+// - `CANCELLED` 是“被取消”，不算失败；
+// - 上面画的是一条正常路径：任何一个非终态都可能直接进 `CANCELLED`（取消），
+//   也可能在任意阶段进 `FAILED`；
+// - 三个终态都不会再变。终态任务会在服务端保留一段时间（默认 1 小时）后被回收，
+//   之后 `Mgmt.Status` 返回 `NOT_FOUND`。
+//
+// # 怎么轮询
+//
+// 提交之后拿 `JobHandle`，按自己的节奏调用 `Mgmt.Status`，直到 `state` 是终态。
+// 服务端不会主动推送。打印一页通常要几秒，轮询间隔 200ms ~ 1s 都合理。
+//
+// # 失败之后要不要重试
+//
+// 看 `JobFailure.reason`，不要解析 `message`：
+//
+// - `FAILURE_REASON_RENDER`：文档本身有问题（Typst 语法、图片损坏），重试没用；
+// - `FAILURE_REASON_DEVICE_NOT_FOUND` / `_DEVICE_NOT_READY`：设备没插、没开机、
+//   被别的程序占用，或者盖子/纸张一直不正常。人处理完之后可以重试；
+// - `FAILURE_REASON_PRINTER_STATUS`：设备明确报错（开盖、缺纸……），
+//   按 `JobStatus.printer_status` 处理；
+// - `FAILURE_REASON_PRINTER_SILENT`：设备不再应答 USB 命令，任务已作废。
+//   服务端会重置连接；等设备恢复（通常要人合上盖子）后重试；
+// - `FAILURE_REASON_IO` / `_PRINT_TIMEOUT` / `_PRINT_DID_NOT_START`：链路或固件
+//   出了问题，可以重试，但连续出现要当成设备故障排查。
+//
+// 打印是物理动作：任何失败都**可能已经印了一部分**，客户端不要假设“失败就等于
+// 没出纸”，也不要自动无限重试，否则可能打出一堆半张。
+
 syntax = "proto3";
-// this file for src/bin/dzserver.rs
+
 package dzsrv;
 
 service Print {
+  // 打印一张 jpg / png。
+  //
+  // - 图片按打印头宽度等比缩放（只缩不放）后抖动成 1bpp；
+  // - 请求体上限由服务端 `--max-job-bytes` 决定（默认 64 MiB），超过返回 `RESOURCE_EXHAUSTED`；
+  // - 队列满也返回 `RESOURCE_EXHAUSTED`；
+  // - 服务端正在关闭返回 `UNAVAILABLE`。
   rpc PrintImage (PrintImageReq) returns (JobHandle);
+
+  // 打印一份 Typst 文档。
+  //
+  // tar 里必须有 `main.typ`；文档按页渲染，每页单独发给打印机。
+  // 错误码和 `PrintImage` 一样。
   rpc PrintTypst (PrintTypstReq) returns (JobHandle);
 }
 
 service Mgmt {
+  // 查询任务状态。
+  //
+  // - `job_id` 非法（不是 16 字节）或任务已经从服务端回收：`NOT_FOUND`；
+  // - 服务端正在关闭：`UNAVAILABLE`。
   rpc Status (JobHandle) returns (JobStatus);
-  rpc Cancel (JobHandle) returns (JobCancel);
+
+  // 请求取消任务。
+  //
+  // 取消是**异步**的：`accepted = true` 只代表服务端接受了请求，任务会走到
+  // `JOB_STATE_CANCELLED`，中间可能还要处理掉正在进行的渲染或当前这一页。
+  // 打印过程中取消不会立刻停住电机（协议没有“中止当前页”的命令），
+  // 已经写进去的这一页会打完。
+  //
+  // - 任务已经是终态、或者之前已经取消过：`accepted = false`，`state` 是任务当时的状态；
+  // - `job_id` 非法或任务不存在：`NOT_FOUND`。
+  rpc Cancel (JobHandle) returns (CancelReply);
 }
 
 message PrintImageReq {
-  // 图像文件，png或jpg格式。
+  // 图片文件内容，支持 png / jpg。不能为空。
   bytes image_file = 1;
-  // 重复次数。0代表打印一次，1代表打印两次。
+
+  // 重复打印次数减一：0 表示打印一次，1 表示打印两次，以此类推。
+  //
+  // 上限由服务端 `--max-repeats` 决定（默认 100），超过返回 `INVALID_ARGUMENT`。
   uint32 repeats = 2;
 }
 
 message PrintTypstReq {
-  // tar 文件，里面的 main.typ 将被渲染打印。
+  // tar 文件内容，里面必须有 `main.typ`。不能为空。
   bytes typst_tar = 1;
-  // 重复次数。0代表打印一次，1代表打印两次。
+
+  // 同 `PrintImageReq.repeats`：重复打印次数减一。
   uint32 repeats = 2;
 }
 
 message JobHandle {
-  // 16 bytes UUID
+  // 16 字节 UUID 的二进制形式（大端，就是 `Uuid::as_bytes()` 的结果），
+  // 不是字符串。原样回传给 `Mgmt.Status` / `Mgmt.Cancel`。
   bytes job_id = 1;
 }
 
 message JobStatus {
-  // 任务是否存在
-  bool exists = 1;
-  Status job_status = 2;
+  // 任务当前状态。0 只在老客户端或字段缺失时出现，正常调用不会返回。
+  JobState state = 1;
+
+  // 只有 `state = JOB_STATE_FAILED` 时有值，其它状态一定为空。
+  // 终态不会再变，所以失败任务之后每次查询都会带着同一个 failure。
+  JobFailure failure = 2;
+
+  // 服务端最近一次从设备读到的状态，仅用于展示和排障，**不参与成败判定**。
+  //
+  // - 还没读到过设备状态（例如任务还在排队）：`PRINTER_STATUS_UNSPECIFIED`；
+  // - 等待打印机阶段会持续刷新，所以 `WAITING_FOR_PRINTER` 的任务能看出是开盖
+  //   还是缺纸；打印阶段服务端不轮询，值是开始打印前读到的最后一个；
+  // - 任务失败时，这里通常是失败前后的快照，和 `failure.reason` 一起看，
+  //   例如 `reason = PRINTER_STATUS` + `printer_status = PS_COVER_OPENED`；
+  // - 任务成功时通常是 `PS_PRINTABLE`，但也可能是 `PS_NO_JOB`。
   PrinterStatus printer_status = 3;
 }
 
-message JobCancel {
-  // 是否成功被取消
-  bool cancelled = 1;
+// 一个任务为什么失败。只在 `JobStatus.state = JOB_STATE_FAILED` 时有意义。
+message JobFailure {
+  // 失败发生在哪个阶段。决定客户端应该改文档、等设备、还是重试。
+  FailureStage stage = 1;
+
+  // 机器可判的原因。写程序只看这个，不要解析 `message`。
+  FailureReason reason = 2;
+
+  // 给人看的一句话，内容是服务端错误的完整描述（可能包含底层原因链）。
+  // 格式不保证稳定，仅用于日志和界面展示。
+  string message = 3;
 }
 
-enum Status {
-  // 任务正在排队
-  STATUS_IN_QUEUE = 0;
-  // 正在渲染
-  STATUS_RENDERING = 1;
-  // (终态)渲染失败
-  STATUS_RENDER_FAILED = 2;
-  // 等待打印机空闲
-  STATUS_PRINT_PENDING = 3;
-  // 正在打印
-  STATUS_PRINTING = 4;
-  // (终态)打印完成(或失败)，printer_status 包含详细说明，比如为什么打印失败
-  STATUS_PRINT_COMPLETED = 5;
-  // (终态)任务被取消，可能发生在排队、渲染或打印阶段
-  STATUS_CANCELLED = 6;
+message CancelReply {
+  // true：取消请求已被接受，任务会（或者已经）进入 `JOB_STATE_CANCELLED`。
+  // false：没有接受，原因见 `state`。
+  bool accepted = 1;
+
+  // 取消被拒绝时任务当时的状态，通常是 `SUCCEEDED` / `FAILED` / `CANCELLED`。
+  // `accepted = true` 时没有意义。
+  JobState state = 2;
 }
 
+// 任务的对外状态。三个终态不会互相转换，也不会再变回非终态。
+enum JobState {
+  // 未设置。正常流程不会出现，收到这个值按“未知”处理，继续轮询。
+  JOB_STATE_UNSPECIFIED = 0;
+
+  // 已接受，在入口队列里等渲染 worker。
+  JOB_STATE_QUEUED = 1;
+
+  // 正在解码图片 / 编译渲染 Typst 文档。这一步可能包含下载 Typst 包。
+  JOB_STATE_RENDERING = 2;
+
+  // 渲染完了，在等打印机回到可打印状态（例如盖子还没合上、上一个任务还没走完纸）。
+  // 会一直等，直到服务端的打印超时（默认 600s，可用 `--print-timeout` 调）。
+  JOB_STATE_WAITING_FOR_PRINTER = 3;
+
+  // 正在把数据写给打印机，并等待这一份任务打印结束。
+  JOB_STATE_PRINTING = 4;
+
+  // （终态）打印完成。纸已经走完，设备回到可打印状态。
+  JOB_STATE_SUCCEEDED = 5;
+
+  // （终态）打印失败或任务作废，原因见 `JobStatus.failure`。
+  JOB_STATE_FAILED = 6;
+
+  // （终态）任务被取消，可能发生在排队、渲染、等打印机或打印阶段。
+  // 打印阶段取消时，已经开始的这一页会打完。
+  JOB_STATE_CANCELLED = 7;
+}
+
+// 失败发生的阶段。
+enum FailureStage {
+  FAILURE_STAGE_UNSPECIFIED = 0;
+
+  // 解码 / 渲染 / 读文件。通常是输入本身有问题。
+  FAILURE_STAGE_RENDER = 1;
+
+  // 建立连接阶段。设备没插、没开机、被别的进程占用，一直到超时都没连上。
+  FAILURE_STAGE_CONNECT = 2;
+
+  // 等设备回到可打印状态：盖子、纸张、电压之类的环境问题。
+  FAILURE_STAGE_WAIT_FOR_PRINTER = 3;
+
+  // 发送数据、等页完成。设备中途出问题，或者 USB 链路断了。
+  FAILURE_STAGE_PRINT = 4;
+}
+
+// 机器可判的失败原因。新增值只会追加，不会改已有值的含义。
+enum FailureReason {
+  FAILURE_REASON_UNSPECIFIED = 0;
+
+  // 输入处理失败：图片解不开、Typst 编译报错、tar 不合法、缺 `main.typ`。
+  // 重试同一个输入没有意义。
+  FAILURE_REASON_RENDER = 1;
+
+  // 一直找不到 / 连不上设备。检查 USB、电源、udev 规则，或者是不是被别的
+  // 进程（比如另一个 dz-print 实例）占着。
+  FAILURE_REASON_DEVICE_NOT_FOUND = 2;
+
+  // 设备连着，但一直回不到可打印状态（一直报 `PS_COVER_OPENED` /
+  // `PS_NO_PAPER` 之类），等到超时。具体状态看 `JobStatus.printer_status`。
+  FAILURE_REASON_DEVICE_NOT_READY = 3;
+
+  // 打印过程中设备明确回了错误状态。`JobStatus.printer_status` 是那个错误码。
+  FAILURE_REASON_PRINTER_STATUS = 4;
+
+  // 设备不再应答 USB 命令（`0x70` 状态查询也没有回包），任务作废。
+  // 真机上最常见的原因是打印中开盖；服务端会重置连接，通常要合上盖子、
+  // 等设备自己缓过来（几秒）才能继续。
+  FAILURE_REASON_PRINTER_SILENT = 5;
+
+  // 整份任务超时（`--print-timeout`，默认 600s）仍未完成。
+  FAILURE_REASON_PRINT_TIMEOUT = 6;
+
+  // 数据已经发完，但设备始终没有真正开始打印（没看到忙状态、打印计数也没动）。
+  FAILURE_REASON_PRINT_DID_NOT_START = 7;
+
+  // 主机侧 IO 错误：USB 读写失败、设备被拔掉、后台读写线程无响应。
+  FAILURE_REASON_IO = 8;
+
+  // 服务端内部错误，没能归到上面任何一类。客户端可以重试，但应把
+  // `JobStatus.failure.message` 记下来用于排查。
+  FAILURE_REASON_INTERNAL = 9;
+}
+
+// 打印机自己报告的状态（`0x70` 命令）。
+//
+// 这是**设备**的状态，不是任务的状态：`PS_PRINTABLE` 不代表某个任务成功，
+// `PS_JOB_CANCELED` 也不代表服务端取消过任务。任务成败只看 `JobState`。
+//
+// 数值和厂商 SDK 的 `PrinterStatus` 一一对应，客户端可以按“是不是错误”分组：
+// `PS_PRINTABLE` ~ `PS_PAGE_NOT_READY` 属于可继续打印的状态，
+// `PS_JOB_CANCELED` 及以后是错误或环境问题。
 enum PrinterStatus {
-  // 打印还没完成
-  PS_NOT_COMPLETED = 0;
-  // 打印机报告了未知错误
+  // 未设置：还没有从设备读到过状态（例如任务还在排队）。
+  PRINTER_STATUS_UNSPECIFIED = 0;
+
+  // 设备回了协议里没有定义的错误码。看服务端日志里的原始值。
   PS_OTHER_ERROR = 1;
+
+  // 空闲，可以接新任务。
   PS_PRINTABLE = 2;
+
+  // 正在打印。
   PS_PRINTING = 3;
+
+  // 电机在转（走纸 / 定位），数据还没打完。
   PS_ROTATING = 4;
+
+  // 设备侧没有正在进行的任务。
   PS_NO_JOB = 5;
+
+  // 这一页的数据不完整。
   PS_PAGE_NOT_READY = 6;
+
+  // 设备侧的打印任务被取消了。
   PS_JOB_CANCELED = 7;
+
+  // 环境未就绪，设备暂不可用。
   PS_ENV_NOT_READY = 8;
+
+  // 打印电压过低。
   PS_VOL_TOO_LOW = 9;
+
+  // 打印电压过高。
   PS_VOL_TOO_HIGH = 10;
+
+  // 找不到打印头。
   PS_TPH_NOT_FOUND = 11;
+
+  // 打印头过热。
   PS_TPH_TOO_HOT = 12;
+
+  // 盖子打开。合上之后任务才能继续。
   PS_COVER_OPENED = 13;
+
+  // 缺纸。装纸之后任务才能继续。
   PS_NO_PAPER = 14;
+
+  // 碳带仓打开。
   PS_RIBBON_CAN_OPENED = 15;
+
+  // 没有碳带。
   PS_NO_RIBBON = 16;
+
+  // 碳带和当前配置不匹配。
   PS_UNMATCHED_RIBBON = 17;
+
+  // 打印头过冷。
   PS_TPH_TOO_COLD = 18;
+
+  // 碳带用完。
   PS_USEDUP_RIBBON = 19;
+
+  // 碳带用完（第二种，机型相关）。
   PS_USEDUP_RIBBON_2 = 20;
+
+  // 没有标签纸。
   PS_NO_LABEL = 21;
+
+  // 标签和当前配置不匹配。
   PS_UNMATCHED_LABEL = 22;
+
+  // 标签用完。
   PS_USEDUP_LABEL = 23;
+
+  // 没有碳带（第二种，机型相关）。
   PS_NO_RIBBON_2 = 24;
+
+  // 碳带不匹配（第二种，机型相关）。
   PS_UNMATCHED_RIBBON_2 = 25;
+
+  // 标签仓打开。
   PS_LABEL_CAN_OPENED = 26;
-  // IO设备故障导致打印失败，比如被拔线
-  PS_IO_ERROR = 27;
+
+  // 原来表示“USB / IO 故障”，但这不是设备会回报的状态，而是主机侧的读写
+  // 失败。现在由 `FailureReason.FAILURE_REASON_IO` 表达，27 不再发送。
+  reserved 27;
 }
