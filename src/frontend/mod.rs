@@ -513,6 +513,7 @@ impl Device {
             let mut state = self.recv.lock().await;
             while state.rx.try_recv().is_ok() {}
             state.queue.clear();
+            info!("USB reset completed, receive queue cleared");
         }
         result
     }

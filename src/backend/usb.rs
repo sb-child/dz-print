@@ -240,6 +240,7 @@ impl Transport for UsbTransport {
     }
 
     fn reset(&mut self) -> Result<(), TransportError> {
+        info!("resetting USB device");
         if let Err(e) = self.handle.reset() {
             let err = map_usb_error(e);
             self.mark_error(&err);
@@ -252,6 +253,7 @@ impl Transport for UsbTransport {
             Ok(detached) => self.detached = detached,
             Err(e) => warn!("re-claim interfaces after reset failed: {e}"),
         }
+        info!("USB device reset completed");
         Ok(())
     }
 }

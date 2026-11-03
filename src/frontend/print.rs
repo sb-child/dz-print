@@ -201,27 +201,40 @@ impl Device {
                     });
                 }
 
-                match self
-                    .recv_cmd_timeout::<resp::status::Status>(
-                        resp::status::CMD,
-                        self.config.recv_timeout,
-                    )
-                    .await
-                {
-                    Ok(Some(status)) => {
-                        warn!(
-                            status = ?status.status,
-                            reason = %status.status,
-                            "printer status after USB reset"
-                        );
-                        if status.status.is_error() {
-                            return Err(FrontendError::PrinterStatus {
-                                status: status.status,
-                            });
+                // reset 之后固件可能还要一小会儿才重新开始处理命令；多探
+                // 几次，避免把“刚复位完还没启动”误判成“仍然沉默”。
+                for attempt in 1..=3 {
+                    if attempt > 1 {
+                        tokio::time::sleep(self.config.recv_timeout).await;
+                    }
+                    match self
+                        .recv_cmd_timeout::<resp::status::Status>(
+                            resp::status::CMD,
+                            self.config.recv_timeout,
+                        )
+                        .await
+                    {
+                        Ok(Some(status)) => {
+                            warn!(
+                                attempt,
+                                status = ?status.status,
+                                reason = %status.status,
+                                "printer status after USB reset"
+                            );
+                            if status.status.is_error() {
+                                return Err(FrontendError::PrinterStatus {
+                                    status: status.status,
+                                });
+                            }
+                            break;
+                        }
+                        Ok(None) => {
+                            warn!(attempt, "printer still silent after USB reset");
+                        }
+                        Err(error) => {
+                            warn!(attempt, %error, "status query after USB reset failed");
                         }
                     }
-                    Ok(None) => warn!("printer still silent after USB reset"),
-                    Err(error) => warn!(%error, "status query after USB reset failed"),
                 }
 
                 // 设备恢复了也不能继续这一页：已经发出去的数据无法撤回，
@@ -353,6 +366,8 @@ impl Device {
                             // 继续查只会排在堵住的 parser 后面。
                             if budget_timeout_seen {
                                 self.check_after_budget_timeout().await?;
+                                // 后续探测拿到了状态，这次超时只是偶发。
+                                silent_polls = 0;
                             }
 
                             if silent_polls >= self.config.print_silent_limit {
