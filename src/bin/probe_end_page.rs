@@ -57,6 +57,12 @@ use common::{PrintArgs, PrintSettings, SHUTDOWN_TIMEOUT};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// `0x77` 失败时按这个字节数继续发，和 `FlowPlanner` 的默认值一致。
 const FALLBACK_BUDGET: usize = 8 * 1024;
+/// 重连后单次 `0x70` 最多等多久。
+///
+/// 打印机恢复后回包只要几十毫秒（实测 7~105ms），所以这里不需要用
+/// `--recv-timeout` 那么长；短超时可以把“多久恢复”的时间分辨率压到
+/// 几百毫秒以内。
+const POST_PROBE_TIMEOUT: Duration = Duration::from_millis(200);
 
 #[derive(Parser, Debug)]
 #[command(version, about = "验证 EndPage 是否延长卡住后的恢复时间（真的会打印）")]
@@ -102,18 +108,25 @@ struct Cli {
     )]
     settle: Duration,
 
-    /// 重新连接后连续探测几次
-    #[arg(long, default_value_t = 3)]
-    retries: usize,
-
-    /// 两次探测之间保持安静多久
+    /// 重连后每隔多久探一次状态
+    ///
+    /// 每次探测自身最多等 200ms，所以实际分辨率是 `200ms + --poll-interval`。
     #[arg(
         long,
         value_name = "DURATION",
         value_parser = humantime::parse_duration,
-        default_value = "1.5s"
+        default_value = "100ms"
     )]
-    retry_gap: Duration,
+    poll_interval: Duration,
+
+    /// 重连后最多探测多久，超时就报告仍然沉默
+    #[arg(
+        long,
+        value_name = "DURATION",
+        value_parser = humantime::parse_duration,
+        default_value = "20s"
+    )]
+    poll_for: Duration,
 
     /// 开始前不等待回车
     #[arg(long)]
@@ -164,8 +177,11 @@ fn validate(cli: &Cli) -> Result<()> {
     if cli.prompt_at > 100 {
         bail!("--prompt-at 必须在 0..=100 之间");
     }
-    if cli.retries == 0 {
-        bail!("--retries 至少为 1");
+    if cli.poll_for.is_zero() {
+        bail!("--poll-for 不能为 0");
+    }
+    if cli.settle.is_zero() {
+        bail!("--settle 不能为 0");
     }
     Ok(())
 }
@@ -180,8 +196,9 @@ fn print_intro(cli: &Cli) {
         prompt_at = cli.prompt_at,
         probe_every = ?cli.probe_every,
         settle = ?cli.settle,
-        retries = cli.retries,
-        retry_gap = ?cli.retry_gap,
+        poll_interval = ?cli.poll_interval,
+        poll_for = ?cli.poll_for,
+        post_probe_timeout = ?POST_PROBE_TIMEOUT,
         "plan"
     );
     info!("1. 关好盖子、装好纸。");
@@ -450,36 +467,46 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
     sleep(cli.settle).await;
 
     let dev = connect(tm, &config).await?;
-    let reopen_elapsed = reset_started.elapsed();
+    let reopen_at = Instant::now();
+    let reopen_elapsed = reopen_at.duration_since(reset_started);
     info!(elapsed = ?reopen_elapsed, "device reopened");
 
     let mut answer = None;
-    for attempt in 1..=cli.retries {
+    let mut attempts = 0usize;
+    let poll_deadline = Instant::now() + cli.poll_for;
+    loop {
+        attempts += 1;
         let probe_at = Instant::now();
-        match read_status(&dev, config.recv_timeout).await {
+        let timeout = config.recv_timeout.min(POST_PROBE_TIMEOUT);
+        match read_status(&dev, timeout).await {
             Some(status) => {
                 answer = Some((status, probe_at));
                 info!(
-                    attempt,
+                    attempt = attempts,
                     ?status,
-                    elapsed = ?probe_at.elapsed(),
+                    after_reopen = ?probe_at.duration_since(reopen_at),
+                    round_trip = ?probe_at.elapsed(),
                     "printer answered after reset"
                 );
                 break;
             }
             None => {
-                warn!(
-                    attempt,
-                    timeout = ?config.recv_timeout,
-                    "status still silent"
-                );
-                if attempt < cli.retries {
-                    sleep(cli.retry_gap).await;
+                if attempts % 10 == 0 {
+                    warn!(
+                        attempt = attempts,
+                        after_reopen = ?probe_at.duration_since(reopen_at),
+                        "status still silent"
+                    );
                 }
             }
         }
+        if Instant::now() >= poll_deadline {
+            break;
+        }
+        sleep(cli.poll_interval).await;
     }
 
+    let answered_after_reopen = answer.map(|(_, at)| at.duration_since(reopen_at));
     let answer_elapsed = answer.map(|(status, at)| (status, at.duration_since(started)));
     let from_silence = match (first_silence, answer) {
         (Some(silence), Some((_, at))) => Some(at.duration_since(silence)),
@@ -493,7 +520,8 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
     info!(
         "RESULT mode={:?} rows={} sent_bytes={} sent_lines={} drop_elapsed={:?} \
          reopen_elapsed={:?} prompt={:?} first_silence={:?} first_error={:?} \
-         endpage={:?} stats_ok={:?} answer={:?} from_silence={:?} from_endpage={:?}",
+         endpage={:?} stats_ok={:?} attempts={} after_reopen={:?} answer={:?} \
+         from_silence={:?} from_endpage={:?}",
         cli.mode,
         page.lines,
         sent_bytes,
@@ -505,6 +533,8 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
         first_error.map(|(status, at)| (status, at.duration_since(started))),
         endpage_at.map(|at| at.duration_since(started)),
         stats_ok,
+        attempts,
+        answered_after_reopen,
         answer_elapsed,
         from_silence,
         from_endpage,

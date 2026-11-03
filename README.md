@@ -149,11 +149,17 @@ cargo run --bin probe_end_page -- --mode early-end-page \
 看到后打开盖子。结束后打印：
 
 ```text
-RESULT mode=early rows=1418 sent_bytes=... sent_lines=... drop_elapsed=... prompt=... first_silence=... first_error=... endpage=... stats_ok=... answer=... from_silence=... from_endpage=...
+RESULT mode=early rows=1418 sent_bytes=... sent_lines=... drop_elapsed=... reopen_elapsed=... prompt=... first_silence=... first_error=... endpage=... stats_ok=... attempts=... after_reopen=... answer=... from_silence=... from_endpage=...
 ```
 
-`--settle` 控制断开到重连的等待（默认 `1.3s`），`--retries` / `--retry-gap`
-控制重连后的探测。`--no-wait` 跳过开始前的回车确认。
+`--settle` 控制断开到重连的等待（默认 `1.3s`）。重连后程序每隔
+`--poll-interval`（默认 `100ms`）读一次 `0x70`，单次最多等 `200ms`，所以
+`after_reopen` 的分辨率约 300ms；`--poll-for`（默认 `20s`）之后仍然沉默就报
+`after_reopen=None`。`--no-wait` 跳过开始前的回车确认。
+
+判读：`after_reopen` 是“断开重连后多久恢复应答”的主指标，`from_silence`
+包含 settle，`from_endpage` 只在真的写了 `EndPage` 时才有。同一组参数交替跑
+3~5 次，比较中位数。
 
 `dzcli` 目前只有 `clap` 参数骨架，功能还没接。
 
