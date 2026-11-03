@@ -1143,7 +1143,7 @@ fn statistics_progress(
 mod tests {
     use std::{
         collections::VecDeque,
-        sync::{Arc, Mutex as StdMutex},
+        sync::{Arc, Mutex as StdMutex, atomic::AtomicBool, atomic::Ordering},
         thread,
         time::Duration,
     };
@@ -1252,6 +1252,65 @@ mod tests {
             if cmd_area.windows(2).any(|w| w == [0x1f, 0x73]) {
                 let stats = self.stats.lock().unwrap().pop_front().unwrap_or_default();
                 incoming.push_back(stats_frame(&stats));
+            }
+            Ok(WriteOutcome::Written)
+        }
+
+        fn read_chunk(&mut self, out: &mut Vec<u8>) -> Result<ReadStatus, TransportError> {
+            if let Some(frame) = self.incoming.lock().unwrap().pop_front() {
+                out.extend_from_slice(&frame);
+                Ok(ReadStatus::Data)
+            } else {
+                thread::sleep(Duration::from_millis(1));
+                Ok(ReadStatus::Timeout)
+            }
+        }
+    }
+
+    /// 正常应答，但收到 `0x25`（加热统计）之后开始沉默。
+    ///
+    /// `0x25` 是数据发完、`EndPage` 之前最后一条命令，正好复现抓包里“所有数据
+    /// 都灌完才开盖”的时序：在此之前每条查询都有回包，之后一条都没有。
+    #[derive(Clone, Default)]
+    struct MuteAfterHeat {
+        written: Arc<StdMutex<Vec<u8>>>,
+        incoming: Arc<StdMutex<VecDeque<Vec<u8>>>>,
+        muted: Arc<AtomicBool>,
+        /// 关掉之后这份 transport 永远应答，用来验证正常路径。
+        mute_after_heat: bool,
+    }
+
+    impl MuteAfterHeat {
+        fn muting() -> Self {
+            Self {
+                mute_after_heat: true,
+                ..Self::default()
+            }
+        }
+
+        fn written(&self) -> Vec<u8> {
+            self.written.lock().unwrap().clone()
+        }
+    }
+
+    impl Transport for MuteAfterHeat {
+        fn write(&mut self, cmd_area: &[u8]) -> Result<WriteOutcome, TransportError> {
+            self.written.lock().unwrap().extend_from_slice(cmd_area);
+            if self.mute_after_heat && cmd_area.windows(2).any(|w| w == [0x1f, 0x25]) {
+                self.muted.store(true, Ordering::SeqCst);
+            }
+            if self.muted.load(Ordering::SeqCst) {
+                return Ok(WriteOutcome::Written);
+            }
+            let mut incoming = self.incoming.lock().unwrap();
+            if cmd_area.windows(2).any(|w| w == [0x1f, 0x70]) {
+                incoming.push_back(status_frame(0x00));
+            }
+            if cmd_area.windows(2).any(|w| w == [0x1f, 0x77]) {
+                incoming.push_back(buffer_frame(50));
+            }
+            if cmd_area.windows(2).any(|w| w == [0x1f, 0x73]) {
+                incoming.push_back(stats_frame(&resp::statistics::Statistics::default()));
             }
             Ok(WriteOutcome::Written)
         }
@@ -1515,8 +1574,14 @@ mod tests {
 
     #[tokio::test]
     async fn print_bitmap_job_queries_budget_then_finishes() {
-        let (device, transport) =
-            device_with(&[status_frame(0x00), buffer_frame(50), status_frame(0x00)]);
+        let (device, transport) = device_with(&[
+            status_frame(0x00),
+            buffer_frame(50),
+            // 之后的 `EndPage` 前置检查、以及等打印完成的状态轮询。
+            status_frame(0x00),
+            status_frame(0x00),
+            status_frame(0x00),
+        ]);
 
         let mut bitmap = Bitmap::new(8, 1).unwrap();
         bitmap.line_mut(0).unwrap().set(0, true);
@@ -1539,8 +1604,13 @@ mod tests {
     /// 同一时刻只能有一个打印任务；第二个任务立即失败，不排队。
     #[tokio::test]
     async fn print_bitmap_job_rejects_a_second_job() {
-        let (device, _transport) =
-            device_with(&[status_frame(0x00), buffer_frame(50), status_frame(0x00)]);
+        let (device, _transport) = device_with(&[
+            status_frame(0x00),
+            buffer_frame(50),
+            status_frame(0x00),
+            status_frame(0x00),
+            status_frame(0x00),
+        ]);
 
         let mut bitmap = Bitmap::new(8, 1).unwrap();
         bitmap.line_mut(0).unwrap().set(0, true);
@@ -1712,6 +1782,111 @@ mod tests {
             status_queries >= 1,
             "expected a fresh 0x70 on the reopened transport, saw {status_queries}"
         );
+    }
+
+    /// 打印机在数据发完之后沉默时，绝不能把 `EndPage` 写进去。
+    ///
+    /// 真机上这一条会让固件持续不回包：reset、等 1.3 秒重连，20 秒读 50 次
+    /// `0x70` 都不回；不发 `EndPage` 的话，重连后第一次查询就能读到
+    /// `CoverOpened`。
+    #[tokio::test]
+    async fn end_page_is_not_sent_to_a_mute_printer() {
+        let transport = MuteAfterHeat::muting();
+        let config = DeviceConfig {
+            recv_timeout: Duration::from_millis(5),
+            print_verify: false,
+            ..test_config()
+        };
+        let tm = mytm::TaskManager::new();
+        let mut transports = vec![transport.clone(), transport.clone()].into_iter();
+        let device = Device::new_with_factory(
+            &tm,
+            move || {
+                transports
+                    .next()
+                    .map(|transport| Box::new(transport) as Box<dyn Transport>)
+                    .ok_or(TransportError::NotFound)
+            },
+            config,
+        );
+
+        let mut bitmap = Bitmap::new(64, 8).unwrap();
+        bitmap.line_mut(0).unwrap().set(0, true);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            device.print_bitmap_job(&bitmap, RleMode::Off),
+        )
+        .await
+        .expect("print job hung on a mute printer");
+        assert!(
+            matches!(
+                result,
+                Err(FrontendError::Stalled {
+                    ref cause,
+                    outcome: StallOutcome::Silent,
+                }) if matches!(**cause, FrontendError::PrinterSilent { .. })
+            ),
+            "{result:?}"
+        );
+
+        let written = transport.written();
+        assert!(
+            written.windows(2).any(|w| w == [0x1f, 0x25]),
+            "job never reached the heat command"
+        );
+        assert!(
+            !written.windows(2).any(|w| w == [0x1f, 0x28]),
+            "EndPage was written to a mute printer"
+        );
+    }
+
+    /// 打印机正常应答时必须照旧发 `EndPage`，而且是在确认它还活着之后。
+    #[tokio::test]
+    async fn end_page_is_sent_after_a_liveness_check() {
+        let transport = MuteAfterHeat::default();
+        // `mute_after_heat` 关着，这份 transport 在整页流程里一直应答。
+        let tm = mytm::TaskManager::new();
+        let mut transports = vec![transport.clone()].into_iter();
+        let device = Device::new_with_factory(
+            &tm,
+            move || {
+                transports
+                    .next()
+                    .map(|transport| Box::new(transport) as Box<dyn Transport>)
+                    .ok_or(TransportError::NotFound)
+            },
+            DeviceConfig {
+                recv_timeout: Duration::from_millis(5),
+                print_verify: false,
+                ..test_config()
+            },
+        );
+
+        let mut bitmap = Bitmap::new(64, 8).unwrap();
+        bitmap.line_mut(0).unwrap().set(0, true);
+        // 忽略等待打印完成的结果：这里只关心写出的命令顺序。
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            device.print_bitmap_job(&bitmap, RleMode::Off),
+        )
+        .await;
+
+        let written = transport.written();
+        let end_page = written
+            .windows(2)
+            .position(|w| w == [0x1f, 0x28])
+            .expect("EndPage was never written to a healthy printer");
+        let before = &written[..end_page];
+        let query = before
+            .windows(2)
+            .rposition(|w| w == [0x1f, 0x70])
+            .expect("no 0x70 before EndPage");
+        let heat = before
+            .windows(2)
+            .rposition(|w| w == [0x1f, 0x25])
+            .expect("no heat command before EndPage");
+        assert!(query > heat, "liveness check must run right before EndPage");
     }
 
     /// reset 之后的新连接如果开始回 `0x70`，要把真实状态报出来。
@@ -1958,6 +2133,9 @@ mod tests {
             status_frame(0x00),
             frame(0x7b, &[0x00]),
             buffer_frame(50),
+            // 之后的 `EndPage` 前置检查、以及等打印完成的状态轮询。
+            status_frame(0x00),
+            status_frame(0x00),
             status_frame(0x00),
         ]);
 

@@ -154,6 +154,12 @@ impl Device {
                 .send_page_commands(bm, &page, page_start, page_idx, options)
                 .await?;
 
+            // 沉默时绝不能发 `EndPage`：实测固件收到这一条之后就不再回包，
+            // 重置连接、等 1.3 秒重连都救不回来；不发则重连后第一次 `0x70`
+            // 就能读到 `CoverOpened`。所以先把“还在应答”作为发 `EndPage` 的
+            // 前置条件，沉默就让 job 作废。
+            self.confirm_printer_answers().await?;
+
             // 最后一页在 `EndPage` 之前抓一次 `0x73` 快照。之后如果一直看不到
             // `Printing` / `Rotating`，就用这个快照判断页面到底有没有打印。
             let baseline = if start >= bm.height() && self.config.print_verify {
@@ -192,11 +198,17 @@ impl Device {
         Ok(total)
     }
 
-    /// 在 `0x77` 已经超时的情况下确认一次 `0x70`。
+    /// 确认打印机还在应答，顺便把错误状态变成 [`FrontendError`]。
     ///
-    /// 如果状态也不回，说明打印机已经停止处理命令（开盖、缺纸或固件卡住）：
-    /// 返回沉默，由 [`Device::print_bitmap_job_with`] 重置连接并读回状态。
-    async fn check_after_budget_timeout(&self) -> Result<(), FrontendError> {
+    /// 两处在用：
+    ///
+    /// - `0x77` 已经超时之后，确认是不是整台机器都不回包了；
+    /// - 每页发 `EndPage` 之前。后者是硬性前置条件：实测打印机沉默之后再发
+    ///   `EndPage`，固件会持续不回包，重置连接也救不回来，只能等它自己缓过来
+    ///   （见 `print-status.md`）。沉默时宁可让 job 作废，也不能写这一条。
+    ///
+    /// 返回错误时调用方什么都不要再补发，收尾走 [`Device::abort_stalled`]。
+    async fn confirm_printer_answers(&self) -> Result<(), FrontendError> {
         match self.query_status(self.config.recv_timeout).await? {
             Some(status) if status.is_error() => {
                 error!(
@@ -259,7 +271,7 @@ impl Device {
         flow.push_commands(&self.assembler, &refs)?;
         // 开盖 / 缺纸时固件会直接停止回应所有查询。上一轮预算查询里 `0x77`
         // 已经超时、这次连 `0x70` 也不回时，说明不能继续灌数据了：退化模式
-        // 下每块之后都会调用 check_after_budget_timeout 复位连接。
+        // 下每块之后都会调用 confirm_printer_answers 确认它还在。
         let mut budget_timeout_seen = false;
 
         loop {
@@ -273,7 +285,7 @@ impl Device {
                     // 退化模式不会再回到 QueryBudget；每块之后补一次状态
                     // 查询，确认 `0x77` 超时不是固件已经被堵住的信号。
                     if budget_timeout_seen {
-                        self.check_after_budget_timeout().await?;
+                        self.confirm_printer_answers().await?;
                     }
                 }
                 ChunkDecision::QueryBudget => {
@@ -339,7 +351,7 @@ impl Device {
             Ok(None) => {
                 // 单次漏答不算异常，继续看这个 deadline 里 `0x77` 有没有回：
                 // 两条一起超时才说明打印机停止处理命令，退化模式会在每块
-                // 之后调用 check_after_budget_timeout。
+                // 之后调用 confirm_printer_answers。
                 debug!(
                     timeout = ?self.config.recv_timeout,
                     "status before budget timed out"
