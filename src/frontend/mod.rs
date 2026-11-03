@@ -230,12 +230,14 @@ pub struct DeviceConfig {
     pub print_verify: bool,
     /// 至少连续几次空闲才认为打印完成。
     pub print_idle_confirm: usize,
-    /// 连续多少次状态查询没有任何回应就判定打印机失联。
+    /// `EndPage` 之后连续多少次状态查询没有回应就判定打印失败。
     ///
-    /// 每次查询最长等 [`Self::recv_timeout`]，所以默认 `2` 次在 500ms 超时下
-    /// 约 1 秒、默认 3s 超时下约 6 秒。开盖 / 缺纸时固件可能直接停止回应，
-    /// 而它的 parser 还可能被前面没消费完的命令堵住；继续查 `0x70` 不能
-    /// 让 job 恢复，只会拖延作废时间。
+    /// 只用来容忍固件偶尔漏答：每次查询最长等 [`Self::recv_timeout`]，默认
+    /// `2` 次在 500ms 超时下约 1 秒、默认 3s 超时下约 6 秒。调大不会提高
+    /// 恢复概率——判定失联后会重置连接读一次真实状态，job 一律作废。
+    ///
+    /// 发送阶段不数这个值：那里靠 `0x77` 和 `0x70` 一起超时来判断，见
+    /// `frontend::print`。
     pub print_silent_limit: usize,
     /// 等待打印完成的总超时。
     pub print_done_timeout: Duration,
@@ -490,18 +492,20 @@ impl Device {
 
     /// 彻底重置设备连接。
     ///
-    /// worker 会丢弃当前 transport（释放接口、把内核驱动接回去），再用
-    /// 原来的选择器重新 open：新的 libusb context / DeviceHandle、claim 之前
-    /// 再做一次 reset。等价于重启进程后的第一次连接，不会复用旧 handle。
+    /// worker 会丢弃当前 transport（释放接口、把内核驱动接回去），让连接真正
+    /// 断开 `RESET_SETTLE`（2 秒）之后，再用原来的选择器重新 open：新的
+    /// libusb context / DeviceHandle、claim 之前再 `handle.reset()`。等价于
+    /// 重启进程后的第一次连接，不会复用旧 handle。
+    ///
+    /// 中间那段静默是必须的：DP27P 在开盖中止打印后会停止处理命令，立刻重连
+    /// 读不到状态，断开一会儿再连才行（真机实测 1s 足够，几百毫秒不行）。
     ///
     /// 只用于清掉卡住的 parser 和残留响应；当前 job 仍然作废。
     pub async fn reset(&self, timeout: Duration) -> Result<(), FrontendError> {
-        // 重新 open 内部有 1 秒稳定等待，前面还可能排着一个写任务。
-        const MIN_RESET_TIMEOUT: Duration = Duration::from_secs(3);
-        let settle = worker::reset_settle_delay().unwrap_or_default();
-        let timeout = timeout
-            .max(MIN_RESET_TIMEOUT)
-            .max(MIN_RESET_TIMEOUT + settle);
+        // worker 先静默 RESET_SETTLE，再 open（本身还有几百毫秒），前面还
+        // 可能排着一个写任务。
+        const MIN_RESET_TIMEOUT: Duration = Duration::from_secs(5);
+        let timeout = timeout.max(MIN_RESET_TIMEOUT);
 
         // 先把缓存里的旧响应丢掉，reset 之后只认新连接上的回包。
         // 必须在换 transport 之前清：换完之后打印机的第一个应答可能已经
@@ -530,6 +534,67 @@ impl Device {
         match tokio::time::timeout(timeout, sent).await {
             Ok(result) => result,
             Err(_) => Err(FrontendError::WorkerTimeout { timeout }),
+        }
+    }
+
+    /// 发一次 `0x70` 并等一条状态；没有回包时返回 `Ok(None)`。
+    ///
+    /// 每次调用都自己发请求：打印机沉默后，上一轮的请求可能已经超时或者跟着
+    /// 旧 transport 一起丢了，只 `recv` 等于等一个不存在的响应。
+    pub(crate) async fn query_status(
+        &self,
+        timeout: Duration,
+    ) -> Result<Option<PrinterStatus>, FrontendError> {
+        self.try_send_batch(&[&req::status::Status {}]).await?;
+        match self
+            .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, timeout)
+            .await
+        {
+            Ok(Some(status)) => Ok(Some(status.status)),
+            Ok(None) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// 打印机沉默后重置连接，并在新连接上读一次状态。
+    ///
+    /// 返回 `None` 表示 reset 失败，或者新连接上仍然没有回包。两种情况都只
+    /// 记录日志：调用方要的是“为什么打不了”，拿不到就只能报沉默。
+    async fn status_after_reset(&self) -> Option<PrinterStatus> {
+        if let Err(error) = self.reset(self.config.recv_timeout).await {
+            warn!(%error, "device reset failed");
+            return None;
+        }
+        match self.query_status(self.config.recv_timeout).await {
+            Ok(status) => status,
+            Err(error) => {
+                warn!(%error, "status query after reset failed");
+                None
+            }
+        }
+    }
+
+    /// 打印机沉默后的统一收尾：重置连接、读一次真实状态，返回要上报的错误。
+    ///
+    /// 能读到 `CoverOpened` / `NoPaper` 这类具体状态就报它，否则仍然报沉默。
+    /// 无论读到什么，当前 job 都已经作废：已经发出去的数据撤不回来。
+    pub(crate) async fn reset_after_silence(&self, polls: usize) -> FrontendError {
+        match self.status_after_reset().await {
+            Some(status) => {
+                warn!(
+                    status = ?status,
+                    reason = %status,
+                    "printer status after reset"
+                );
+                if status.is_error() {
+                    return FrontendError::PrinterStatus { status };
+                }
+            }
+            None => warn!("printer still silent after reset"),
+        }
+        FrontendError::PrinterSilent {
+            polls,
+            timeout: self.config.recv_timeout,
         }
     }
 
@@ -628,10 +693,9 @@ impl Device {
                         );
                     }
                     if silent_polls >= self.config.print_silent_limit {
-                        return Err(FrontendError::PrinterSilent {
-                            polls: silent_polls,
-                            timeout: self.config.recv_timeout,
-                        });
+                        // 固件不再回包：job 作废，但先重置连接把原因读回来，
+                        // 否则调用方只能看到一句“打印机沉默”。
+                        return Err(self.reset_after_silence(silent_polls).await);
                     }
                     continue;
                 }

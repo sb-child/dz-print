@@ -61,18 +61,6 @@ use tracing::{debug, error, info, warn};
 
 use super::{Device, FrontendError, RecvError};
 
-/// reset 之后等固件重新接受命令的总时限。
-///
-/// 开盖中止打印后，固件会有一段时间不接受命令（现场实测：中止后 5 秒内
-/// 完全没有回包，重新打开 USB 连接本身不能让它提前恢复）。重新 open 只能
-/// 清主机侧的 parser，所以这里给一个总时限反复探测 `0x70`。探测期间每秒打
-/// 一行 `info!`，方便对着真机日志判断固件到底多久恢复。
-#[cfg(not(test))]
-const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-/// 单元测试里用 5ms 的 `recv_timeout`，不能真的等 10 秒。
-#[cfg(test)]
-const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_millis(40);
-
 /// [`Device::print_bitmap_job_with`] 的页面参数。
 ///
 /// 默认是连续纸，和 [`Device::print_bitmap_job`] 的行为一致。
@@ -136,9 +124,9 @@ impl Device {
             if page_idx > 65534 {
                 return Err(FrontendError::TooManyPages { pages: page_no });
             }
-            // 失败时不要尝试补 `EndPage` 或继续查 `0x70`：固件的 parser 可能
-            // 已经被前面没消费完的命令堵住，这些命令只会排在队尾。job 作废，
-            // 交给调用方关闭 / 重开设备来清 USB 缓冲。
+            // 失败时不要尝试补 `EndPage` 或续打：固件已经不在处理命令，补发的
+            // 命令只会排在队尾。job 作废，收尾（重置连接、读回真实状态）由
+            // `reset_after_silence` 统一处理。
             let report = self
                 .send_page_commands(bm, &page, page_start, page_idx, options)
                 .await?;
@@ -183,129 +171,33 @@ impl Device {
 
     /// 在 `0x77` 已经超时的情况下确认一次 `0x70`。
     ///
-    /// 如果状态也不回，说明打印机已经停止处理命令（开盖、缺纸或固件卡住）。
-    /// 调用 [`Device::reset`] 重新打开连接，再在
-    /// [`POST_RESET_PROBE_TIMEOUT`] 内反复探测 `0x70`，尽量把真实状态读回来；
-    /// job 仍然作废。
+    /// 如果状态也不回，说明打印机已经停止处理命令（开盖、缺纸或固件卡住）：
+    /// 重置一次连接，把真实状态读回来，再把 job 作废。
     async fn check_after_budget_timeout(&self) -> Result<(), FrontendError> {
-        // 这里必须自己重新发一次 `0x70`。上一轮查询已经超时，或者刚刚
-        // reset 换了 transport；直接 recv 等于等一个不存在的响应。
-        self.try_send_batch(&[&req::status::Status {}]).await?;
-
-        match self
-            .recv_cmd_timeout::<resp::status::Status>(resp::status::CMD, self.config.recv_timeout)
-            .await
-        {
-            Ok(Some(status)) => {
-                if status.status.is_error() {
-                    error!(
-                        status = ?status.status,
-                        reason = %status.status,
-                        "printer reported an error during the print job"
-                    );
-                    return Err(FrontendError::PrinterStatus {
-                        status: status.status,
-                    });
-                }
-                Ok(())
+        match self.query_status(self.config.recv_timeout).await? {
+            Some(status) if status.is_error() => {
+                error!(
+                    status = ?status,
+                    reason = %status,
+                    "printer reported an error during the print job"
+                );
+                Err(FrontendError::PrinterStatus { status })
             }
-            Ok(None) => {
+            Some(_) => Ok(()),
+            None => {
                 warn!(
                     "status also timed out after buffer timeout; \
                      resetting the device connection"
                 );
-
-                // reset 会丢弃旧 transport，重新 open 出新的 libusb context /
-                // handle，相当于重启进程后的第一次连接。job 仍然作废，这里
-                // 只是把 parser 和残留响应清掉，并尽量读回真实状态。
-                if let Err(error) = self.reset(self.config.recv_timeout).await {
-                    warn!(%error, "device reset failed");
-                    return Err(FrontendError::PrinterSilent {
-                        polls: 1,
-                        timeout: self.config.recv_timeout,
-                    });
-                }
-
-                // reset 换成了新的 transport，旧请求已经跟着旧 transport 一起
-                // 丢掉；必须在新连接上重新发一遍 `0x70`。
-                //
-                // 重新 open 只清主机侧的 parser：固件那边还在收拾上一页
-                // （电机、缓冲区），多久能重新处理命令没有保证，所以这里在
-                // 有限时间内反复探测，第一次回包就停。
-                let started = tokio::time::Instant::now();
-                let deadline = started + POST_RESET_PROBE_TIMEOUT;
-                let mut attempts = 0usize;
-                let mut logged_secs = 0u64;
-                loop {
-                    attempts += 1;
-                    self.try_send_batch(&[&req::status::Status {}]).await?;
-                    match self
-                        .recv_cmd_timeout::<resp::status::Status>(
-                            resp::status::CMD,
-                            self.config.recv_timeout,
-                        )
-                        .await
-                    {
-                        Ok(Some(status)) => {
-                            info!(
-                                attempts,
-                                elapsed = ?started.elapsed(),
-                                status = ?status.status,
-                                reason = %status.status,
-                                "printer answered after reset"
-                            );
-                            if status.status.is_error() {
-                                return Err(FrontendError::PrinterStatus {
-                                    status: status.status,
-                                });
-                            }
-                            break;
-                        }
-                        Err(error @ RecvError::Closed) => return Err(error.into()),
-                        Ok(None) => {}
-                        Err(error) => debug!("status query after reset failed: {error}"),
-                    }
-
-                    // 每秒一行，真机上用来判断固件到底要多久才恢复。
-                    let elapsed = started.elapsed();
-                    if elapsed.as_secs() > logged_secs {
-                        logged_secs = elapsed.as_secs();
-                        info!(
-                            attempts,
-                            elapsed = ?elapsed,
-                            "still waiting for the printer after reset"
-                        );
-                    }
-
-                    if deadline <= tokio::time::Instant::now() {
-                        warn!(
-                            attempts,
-                            elapsed = ?elapsed,
-                            "printer still silent after reset"
-                        );
-                        break;
-                    }
-                }
-
-                // 即使读到了 Printable 也不能继续：已经发出去的数据无法
-                // 撤回，job 已经作废。
-                Err(FrontendError::PrinterSilent {
-                    polls: attempts,
-                    timeout: self.config.recv_timeout,
-                })
-            }
-            Err(error @ RecvError::Closed) => Err(error.into()),
-            Err(error) => {
-                debug!("status before budget failed: {error}");
-                Ok(())
+                Err(self.reset_after_silence(1).await)
             }
         }
     }
 
     /// 发完一页的 `StartPage` / 数据 / 加热统计，但不发 `EndPage`。
     ///
-    /// 失败时直接返回，调用方应当作废当前 job 并关闭 / 重开设备；不要在这
-    /// 之后继续查询状态，固件的 parser 可能已经被前面的数据堵住。
+    /// 失败时直接返回，job 作废；调用方不要再补 `EndPage` 或续打，收尾走
+    /// [`Device::reset_after_silence`]。
     async fn send_page_commands(
         &self,
         bm: &Bitmap,
@@ -342,12 +234,9 @@ impl Device {
             ..FlowConfig::default()
         });
         flow.push_commands(&self.assembler, &refs)?;
-        // 开盖 / 缺纸时固件可能直接停止回应所有查询。连续几次连 `0x70`
-        // 都没有回包时不要继续灌数据，否则要等整页发完、`EndPage` 之后
-        // 才会在 `wait_for_print_done` 里发现。
-        let mut silent_polls = 0usize;
-        // 上一轮预算查询里 `0x77` 已经超时。下一次连 `0x70` 也不回时，
-        // 说明固件很可能被堵住了，直接复位 USB，而不是继续轮询。
+        // 开盖 / 缺纸时固件会直接停止回应所有查询。上一轮预算查询里 `0x77`
+        // 已经超时、这次连 `0x70` 也不回时，说明不能继续灌数据了：退化模式
+        // 下每块之后都会调用 check_after_budget_timeout 复位连接。
         let mut budget_timeout_seen = false;
 
         loop {
@@ -384,7 +273,6 @@ impl Device {
                         .await
                     {
                         Ok(Some(status)) => {
-                            silent_polls = 0;
                             debug!(
                                 status = ?status.status,
                                 page_key = status.page_key,
@@ -393,39 +281,13 @@ impl Device {
                             Some(status)
                         }
                         Ok(None) => {
-                            silent_polls += 1;
-                            // 用户把 --silent-limit 调大时不要每 500ms 刷一行。
-                            if silent_polls == 1 {
-                                debug!(
-                                    limit = self.config.print_silent_limit,
-                                    timeout = ?self.config.recv_timeout,
-                                    "status before budget timed out"
-                                );
-                            } else if silent_polls == self.config.print_silent_limit
-                                || silent_polls % 10 == 0
-                            {
-                                warn!(
-                                    silent_polls,
-                                    limit = self.config.print_silent_limit,
-                                    timeout = ?self.config.recv_timeout,
-                                    "printer did not answer the status poll during print"
-                                );
-                            }
-
-                            // `0x77` 上一次已经超时，这次连 `0x70` 也没回：
-                            // 继续查只会排在堵住的 parser 后面。
-                            if budget_timeout_seen {
-                                self.check_after_budget_timeout().await?;
-                                // 后续探测拿到了状态，这次超时只是偶发。
-                                silent_polls = 0;
-                            }
-
-                            if silent_polls >= self.config.print_silent_limit {
-                                return Err(FrontendError::PrinterSilent {
-                                    polls: silent_polls,
-                                    timeout: self.config.recv_timeout,
-                                });
-                            }
+                            // 单次漏答不算异常，继续看这个 deadline 里 `0x77`
+                            // 有没有回：两条一起超时才说明打印机停止处理命令，
+                            // 退化模式会在每块之后调用 check_after_budget_timeout。
+                            debug!(
+                                timeout = ?self.config.recv_timeout,
+                                "status before budget timed out"
+                            );
                             None
                         }
                         Err(e @ RecvError::Closed) => return Err(e.into()),
@@ -458,7 +320,6 @@ impl Device {
                         .await
                     {
                         Ok(Some(bs)) => {
-                            silent_polls = 0;
                             budget_timeout_seen = false;
                             debug!(
                                 size = bs.size,

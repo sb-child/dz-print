@@ -100,21 +100,26 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
 **不会得到响应**。USB 写仍然会成功（中断 OUT 端点照常 ACK），所以不能靠
 「写失败」判断。主机只能靠连续超时判定：
 
-- `print_silent_limit` 默认 `2`；`--recv-timeout 500ms` 时约 1 秒，
-  默认 3 秒时约 6 秒；
+- 发送阶段不数「连续几次漏答」：`0x77` 已经超时、下一轮 `0x70` 也不回，
+  就认为固件不再处理命令；
+- `wait_for_print_done` 阶段（`EndPage` 之后）用 `print_silent_limit`，
+  默认 `2` 次，`--recv-timeout 500ms` 时约 1 秒、默认 3 秒时约 6 秒。这个
+  值只用来容忍偶尔漏答，调大不会提高恢复概率；
 - 判定沉默后当前 job 直接作废，不要补 `EndPage`、也不要重试当前页；
-- 如果 `0x77` 已经超时、下一轮 `0x70` 也不回，发送循环调用一次
-  [`Device::reset`](src/frontend/mod.rs)；
-- `Device::reset` 的语义是**彻底重置连接**：worker 丢弃当前 transport
-  （释放接口、把内核驱动接回去），再用原来的选择器重新 open 一个新的
-  libusb context / DeviceHandle，claim 之前做 `handle.reset()`。它不等价于
-  在旧 handle 上调用 `libusb_reset_device()`；
-- reset 只清主机侧状态。固件那边在开盖中止后的一段时间里完全不处理命令
-  （现场实测：中止后 5 秒内没有任何回包，十几秒后才恢复），所以 reset 之后
-  在 30 秒内反复探测 `0x70`，每秒打一行 `still waiting for the printer after
-  reset`：读到 `CoverOpened` / `NoPaper` 就报具体状态，一直不回才保留
-  `PrinterSilent`。日志里的 `printer answered after reset` 会带上尝试次数和
-  耗时；
-- 探测到 `Printable` 也不要继续当前 job：已经发出去的数据无法撤回；
+- 收尾统一是 [`Device::reset`](src/frontend/mod.rs) + 读一次 `0x70`
+  （`Device::reset_after_silence`）：能读到 `CoverOpened` / `NoPaper` 就
+  报具体状态，读不到才保留 `PrinterSilent`；
+- `Device::reset` 的语义是**彻底重置连接**，关键在中间那段静默：
+
+  1. worker 丢弃当前 transport（释放接口、把内核驱动接回去），连接真正断开；
+  2. **静默 [`RESET_SETTLE`](src/frontend/worker.rs)（2 秒）**；
+  3. 用原来的选择器重新 open：新的 libusb context / DeviceHandle，claim
+     之前做一次 `handle.reset()`。
+
+  第 2 步是必须的。真机实测：开盖中止后立刻重连（几百毫秒），新连接上连续
+  30 秒、55 次 `0x70` 全部没有回包；断开 1~2 秒再重连，第一次查询就能读到
+  `CoverOpened`。所以「重新 open」本身不够，固件需要一段没有主机在跟它说话
+  的时间。它也不等价于在旧 handle 上调用 `libusb_reset_device()`；
+- 读到 `Printable` 也不要继续当前 job：已经发出去的数据无法撤回；
 - `dzserver` 失败后走 `drop_device()` + 下一次任务重连，重连本身也是重新
   open；`wait_ready` 有 `print_done_timeout` 上限，不会无限堵住队列。

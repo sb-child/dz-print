@@ -105,18 +105,17 @@ pub(crate) struct OutJob {
 /// 托管的 worker 句柄。
 pub(crate) type WorkerHandle = TaskHandle<WorkerProgress, (), WorkerError>;
 
-/// 诊断用：`DZ_RESET_SETTLE_MS` 让旧连接关闭后先静默一会儿再重新 open。
+/// 丢掉旧 transport 之后、重新 open 之前的静默时间。
 ///
-/// 真机现象：开盖中止打印后立刻重新 open 读不到状态，但新进程过几秒再连就
-/// 能读到。用这个变量扫一下到底需要多久，扫完就删掉。
-pub(crate) fn reset_settle_delay() -> Option<Duration> {
-    let raw = std::env::var("DZ_RESET_SETTLE_MS").ok()?;
-    raw.trim()
-        .parse::<u64>()
-        .ok()
-        .filter(|ms| *ms > 0)
-        .map(Duration::from_millis)
-}
+/// DP27P 在开盖中止打印后会停止处理命令，重新 open 本身不能让它恢复，必须
+/// 让连接真正断开一会儿。真机实测：断开 2s / 1s 后重连，第一次 `0x70` 就能
+/// 读到 `CoverOpened`；几百毫秒就重连的话，连上以后 30s 也不回包。这里取 2s
+/// 留余量。
+#[cfg(not(test))]
+pub(crate) const RESET_SETTLE: Duration = Duration::from_secs(2);
+/// 单元测试用假 transport，没有固件要等。
+#[cfg(test)]
+pub(crate) const RESET_SETTLE: Duration = Duration::ZERO;
 
 /// 用 USB transport 打开设备并启动 worker。
 ///
@@ -198,14 +197,12 @@ fn run(
                         }
                         OutJobKind::Reset => {
                             // 先 drop 旧 transport：release interface / attach
-                            // kernel driver，再重新 open 一个新的 context 和
-                            // handle。和重启进程后的第一次 open 尽量一致。
+                            // kernel driver，让连接真正断开。等固件把上一页
+                            // 收尾之后再重新 open，否则新连接上它也不回包。
                             debug!("resetting device transport");
                             drop(transport.take());
-                            if let Some(delay) = reset_settle_delay() {
-                                info!(?delay, "waiting before reopening the device");
-                                std::thread::sleep(delay);
-                            }
+                            info!(settle = ?RESET_SETTLE, "waiting before reopening the device");
+                            std::thread::sleep(RESET_SETTLE);
                             match factory() {
                                 Ok(new_transport) => {
                                     transport = Some(new_transport);

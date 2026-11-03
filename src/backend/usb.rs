@@ -33,8 +33,7 @@
 //! 大多数场景用 [`crate::frontend::Device`] 即可，它会把 `UsbTransport` 放进
 //! worker 线程并处理收发队列。
 //!
-//! 退出时 `Drop` 会释放接口并把手动 detach 过的内核驱动接回去；
-//! [`Transport::reset`] 之后会重新 claim 一次。
+//! 退出时 `Drop` 会释放接口并把手动 detach 过的内核驱动接回去。
 
 use crate::{
     backend::usb_frame,

@@ -166,7 +166,7 @@ struct Cli {
     #[arg(long, default_value_t = 2)]
     idle_confirm: usize,
 
-    /// 连续几次状态查询没有响应就判定打印机失联
+    /// `EndPage` 之后连续几次状态查询没有响应就判定打印失败
     #[arg(long, default_value_t = 2)]
     silent_limit: usize,
 
