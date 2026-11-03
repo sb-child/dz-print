@@ -11,9 +11,11 @@
 //! - `DEVICE`：USB 设备名（`型号-序列号`），省略时取第一台德佟设备。
 //! - `--phase`：要执行的测试阶段，可重复或用逗号分隔，默认 `device-info`。
 //! - `--rle`：打印测试使用的 RLE 模式。
-//! - `--rows`：打印测试图的行数。
+//! - `--rows`：`print` 阶段测试图的行数。
+//! - `--short-rows` / `--short-pages`：`short-print` 阶段每页行数和页数。
+//! - `--poll-ms` / `--grace-ms`：等待打印完成时的 `0x70` 轮询间隔和启动宽限期。
 //!
-//! `--phase print` 会真的驱动打印头并走纸。
+//! `--phase print` 和 `--phase short-print` 会真的驱动打印头并走纸。
 
 use std::time::Duration;
 
@@ -21,7 +23,7 @@ use anyhow::{Result, bail};
 use clap::{Parser, ValueEnum};
 use mytm::TaskManager;
 use pretty_hex::simple_hex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use dz_print::{
     backend::usb::UsbSelector,
@@ -74,6 +76,9 @@ enum Phase {
     /// 打印测试页（会真的走纸）
     #[value(name = "print")]
     Print,
+    /// 连续打印短页面并对账统计（复现 pogo pin 一工作就断开；会真的走纸）
+    #[value(name = "short-print")]
+    ShortPrint,
 }
 
 /// 打印测试使用的 RLE 模式。
@@ -127,9 +132,49 @@ struct Cli {
     #[arg(long, value_enum, default_value = "off")]
     rle: RleArg,
 
-    /// 打印测试图的行数（超过 16383 会自动拆页）
+    /// 打印测试图的行数（`print` 阶段；超过 16383 会自动拆页）
     #[arg(long, default_value_t = 64 * 50)]
     rows: usize,
+
+    /// `short-print` 每页的行数
+    #[arg(long, default_value_t = 32)]
+    short_rows: usize,
+
+    /// `short-print` 连续打印的页数
+    #[arg(long, default_value_t = 3)]
+    short_pages: usize,
+
+    /// 等待打印完成时轮询 `0x70` 的间隔（毫秒）
+    ///
+    /// 短页面想抓到转瞬即逝的 `Printing` / 错误状态时调到 1~5。
+    #[arg(long, default_value_t = 100)]
+    poll_ms: u64,
+
+    /// `EndPage` 后至少等多久才接受空闲（毫秒）
+    #[arg(long, default_value_t = 1000)]
+    grace_ms: u64,
+
+    /// 连续几次空闲才认为打印完成
+    #[arg(long, default_value_t = 2)]
+    idle_confirm: usize,
+
+    /// 连续几次状态查询没有响应就判定打印机失联
+    #[arg(long, default_value_t = 5)]
+    silent_limit: usize,
+
+    /// 等待打印完成的总超时（秒）
+    #[arg(long, default_value_t = 600)]
+    print_timeout: u64,
+
+    /// 单条响应的等待超时（毫秒）
+    #[arg(long, default_value_t = 3000)]
+    recv_timeout_ms: u64,
+
+    /// `short-print` 在打印返回后再等多久读 `0x73`（毫秒）
+    ///
+    /// 给固件留出更新累计计数器的时间，避免把「还没记上」误判成「没打印」。
+    #[arg(long, default_value_t = 500)]
+    settle_ms: u64,
 }
 
 /// 无参数读取命令：`1f <cmd>`。
@@ -190,6 +235,12 @@ async fn main() -> anyhow::Result<()> {
         &tm,
         DeviceConfig {
             selector,
+            recv_timeout: Duration::from_millis(cli.recv_timeout_ms.max(1)),
+            print_poll: Duration::from_millis(cli.poll_ms.max(1)),
+            print_start_grace: Duration::from_millis(cli.grace_ms),
+            print_idle_confirm: cli.idle_confirm.max(1),
+            print_silent_limit: cli.silent_limit.max(1),
+            print_done_timeout: Duration::from_secs(cli.print_timeout.max(1)),
             ..Default::default()
         },
     );
@@ -229,6 +280,16 @@ async fn run_phase(dev: &Device, phase: Phase, cli: &Cli) -> Result<()> {
         Phase::RawProbes => phase_raw_probes(dev).await,
         Phase::PushListen => phase_push_listen(dev).await,
         Phase::Print => phase_print(dev, cli.rle.into(), cli.rows).await,
+        Phase::ShortPrint => {
+            phase_short_print(
+                dev,
+                cli.rle.into(),
+                cli.short_rows,
+                cli.short_pages,
+                Duration::from_millis(cli.settle_ms),
+            )
+            .await
+        }
     }
 }
 
@@ -265,6 +326,199 @@ async fn phase_print(dev: &Device, rle: RleMode, rows: usize) -> anyhow::Result<
         "print finished"
     );
     Ok(())
+}
+
+/// 连续打印短页面并在每页结束后对账，用来复现「pogo pin 一工作就断开」。
+///
+/// 关键点是页面要短：数据发完、`EndPage` 之后的空窗期很短，`wait_for_print_done`
+/// 可能在固件真正启动打印前后就直接看到空闲并返回成功。这个阶段会把
+/// `--poll-ms` 压到 1~5ms 时观察到的最终结果、`0x73` 统计增量和队列里残留的
+/// 响应帧都打出来，方便判断固件到底有没有报错。
+///
+/// **会真的走纸。**
+async fn phase_short_print(
+    dev: &Device,
+    rle: RleMode,
+    rows: usize,
+    pages: usize,
+    settle: Duration,
+) -> anyhow::Result<()> {
+    let rows = rows.max(1);
+    let pages = pages.max(1);
+    info!("[9] 短页面打印 + 统计对账（会真的走纸，rle = {rle:?}, rows = {rows}, pages = {pages}）");
+
+    let stale = drain_frames(dev).await;
+    if !stale.is_empty() {
+        debug!(frames = stale.len(), "清掉开始前队列里的残留帧");
+    }
+    let mut prev = read_statistics(dev).await?;
+    info!(
+        work_lines = prev.work_lines,
+        print_lines = prev.print_lines,
+        null_lines = prev.null_lines,
+        print_pages = prev.print_pages,
+        "0x73 before"
+    );
+
+    let mut suspicious = 0usize;
+    let mut errored = 0usize;
+
+    for page in 1..=pages {
+        info!(page, pages, "短页面开始");
+        let bm = test_bitmap(rows);
+        let started = std::time::Instant::now();
+        let outcome = dev.print_bitmap_job(&bm, rle).await;
+        let elapsed = started.elapsed();
+
+        // 给固件更新 0x73 的时间，同时让打印期间积压的推送都进队列。
+        if !settle.is_zero() {
+            tokio::time::sleep(settle).await;
+        }
+        let leftovers = drain_frames(dev).await;
+        log_leftover_frames(dev, page, &leftovers);
+
+        match &outcome {
+            Ok(report) => info!(
+                page,
+                elapsed = ?elapsed,
+                chunks = report.chunks,
+                bytes = report.bytes,
+                budget_queries = report.budget_queries,
+                degraded = report.degraded,
+                "print_bitmap_job 返回成功"
+            ),
+            Err(error) => {
+                errored += 1;
+                warn!(page, elapsed = ?elapsed, %error, "print_bitmap_job 返回错误");
+            }
+        }
+
+        let after = match read_statistics(dev).await {
+            Ok(stats) => stats,
+            Err(error) => {
+                warn!(page, %error, "读取 0x73 失败，设备可能已经掉线");
+                return Err(error);
+            }
+        };
+        let reset = after.work_lines < prev.work_lines
+            || after.print_lines < prev.print_lines
+            || after.null_lines < prev.null_lines
+            || after.print_pages < prev.print_pages;
+        let work = after.work_lines.saturating_sub(prev.work_lines);
+        let printed = after.print_lines.saturating_sub(prev.print_lines);
+        let null = after.null_lines.saturating_sub(prev.null_lines);
+        let printed_pages = after.print_pages.saturating_sub(prev.print_pages);
+
+        info!(
+            page,
+            work_lines = work,
+            print_lines = printed,
+            null_lines = null,
+            print_pages = printed_pages,
+            reset,
+            "0x73 delta"
+        );
+
+        if reset {
+            warn!(
+                page,
+                "0x73 计数器变小了，固件可能重启过；这一页的增量不可信"
+            );
+        } else if work > 0 && printed == 0 {
+            suspicious += 1;
+            warn!(
+                page,
+                work_lines = work,
+                "电机走了但没有打印行：打印头 / pogo pin 很可能在开始打印时断开"
+            );
+        } else if work == 0 && printed == 0 {
+            suspicious += 1;
+            warn!(page, "走纸和打印行都没有增加：这一页实际没有打印");
+        } else if printed < rows as u32 {
+            warn!(
+                page,
+                printed, rows, "打印行数少于发送行数，这一页可能只打了一部分"
+            );
+        } else {
+            info!(page, "这一页的统计有增量（0x73 只作参考，最终仍要看纸面）");
+        }
+
+        prev = after;
+    }
+
+    if errored > 0 {
+        info!(
+            errored,
+            "有页面返回错误；如果纸面是空白的，错误本身也可作为检测信号"
+        );
+    }
+    if suspicious > 0 {
+        bail!(
+            "{pages} 页里有 {suspicious} 页发出后没有打印行增量；\
+             如果纸面是空白的，说明打印头 / pogo pin 在开始打印时断开了"
+        );
+    }
+    Ok(())
+}
+
+/// 读一次 `0x73` 打印统计。
+async fn read_statistics(dev: &Device) -> anyhow::Result<resp::statistics::Statistics> {
+    dev.try_send_batch(&[&req::statistics::Statistics {}])
+        .await?;
+    match dev
+        .recv_cmd_timeout::<resp::statistics::Statistics>(resp::statistics::CMD, PROBE_TIMEOUT)
+        .await?
+    {
+        Some(stats) => Ok(stats),
+        None => bail!("0x73 统计查询超时"),
+    }
+}
+
+/// 把接收队列里剩余的帧全部取出来。
+///
+/// 打印期间 `wait_for_print_done` 只消费 `0x70`，`0x7b` 之类的推送会留在队列里；
+/// 打印刚结束时也可能还有没被读走的状态帧。
+async fn drain_frames(dev: &Device) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    while let Some(raw) = dev.try_pop_raw().await {
+        frames.push(raw);
+    }
+    frames
+}
+
+fn log_leftover_frames(dev: &Device, page: usize, frames: &[Vec<u8>]) {
+    if frames.is_empty() {
+        debug!(page, "打印结束后没有残留帧");
+        return;
+    }
+    for raw in frames {
+        let cmd = raw.get(1).copied().unwrap_or(0x00);
+        if cmd == resp::status::CMD {
+            match resp::status::Status::parse(raw, dev.model_version()) {
+                Ok(status) => warn!(
+                    page,
+                    status = ?status.status,
+                    reason = %status.status,
+                    page_key = status.page_key,
+                    raw = %simple_hex(raw),
+                    "打印结束后队列里残留 0x70 状态帧"
+                ),
+                Err(error) => warn!(
+                    page,
+                    %error,
+                    raw = %simple_hex(raw),
+                    "打印结束后队列里残留无法解析的 0x70 帧"
+                ),
+            }
+        } else {
+            info!(
+                page,
+                cmd = format!("{cmd:#04x}"),
+                raw = %simple_hex(raw),
+                "打印结束后队列里残留响应帧"
+            );
+        }
+    }
 }
 
 /// `0x71` 单条查询，顺带验证「解析失败不消费缓冲区」。
@@ -620,6 +874,15 @@ mod tests {
         assert_eq!(cli.phase, vec![Phase::DeviceInfo]);
         assert!(matches!(cli.rle, RleArg::Off));
         assert_eq!(cli.rows, 64 * 50);
+        assert_eq!(cli.short_rows, 32);
+        assert_eq!(cli.short_pages, 3);
+        assert_eq!(cli.poll_ms, 100);
+        assert_eq!(cli.grace_ms, 1000);
+        assert_eq!(cli.idle_confirm, 2);
+        assert_eq!(cli.silent_limit, 5);
+        assert_eq!(cli.print_timeout, 600);
+        assert_eq!(cli.recv_timeout_ms, 3000);
+        assert_eq!(cli.settle_ms, 500);
     }
 
     #[test]
@@ -640,5 +903,44 @@ mod tests {
         assert_eq!(cli.phase, vec![Phase::Print, Phase::Settings]);
         assert!(matches!(cli.rle, RleArg::Bits5x));
         assert_eq!(cli.rows, 20_000);
+    }
+
+    #[test]
+    fn cli_parses_short_print_options() {
+        let cli = Cli::try_parse_from([
+            "test_usb",
+            "--phase",
+            "short-print",
+            "--short-rows",
+            "16",
+            "--short-pages",
+            "5",
+            "--poll-ms",
+            "1",
+            "--grace-ms",
+            "250",
+            "--idle-confirm",
+            "3",
+            "--silent-limit",
+            "2",
+            "--print-timeout",
+            "30",
+            "--recv-timeout-ms",
+            "500",
+            "--settle-ms",
+            "100",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.phase, vec![Phase::ShortPrint]);
+        assert_eq!(cli.short_rows, 16);
+        assert_eq!(cli.short_pages, 5);
+        assert_eq!(cli.poll_ms, 1);
+        assert_eq!(cli.grace_ms, 250);
+        assert_eq!(cli.idle_confirm, 3);
+        assert_eq!(cli.silent_limit, 2);
+        assert_eq!(cli.print_timeout, 30);
+        assert_eq!(cli.recv_timeout_ms, 500);
+        assert_eq!(cli.settle_ms, 100);
     }
 }

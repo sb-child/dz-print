@@ -8,6 +8,9 @@ use crate::command::{
     resp_template::statistics::StatisticsV2V1V0Tl,
 };
 
+/// 命令字节（`0x73`）。
+pub const CMD: u8 = 0x73;
+
 /// 打印统计信息。
 ///
 /// 四个计数器是累计值，会跨页累加；对账时要取前后两次的差值。

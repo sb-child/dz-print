@@ -85,7 +85,18 @@ cargo run --bin dzserver -- /var/lib/dzserver 127.0.0.1:50051 \
 cargo run --bin test_usb
 cargo run --bin test_usb -- DP27P-Y4094C023 --phase device-info
 cargo run --bin test_usb -- --phase print --rle bits5x --rows 20000
+
+# 复现短页面打完前后掉打印头：连续打 3 张 32 行的图，
+# 把 0x70 轮询压到 1ms，并用 0x73 统计对账
+cargo run --bin test_usb -- --phase short-print \
+  --short-rows 32 --short-pages 3 --poll-ms 1 --grace-ms 2000 --print-timeout 20
 ```
+
+`short-print` 会逐页记录 `print_bitmap_job` 的返回值、`0x73` 统计增量和打印结束后
+队列里的残留帧。`--poll-ms` / `--grace-ms` / `--idle-confirm` 直接对应
+`DeviceConfig` 里等待打印完成的参数；短页面想抓到转瞬即逝的状态时把 `--poll-ms`
+调到 1~5ms。注意 `0x73` 计数器在 DP27P 上并不完全可靠，日志里的结论只能当参考，
+最终仍要看纸面。
 
 `dzcli` 目前只有 `clap` 参数骨架，功能还没接。
 
