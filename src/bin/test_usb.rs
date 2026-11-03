@@ -369,6 +369,7 @@ async fn phase_short_print(
         let started = std::time::Instant::now();
         let outcome = dev.print_bitmap_job(&bm, rle).await;
         let elapsed = started.elapsed();
+        let detected = outcome.is_err();
 
         // 给固件更新 0x73 的时间，同时让打印期间积压的推送都进队列。
         if !settle.is_zero() {
@@ -424,16 +425,22 @@ async fn phase_short_print(
                 page,
                 "0x73 计数器变小了，固件可能重启过；这一页的增量不可信"
             );
-        } else if work > 0 && printed == 0 {
-            suspicious += 1;
-            warn!(
+        } else if detected {
+            info!(
                 page,
-                work_lines = work,
-                "电机走了但没有打印行：打印头 / pogo pin 很可能在开始打印时断开"
+                "错误已经在打印过程中被 0x70 检测到，这一页作废（不是漏检）"
             );
-        } else if work == 0 && printed == 0 {
+        } else if printed == 0 && printed_pages == 0 {
             suspicious += 1;
-            warn!(page, "走纸和打印行都没有增加：这一页实际没有打印");
+            if work > 0 {
+                warn!(
+                    page,
+                    work_lines = work,
+                    "电机走了但没有打印行：打印头 / pogo pin 很可能在开始打印时断开"
+                );
+            } else {
+                warn!(page, "走纸和打印行都没有增加：这一页实际没有打印");
+            }
         } else if printed < rows as u32 {
             warn!(
                 page,
@@ -446,16 +453,22 @@ async fn phase_short_print(
         prev = after;
     }
 
-    if errored > 0 {
-        info!(
-            errored,
-            "有页面返回错误；如果纸面是空白的，错误本身也可作为检测信号"
-        );
-    }
+    info!(
+        pages,
+        errored,
+        suspicious,
+        "打印对账结束：errored = 固件报错且已被检测到，suspicious = 返回成功但统计没有打印"
+    );
     if suspicious > 0 {
         bail!(
-            "{pages} 页里有 {suspicious} 页发出后没有打印行增量；\
-             如果纸面是空白的，说明打印头 / pogo pin 在开始打印时断开了"
+            "{pages} 页里有 {suspicious} 页 print_bitmap_job 返回成功、但 0x73 没有打印行增量；\
+             如果纸面是空白的，说明打印头 / pogo pin 在开始打印时断开了（属于漏检）"
+        );
+    }
+    if errored > 0 {
+        bail!(
+            "{pages} 页里有 {errored} 页返回错误，且错误已经在 0x70 轮询中被检测到；\
+             如果纸面不完整，说明这次复现的是「固件有报错」的情况，不是漏检"
         );
     }
     Ok(())
