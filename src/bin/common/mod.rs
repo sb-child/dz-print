@@ -190,7 +190,7 @@ pub struct PrintArgs {
     /// 单条响应的等待超时，例如 `3s` / `500ms`
     ///
     /// 固件卡住时 `0x70` 不会回包，这个值决定每次状态查询等多久；
-    /// 连续 5 次没有任何回应就会判定打印机失联并报错退出。
+    /// 连续 `--silent-limit` 次没有任何回应就会判定打印机失联并报错退出。
     #[arg(
         long,
         value_name = "DURATION",
@@ -198,6 +198,13 @@ pub struct PrintArgs {
         default_value = DEFAULT_RECV_TIMEOUT
     )]
     pub recv_timeout: Duration,
+
+    /// 连续多少次状态查询没有响应就判定打印机失联
+    ///
+    /// 开盖 / 缺纸时固件可能直接停止回应。想确认“合盖后能不能恢复”，
+    /// 可以临时调大，例如 `--silent-limit 60`。
+    #[arg(long, value_name = "COUNT", default_value_t = 5)]
+    pub silent_limit: usize,
 }
 
 /// 真正需要发给打印机的设置；用来判断这一页要不要重发。
@@ -263,6 +270,7 @@ impl PrintArgs {
             selector: self.selector(),
             // 0 会让每次查询立刻超时，没有意义；允许毫秒级，但不接受 0。
             recv_timeout: self.recv_timeout.max(Duration::from_millis(1)),
+            print_silent_limit: self.silent_limit.max(1),
             print_done_timeout: self.print_timeout.max(Duration::from_millis(1)),
             ..Default::default()
         }
@@ -423,6 +431,7 @@ mod tests {
         assert_eq!(cli.print.rle, RleArg::Off);
         assert_eq!(cli.print.print_timeout, Duration::from_secs(600));
         assert_eq!(cli.print.recv_timeout, Duration::from_secs(3));
+        assert_eq!(cli.print.silent_limit, 5);
     }
 
     #[test]
