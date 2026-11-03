@@ -17,7 +17,7 @@ use dz_print::{
     frontend::{Device, DeviceConfig, FrontendError, RecvError},
 };
 use mytm::TaskManager;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -69,7 +69,7 @@ impl PrinterWorker {
     ) -> anyhow::Result<()> {
         // 渲染 worker 要等打印头点数才能开始，所以先连一次并发布 profile；
         // 打印机不在线时这里会一直重试，job 留在入口队列里。
-        if !self.ensure_device(&shutdown, &shutdown).await {
+        if !self.ensure_device(&shutdown, &shutdown, None).await {
             self.drop_device().await;
             return Ok(());
         }
@@ -99,9 +99,29 @@ impl PrinterWorker {
         }
 
         self.store.set_state(id, JobState::PrintPending);
-        if !self.wait_ready(&job.cancel, token).await {
-            self.store.finish_cancelled(id);
-            return;
+        match self.wait_ready(&job.cancel, token).await {
+            ReadyState::Ready => {}
+            ReadyState::Cancelled => {
+                self.store.finish_cancelled(id);
+                return;
+            }
+            ReadyState::TimedOut => {
+                // 打印机长时间回不到可打印状态时，不要让后面的 job 一直
+                // 排在它后面。作废当前 job，丢掉设备，下一个 job 重新连接。
+                warn!(
+                    job = %job_label(id),
+                    timeout = ?self.config.print_done_timeout,
+                    "printer did not become ready; failing this job"
+                );
+                self.store.finish(
+                    id,
+                    JobState::PrintCompleted,
+                    Some(PrinterStatus::EnvNotReady),
+                    false,
+                );
+                self.drop_device().await;
+                return;
+            }
         }
 
         self.store.set_state(id, JobState::Printing);
@@ -137,20 +157,33 @@ impl PrinterWorker {
         }
     }
 
-    /// 等打印机回到可打印状态；`false` 表示 job 或 server 被取消。
+    /// 等打印机回到可打印状态。
+    ///
+    /// 最多等 [`DeviceConfig::print_done_timeout`](dz_print::frontend::DeviceConfig::print_done_timeout)；
+    /// 超时后当前 job 失败，避免打印机一直不可用时把打印队列堵死。
     async fn wait_ready(
         &mut self,
         job_cancel: &CancellationToken,
         token: &CancellationToken,
-    ) -> bool {
+    ) -> ReadyState {
+        let deadline = Instant::now() + self.config.print_done_timeout;
         let mut logged_error: Option<PrinterStatus> = None;
 
         loop {
             if job_cancel.is_cancelled() || token.is_cancelled() {
-                return false;
+                return ReadyState::Cancelled;
             }
-            if !self.ensure_device(job_cancel, token).await {
-                return false;
+            if Instant::now() >= deadline {
+                return ReadyState::TimedOut;
+            }
+            if !self.ensure_device(job_cancel, token, Some(deadline)).await {
+                if job_cancel.is_cancelled() || token.is_cancelled() {
+                    return ReadyState::Cancelled;
+                }
+                if Instant::now() >= deadline {
+                    return ReadyState::TimedOut;
+                }
+                return ReadyState::Cancelled;
             }
 
             let status = {
@@ -163,7 +196,7 @@ impl PrinterWorker {
                     if logged_error.take().is_some() {
                         info!(?status, "printer ready");
                     }
-                    return true;
+                    return ReadyState::Ready;
                 }
                 Ok(status) if status.is_error() => {
                     if logged_error != Some(status) {
@@ -178,19 +211,23 @@ impl PrinterWorker {
                 }
             }
 
+            let remaining = deadline.saturating_duration_since(Instant::now());
             tokio::select! {
-                _ = job_cancel.cancelled() => return false,
-                _ = token.cancelled() => return false,
-                _ = tokio::time::sleep(STATUS_POLL) => {}
+                _ = job_cancel.cancelled() => return ReadyState::Cancelled,
+                _ = token.cancelled() => return ReadyState::Cancelled,
+                _ = tokio::time::sleep(STATUS_POLL.min(remaining)) => {}
             }
         }
     }
 
     /// 没有设备就连接并查询打印头点数；失败会退避重试。
+    ///
+    /// `deadline` 为 `Some` 时，超时后停止重试并返回 `false`。
     async fn ensure_device(
         &mut self,
         job_cancel: &CancellationToken,
         token: &CancellationToken,
+        deadline: Option<Instant>,
     ) -> bool {
         if self.device.is_some() {
             return true;
@@ -200,6 +237,13 @@ impl PrinterWorker {
             if job_cancel.is_cancelled() || token.is_cancelled() {
                 return false;
             }
+            let remaining = deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or(CONNECT_TIMEOUT);
+            if remaining.is_zero() {
+                return false;
+            }
+            let connect_timeout = CONNECT_TIMEOUT.min(remaining);
 
             let dev = Device::new(&self.tm, self.config.clone());
             let ready = tokio::select! {
@@ -211,7 +255,7 @@ impl PrinterWorker {
                     let _ = dev.shutdown(SHUTDOWN_TIMEOUT).await;
                     return false;
                 }
-                result = tokio::time::timeout(CONNECT_TIMEOUT, dev.ready()) => result,
+                result = tokio::time::timeout(connect_timeout, dev.ready()) => result,
             };
 
             match ready {
@@ -234,15 +278,23 @@ impl PrinterWorker {
                     let _ = dev.shutdown(SHUTDOWN_TIMEOUT).await;
                 }
                 Err(_) => {
-                    warn!(timeout = ?CONNECT_TIMEOUT, "printer open timed out");
+                    warn!(timeout = ?connect_timeout, "printer open timed out");
                     let _ = dev.shutdown(SHUTDOWN_TIMEOUT).await;
                 }
             }
 
+            let delay = deadline
+                .map(|deadline| {
+                    RECONNECT_DELAY.min(deadline.saturating_duration_since(Instant::now()))
+                })
+                .unwrap_or(RECONNECT_DELAY);
+            if delay.is_zero() {
+                return false;
+            }
             tokio::select! {
                 _ = job_cancel.cancelled() => return false,
                 _ = token.cancelled() => return false,
-                _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+                _ = tokio::time::sleep(delay) => {}
             }
         }
     }
@@ -286,6 +338,13 @@ impl PrinterWorker {
 enum PrintFailure {
     Cancelled,
     Device(anyhow::Error),
+}
+
+/// `wait_ready` 的结果。
+enum ReadyState {
+    Ready,
+    Cancelled,
+    TimedOut,
 }
 
 async fn query_status(dev: &Device, timeout: Duration) -> Result<PrinterStatus, FrontendError> {
