@@ -7,9 +7,21 @@
 //! 两个 bin 只负责“怎么得到一张位图”，连接设备、发送设置、打印和退出顺序
 //! 都在这里，避免改一边漏一边。
 
+// dzprint_typst 只渲染 Typst，不使用 image 模块的任何符号（load_image /
+// fit_to_print_head / to_bitmap）。默认 `bins` 会同时打开所有 bin 的 feature，
+// 所以它仍会编译这个模块，allow 放在模块声明上，避免逐个函数标注。
+#[cfg(any(feature = "bin-image", feature = "bin-dzserver"))]
+#[allow(dead_code)]
 pub mod image;
+
 pub mod printer;
+
+// 反过来，dzprint_image 只打印图片，不使用 typst 模块的任何符号（FontSet /
+// TypstWorld / compile / render_bitmap / PageSettings / page_settings 等）。
+// dzprint_typst 和 dzserver 按各自流程使用其中一部分：dzprint_typst 直接读
+// .typ，只有 dzserver 从 tar 解包时调用 extract_archive。
 #[cfg(any(feature = "bin-typst", feature = "bin-dzserver"))]
+#[allow(dead_code)]
 pub mod typst;
 
 use std::time::Duration;
@@ -276,7 +288,9 @@ impl PrintArgs {
 ///
 /// 无论打印成功与否都会 `shutdown` + `tm.close()`，保证 worker 线程和 USB
 /// 句柄都释放掉再让进程结束；`body` 的错误优先返回，其次才是 shutdown 的错误。
-// dzserver 也会编译 common，但连接 / 退出由它自己的 printer worker 管理。
+// dzprint_image / dzprint_typst 用这个函数连接并打印。
+// dzserver 也编译 common，但不用它：连接、错误重连和退出由 printer worker
+// 自己管理，所以 dzserver 构建里它是 dead_code。
 #[allow(dead_code)]
 pub async fn with_device<F>(args: &PrintArgs, body: F) -> anyhow::Result<()>
 where

@@ -3,9 +3,8 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 //! 图片解码、缩放和抖动，`dzprint_image` 和 `dzserver` 共用。
-
-// `dzprint_typst` 也会编译 `common`，但只用到 typst 部分。
-#![allow(dead_code)]
+//!
+//! `dzprint_typst` 不需要这个模块，`common::mod` 里已经按 feature 排除。
 
 use anyhow::{Context as _, anyhow};
 use dz_print::{
@@ -24,11 +23,6 @@ pub fn load_image(path: &Path) -> anyhow::Result<DynamicImage> {
     reader
         .decode()
         .with_context(|| format!("解码图片 {} 失败", path.display()))
-}
-
-#[allow(dead_code)]
-pub fn load_image_bytes(bytes: &[u8]) -> anyhow::Result<DynamicImage> {
-    image::load_from_memory(bytes).context("解码请求里的图片失败")
 }
 
 /// 图片宽度大于打印头点数时等比缩放到点数，否则原样返回。

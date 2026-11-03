@@ -10,9 +10,6 @@
 //! - 解包只接受普通文件和目录，拒绝符号链接 / 硬链接；
 //! - 读取前对解析出的真实路径做 `canonicalize`，再检查是否仍在 `root` 内。
 
-// `dzprint_image` 也会编译 `common`，但只用到 image 部分。
-#![allow(dead_code)]
-
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

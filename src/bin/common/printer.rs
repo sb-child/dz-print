@@ -7,11 +7,6 @@
 //! 只有打印头点数是必需的（渲染需要它）；设备名、版本、DPI、纸宽都是
 //! 展示信息，查询失败只 `warn!`，不影响打印。
 
-// 这个模块被每个 bin 分别编译：dzserver 用 `print_pages`，CLI 用
-// `print_page`，单个 bin 看不到全部入口。为了不在每个 bin 里重复
-// `#[allow(dead_code)]`，这里统一放开。
-#![allow(dead_code)]
-
 use super::PrintSettings;
 use dz_print::{
     bitmap::Bitmap,
@@ -174,6 +169,9 @@ pub struct PrintPage {
 ///
 /// `label` 只用于日志，通常是 job id 或文档名。`sent_settings` 由调用方在
 /// 多次任务之间保留，避免每页都重发同一组设置。
+// dzserver 的多页队列用这个入口；dzprint_image / dzprint_typst 只打印一页，
+// 直接调用 `print_page`，所以在它们的构建里 `print_pages` 是 dead_code。
+#[allow(dead_code)]
 pub async fn print_pages(
     dev: &Device,
     label: &str,
