@@ -75,6 +75,12 @@ const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(1);
 /// 打印机跟不上时预算是 0，立刻重问只会把 USB 和固件打满。
 const BUDGET_POLL_GAP: Duration = Duration::from_millis(50);
 
+/// 连续多少次探测都拿不到缓存就认定打印机不再消耗数据。
+///
+/// 每次探测含 50ms 等待，20 次约 5 秒；正常慢速打印也不会这么久一个字节
+/// 都放不进来。
+const ZERO_BUDGET_LIMIT: usize = 20;
+
 /// 重连后单次 `0x70` 最多等多久。
 ///
 /// 打印机恢复后回包只要几十毫秒（实测 7~105ms），所以这里不需要用
@@ -307,6 +313,7 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
     let mut index = 0usize;
     let mut last_probe_bytes = 0usize;
     let mut last_log = Instant::now();
+    let mut zero_budget_probes = 0usize;
     let mut prompt_time = None;
     let mut first_silence = None;
     let mut first_error: Option<(PrinterStatus, Instant)> = None;
@@ -325,12 +332,19 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
             match probe_budget(&dev, config.recv_timeout).await {
                 Probe::Answer { status, budget } => {
                     if let Some(status) = status {
-                        if status.is_error() && first_error.is_none() {
-                            first_error = Some((status, probe_started));
-                            warn!(?status, sent_bytes, sent_lines, "printer reported an error");
-                        } else {
-                            info!(?status, ?budget, sent_bytes, sent_lines, "probe ok");
+                        if status.is_error() {
+                            if first_error.is_none() {
+                                first_error = Some((status, probe_started));
+                                warn!(?status, sent_bytes, sent_lines, "printer reported an error");
+                            }
+                            // 它一边回错误一边不再消耗数据，等下去只会空转，
+                            // 而且这不是“沉默”场景，继续测没有意义。
+                            warn!(
+                                "打印机回了错误状态、且不再消耗数据，停止发送（本次不是沉默实验）"
+                            );
+                            break;
                         }
+                        info!(?status, ?budget, sent_bytes, sent_lines, "probe ok");
                     } else {
                         info!(
                             ?budget,
@@ -338,13 +352,21 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
                         );
                     }
                     budget_left = budget.unwrap_or(FALLBACK_BUDGET).max(1);
-
-                    if first_error.is_some() && matches!(cli.mode, Mode::Early | Mode::EarlyEndPage)
-                    {
-                        break;
+                    if budget.unwrap_or(0) == 0 {
+                        zero_budget_probes += 1;
+                        if zero_budget_probes >= ZERO_BUDGET_LIMIT {
+                            warn!(
+                                probes = zero_budget_probes,
+                                "连续多次没有可用缓存，打印机不再消耗数据，停止发送"
+                            );
+                            break;
+                        }
+                    } else {
+                        zero_budget_probes = 0;
                     }
                 }
                 Probe::Silent { status, budget } => {
+                    zero_budget_probes = 0;
                     if first_silence.is_none() {
                         first_silence = Some(probe_started);
                         warn!(
@@ -442,7 +464,8 @@ async fn run_with_tm(cli: &Cli, tm: &TaskManager) -> Result<()> {
                 "整页发完都没观察到沉默：开盖太晚，或者发送时间太短"
             ),
         }
-        send_end_page(&dev).await.ok();
+        // 故意不发 EndPage：这次本来就不是沉默场景，而实验已经证明
+        // “沉默 + EndPage”会把设备卡住，没必要再冒一次险。
         let _ = dev.shutdown(SHUTDOWN_TIMEOUT).await;
         return Ok(());
     }
