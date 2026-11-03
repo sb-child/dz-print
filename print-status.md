@@ -109,11 +109,12 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
   （释放接口、把内核驱动接回去），再用原来的选择器重新 open 一个新的
   libusb context / DeviceHandle，claim 之前做 `handle.reset()`。它不等价于
   在旧 handle 上调用 `libusb_reset_device()`；
-- reset 只清主机侧状态。固件那边还在收拾上一页（电机、缓冲区），什么时候
-  重新处理命令没有保证，所以 reset 之后在 5 秒内反复探测 `0x70`，第一次
-  回包就停：读到 `CoverOpened` / `NoPaper` 就报具体状态，一直不回才保留
-  `PrinterSilent`。日志里的 `printer answered after reset` / `printer still
-  silent after reset` 会带上尝试次数和耗时；
+- reset 只清主机侧状态。固件那边在开盖中止后的一段时间里完全不处理命令
+  （现场实测：中止后 5 秒内没有任何回包，十几秒后才恢复），所以 reset 之后
+  在 30 秒内反复探测 `0x70`，每秒打一行 `still waiting for the printer after
+  reset`：读到 `CoverOpened` / `NoPaper` 就报具体状态，一直不回才保留
+  `PrinterSilent`。日志里的 `printer answered after reset` 会带上尝试次数和
+  耗时；
 - 探测到 `Printable` 也不要继续当前 job：已经发出去的数据无法撤回；
 - `dzserver` 失败后走 `drop_device()` + 下一次任务重连，重连本身也是重新
   open；`wait_ready` 有 `print_done_timeout` 上限，不会无限堵住队列。

@@ -63,12 +63,13 @@ use super::{Device, FrontendError, RecvError};
 
 /// reset 之后等固件重新接受命令的总时限。
 ///
-/// 开盖中止打印时电机可能还在走，固件在收拾完上一页之前不回命令。重新 open
-/// 只能清主机侧的 parser，固件什么时候恢复没有保证，所以给一个总时限反复
-/// 探测 `0x70`，而不是假定「重新打开完就能立刻查到」。
+/// 开盖中止打印后，固件会有一段时间不接受命令（现场实测：中止后 5 秒内
+/// 完全没有回包，十几秒后才恢复，重新打开 USB 连接本身不能让它提前恢复）。
+/// 重新 open 只能清主机侧的 parser，所以这里给一个总时限反复探测 `0x70`。
+/// 探测期间每秒打一行 `info!`，方便对着真机日志判断固件到底多久恢复。
 #[cfg(not(test))]
-const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// 单元测试里用 5ms 的 `recv_timeout`，不能真的等 5 秒。
+const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+/// 单元测试里用 5ms 的 `recv_timeout`，不能真的等 30 秒。
 #[cfg(test)]
 const POST_RESET_PROBE_TIMEOUT: Duration = Duration::from_millis(40);
 
@@ -234,6 +235,7 @@ impl Device {
                 let started = tokio::time::Instant::now();
                 let deadline = started + POST_RESET_PROBE_TIMEOUT;
                 let mut attempts = 0usize;
+                let mut logged_secs = 0u64;
                 loop {
                     attempts += 1;
                     self.try_send_batch(&[&req::status::Status {}]).await?;
@@ -264,10 +266,21 @@ impl Device {
                         Err(error) => debug!("status query after reset failed: {error}"),
                     }
 
+                    // 每秒一行，真机上用来判断固件到底要多久才恢复。
+                    let elapsed = started.elapsed();
+                    if elapsed.as_secs() > logged_secs {
+                        logged_secs = elapsed.as_secs();
+                        info!(
+                            attempts,
+                            elapsed = ?elapsed,
+                            "still waiting for the printer after reset"
+                        );
+                    }
+
                     if deadline <= tokio::time::Instant::now() {
                         warn!(
                             attempts,
-                            elapsed = ?started.elapsed(),
+                            elapsed = ?elapsed,
                             "printer still silent after reset"
                         );
                         break;

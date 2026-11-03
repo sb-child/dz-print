@@ -43,7 +43,8 @@ cargo run --bin dzprint_image -- --image /tmp/print.png \
   两者都用 `humantime` 写法，例如 `600s` / `10m` / `500ms`。
 - `--silent-limit` 是连续多少次状态查询无响应就判定打印机失联，默认 2。
   开盖 / 缺纸时固件可能直接停止回应，此时 job 会作废；程序会重置一次连接，
-  并在 5 秒内反复查询状态，尽量把 `cover is open` 这类原因报出来。
+  并在 30 秒内反复查询状态（每秒一行日志），尽量把 `cover is open` 这类
+  原因报出来。
 - `RUST_LOG=debug` 打开细节日志。
 
 ### 打印 Typst 文档：`dzprint_typst`
