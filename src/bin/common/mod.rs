@@ -201,9 +201,9 @@ pub struct PrintArgs {
 
     /// 连续多少次状态查询没有响应就判定打印机失联
     ///
-    /// 开盖 / 缺纸时固件可能直接停止回应。想确认“合盖后能不能恢复”，
-    /// 可以临时调大，例如 `--silent-limit 60`。
-    #[arg(long, value_name = "COUNT", default_value_t = 5)]
+    /// 开盖 / 缺纸时固件可能直接停止回应，而且 parser 还可能被前面的数据
+    /// 堵住；此时继续查 `0x70` 不能恢复 job，只会拖延作废时间。默认 2 次。
+    #[arg(long, value_name = "COUNT", default_value_t = 2)]
     pub silent_limit: usize,
 }
 
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(cli.print.rle, RleArg::Off);
         assert_eq!(cli.print.print_timeout, Duration::from_secs(600));
         assert_eq!(cli.print.recv_timeout, Duration::from_secs(3));
-        assert_eq!(cli.print.silent_limit, 5);
+        assert_eq!(cli.print.silent_limit, 2);
     }
 
     #[test]

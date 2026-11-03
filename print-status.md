@@ -93,3 +93,17 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
 
 打印完成后进程退出前还要调用 `Device::shutdown(timeout)`：它取消 worker 并等
 阻塞线程真正返回，USB 句柄释放后进程才结束。只 drop `Device` 不会等线程退出。
+
+## 打印机沉默：job 作废，reset 是唯一清理方式
+
+开盖、缺纸或固件卡住时，打印机可能直接停止消费 USB 数据。此时它的 parser
+被前面没读完的命令堵住，再发多少 `0x70` 也只会排在队尾，**不会得到响应**。
+主机只能靠连续超时判定：
+
+- `print_silent_limit` 默认 `2`；`--recv-timeout 500ms` 时约 1 秒，
+  默认 3 秒时约 6 秒；
+- 判定沉默后当前 job 直接作废，不要补 `EndPage`、也不要重试当前页；
+- 清理 USB 缓冲的唯一可靠方式是关闭设备后重新打开。`UsbTransport::open`
+  会对设备做一次 `handle.reset()`，所以 CLI 下次运行、`dzserver` 的
+  drop/reconnect 都能恢复；
+- 同一次连接里继续轮询状态没有意义，只会延迟退出。

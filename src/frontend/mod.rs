@@ -232,9 +232,10 @@ pub struct DeviceConfig {
     pub print_idle_confirm: usize,
     /// 连续多少次状态查询没有任何回应就判定打印机失联。
     ///
-    /// 每次查询最长等 [`Self::recv_timeout`]，所以默认 `5` 次大约 15 秒。
-    /// 打印中途固件偶尔会停一小会儿不回应，但连续十几秒完全沉默说明它卡住了，
-    /// 继续等只会让整个任务挂到 [`Self::print_done_timeout`]。
+    /// 每次查询最长等 [`Self::recv_timeout`]，所以默认 `2` 次在 500ms 超时下
+    /// 约 1 秒、默认 3s 超时下约 6 秒。开盖 / 缺纸时固件可能直接停止回应，
+    /// 而它的 parser 还可能被前面没消费完的命令堵住；继续查 `0x70` 不能
+    /// 让 job 恢复，只会拖延作废时间。
     pub print_silent_limit: usize,
     /// 等待打印完成的总超时。
     pub print_done_timeout: Duration,
@@ -252,7 +253,7 @@ impl Default for DeviceConfig {
             print_verify_interval: Duration::from_millis(500),
             print_verify: true,
             print_idle_confirm: 2,
-            print_silent_limit: 5,
+            print_silent_limit: 2,
             print_done_timeout: Duration::from_secs(600),
         }
     }
@@ -561,7 +562,9 @@ impl Device {
                             timeout = ?self.config.recv_timeout,
                             "printer did not answer the first status poll"
                         );
-                    } else {
+                    } else if silent_polls == self.config.print_silent_limit
+                        || silent_polls % 10 == 0
+                    {
                         warn!(
                             silent_polls,
                             limit = self.config.print_silent_limit,
@@ -1027,6 +1030,8 @@ mod tests {
             print_start_grace: Duration::ZERO,
             print_verify: false,
             print_idle_confirm: 1,
+            // 让“纯超时”类测试先撞到 print_done_timeout，而不是静默计数。
+            print_silent_limit: 100,
             print_done_timeout: Duration::from_millis(500),
             ..Default::default()
         }

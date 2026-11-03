@@ -124,58 +124,12 @@ impl Device {
             if page_idx > 65534 {
                 return Err(FrontendError::TooManyPages { pages: page_no });
             }
-            let result = self
+            // 失败时不要尝试补 `EndPage` 或继续查 `0x70`：固件的 parser 可能
+            // 已经被前面没消费完的命令堵住，这些命令只会排在队尾。job 作废，
+            // 交给调用方关闭 / 重开设备来清 USB 缓冲。
+            let report = self
                 .send_page_commands(bm, &page, page_start, page_idx, options)
-                .await;
-            let report = match result {
-                Ok(report) => report,
-                Err(error) => {
-                    // 页面没发完就失败时，固件可能停在“这一页还没结束”的状态，
-                    // 之后连 0x70 都不回。尽最大努力补一条 EndPage 把它清掉。
-                    warn!(%error, "page send failed; sending EndPage to clear the printer state");
-                    let timeout = self.config.recv_timeout.min(Duration::from_secs(1));
-                    match tokio::time::timeout(
-                        timeout,
-                        self.try_send_batch(&[&req::end_page::EndPage {}]),
-                    )
-                    .await
-                    {
-                        Ok(Ok(())) => {
-                            warn!(
-                                "sent EndPage after print failure; \
-                                 close the cover and retry, power-cycle if it stays silent"
-                            );
-                            // 探一下固件有没有因为 EndPage 恢复响应。它决定了
-                            // 下一次运行能不能直接复用这台打印机。
-                            match self
-                                .recv_cmd_timeout::<resp::status::Status>(
-                                    resp::status::CMD,
-                                    timeout,
-                                )
-                                .await
-                            {
-                                Ok(Some(status)) => warn!(
-                                    status = ?status.status,
-                                    "printer answered after EndPage cleanup"
-                                ),
-                                Ok(None) => warn!("printer still silent after EndPage cleanup"),
-                                Err(error) => {
-                                    warn!(%error, "status probe after EndPage cleanup failed");
-                                }
-                            }
-                        }
-                        Ok(Err(error)) => warn!(
-                            %error,
-                            "EndPage cleanup failed; the printer may need a power cycle"
-                        ),
-                        Err(_) => warn!(
-                            timeout = ?timeout,
-                            "EndPage cleanup timed out; the printer may need a power cycle"
-                        ),
-                    }
-                    return Err(error);
-                }
-            };
+                .await?;
 
             // 最后一页在 `EndPage` 之前抓一次 `0x73` 快照。之后如果一直看不到
             // `Printing` / `Rotating`，就用这个快照判断页面到底有没有打印。
@@ -217,8 +171,8 @@ impl Device {
 
     /// 发完一页的 `StartPage` / 数据 / 加热统计，但不发 `EndPage`。
     ///
-    /// 单独拆出来是为了在失败时补发 `EndPage`：否则固件可能一直停在
-    /// “这一页还没结束”的状态，后续连 `0x70` 都不回应。
+    /// 失败时直接返回，调用方应当作废当前 job 并关闭 / 重开设备；不要在这
+    /// 之后继续查询状态，固件的 parser 可能已经被前面的数据堵住。
     async fn send_page_commands(
         &self,
         bm: &Bitmap,
@@ -299,13 +253,16 @@ impl Device {
                         }
                         Ok(None) => {
                             silent_polls += 1;
+                            // 用户把 --silent-limit 调大时不要每 500ms 刷一行。
                             if silent_polls == 1 {
                                 debug!(
                                     limit = self.config.print_silent_limit,
                                     timeout = ?self.config.recv_timeout,
                                     "status before budget timed out"
                                 );
-                            } else {
+                            } else if silent_polls == self.config.print_silent_limit
+                                || silent_polls % 10 == 0
+                            {
                                 warn!(
                                     silent_polls,
                                     limit = self.config.print_silent_limit,

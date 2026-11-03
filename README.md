@@ -41,6 +41,9 @@ cargo run --bin dzprint_image -- --image /tmp/print.png \
 - 行数据默认不压缩。RLE 在 DP27P 上打真实照片会在纸中间插入空白，只建议给简单线稿实验用。
 - `--print-timeout` 是等打印结束的总超时，`--recv-timeout` 是单条响应的等待超时；
   两者都用 `humantime` 写法，例如 `600s` / `10m` / `500ms`。
+- `--silent-limit` 是连续多少次状态查询无响应就判定打印机失联，默认 2。
+  开盖 / 缺纸时固件可能直接停止回应，此时 job 会作废，关闭设备后重新打开
+  才能清掉 USB 缓冲。
 - `RUST_LOG=debug` 打开细节日志。
 
 ### 打印 Typst 文档：`dzprint_typst`

@@ -167,7 +167,7 @@ struct Cli {
     idle_confirm: usize,
 
     /// 连续几次状态查询没有响应就判定打印机失联
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 2)]
     silent_limit: usize,
 
     /// 等待打印完成的总超时，例如 `600s`
@@ -917,7 +917,7 @@ mod tests {
         assert_eq!(cli.start_timeout, Duration::from_secs(3));
         assert_eq!(cli.verify_interval, Duration::from_millis(500));
         assert_eq!(cli.idle_confirm, 2);
-        assert_eq!(cli.silent_limit, 5);
+        assert_eq!(cli.silent_limit, 2);
         assert_eq!(cli.print_timeout, Duration::from_secs(600));
         assert_eq!(cli.recv_timeout, Duration::from_secs(3));
         assert_eq!(cli.settle, Duration::from_millis(500));
