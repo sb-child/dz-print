@@ -28,6 +28,10 @@ pub struct RenderedJob {
     pub id: JobId,
     pub pages: Vec<PrintPage>,
     pub repeats: u32,
+    /// 渲染时使用的打印头点数；打印前要和实际连上的打印机核对。
+    ///
+    /// 排队期间如果换了一台打印头宽度不同的打印机，这份位图不能直接打。
+    pub head_dots: u16,
     pub cancel: CancellationToken,
 }
 
@@ -86,6 +90,7 @@ impl JobSpec {
                     id,
                     pages,
                     repeats,
+                    head_dots: profile.head_dots,
                     cancel,
                 })
             }
@@ -110,6 +115,7 @@ impl JobSpec {
                     id,
                     pages,
                     repeats,
+                    head_dots: profile.head_dots,
                     cancel,
                 })
             }

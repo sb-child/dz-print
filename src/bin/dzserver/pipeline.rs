@@ -332,6 +332,11 @@ fn is_cancelled(
     job.is_cancelled() || task_token.is_cancelled() || root.is_cancelled()
 }
 
+/// 等“当前连接到的打印机”的 profile。
+///
+/// 首次成功连接之前、以及设备断开之后都是 `None`；打印 worker 会在空闲时
+/// 主动重连并重新发布，所以这里的等待不会和“等渲染结果”互相卡死。
+/// 取消或 pipeline 退出返回 `None`。
 async fn wait_profile(
     rx: &mut watch::Receiver<Option<PrinterProfile>>,
     cancel: &CancellationToken,

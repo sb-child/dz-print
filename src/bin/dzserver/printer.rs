@@ -26,8 +26,14 @@ use uuid::Uuid;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const STATUS_POLL: Duration = Duration::from_millis(500);
+/// 空闲时一次主动重连的窗口。
+///
+/// 窗口内没连上就回到主循环，先看有没有已经渲染好的 job，避免队列里的任务
+/// 被一个长期离线的打印机拖住。取值覆盖一次 `CONNECT_TIMEOUT`，否则打印机
+/// 打开稍慢时会在每次尝试中途被截断，永远连不上。
+const IDLE_RECONNECT_WINDOW: Duration = CONNECT_TIMEOUT;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrinterProfile {
     pub head_dots: u16,
 }
@@ -37,6 +43,10 @@ pub struct PrinterWorker {
     config: DeviceConfig,
     store: JobStore,
     rx: mpsc::Receiver<RenderedJob>,
+    /// 当前连接到的打印机的打印头点数。
+    ///
+    /// 首次成功连接之前是 `None`，设备断开时也清回 `None`；打印 worker 在
+    /// 空闲时会主动重连（见 [`Self::run`]），所以渲染 worker 不会一直等下去。
     profile_tx: watch::Sender<Option<PrinterProfile>>,
     device: Option<Device>,
     sent_settings: Option<PrintSettings>,
@@ -75,6 +85,31 @@ impl PrinterWorker {
         }
 
         loop {
+            // 设备掉了又没有 job 时，打印 worker 必须自己重连：渲染 worker
+            // 在 profile 为 `None` 时不会产出任何 job，如果这里只等渲染结果，
+            // 两边会一直互相等待，打印机恢复后也只能靠重启进程。
+            if self.device.is_none() {
+                match self.rx.try_recv() {
+                    Ok(job) => {
+                        self.handle_job(job, &shutdown).await;
+                        continue;
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => {}
+                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                }
+
+                let deadline = Instant::now() + IDLE_RECONNECT_WINDOW;
+                if self
+                    .ensure_device(&task_token, &shutdown, Some(deadline))
+                    .await
+                {
+                    info!("printer reconnected while idle");
+                } else if task_token.is_cancelled() || shutdown.is_cancelled() {
+                    break;
+                }
+                continue;
+            }
+
             let job = tokio::select! {
                 _ = task_token.cancelled() => break,
                 _ = shutdown.cancelled() => break,
@@ -120,6 +155,37 @@ impl PrinterWorker {
                 self.drop_device().await;
                 return;
             }
+        }
+
+        // 排队期间设备可能被换掉；位图是按渲染时的打印头宽度生成的，宽度
+        // 不一致时不能直接打印，否则会按错误宽度出纸。作废当前 job，设备
+        // 保持连接，后面的 job 会用新发布的 profile 重新渲染。
+        let Some(profile) = *self.profile_tx.borrow() else {
+            error!(job = %job_label(id), "printer profile is missing after a successful connect");
+            self.store.finish_failed(
+                id,
+                JobFailure::new(
+                    FailureStage::Print,
+                    FailureReason::Internal,
+                    "打印头点数未知，无法确认渲染宽度",
+                ),
+                None,
+            );
+            return;
+        };
+        if profile.head_dots != job.head_dots {
+            warn!(
+                job = %job_label(id),
+                rendered = job.head_dots,
+                connected = profile.head_dots,
+                "printer head size changed while the job was queued; failing this job"
+            );
+            self.store.finish_failed(
+                id,
+                head_dots_changed(job.head_dots, profile.head_dots),
+                None,
+            );
+            return;
         }
 
         self.store.set_state(id, JobState::Printing);
@@ -346,6 +412,9 @@ impl PrinterWorker {
             warn!(%error, "device shutdown failed");
         }
         self.sent_settings = None;
+        // profile 表示“当前连接到的打印机”，断开后必须清空，否则换了一台
+        // 打印头点数不同的打印机时，渲染会用旧设备的宽度。清空之后由
+        // `run` 的空闲重连重新发布，不需要等下一个 job 触发。
         let _ = self.profile_tx.send(None);
     }
 }
@@ -381,6 +450,19 @@ fn not_ready_failure(found: bool, timeout: Duration) -> JobFailure {
         )
     };
     JobFailure::new(stage, reason, format!("{what}（等待 {timeout:?}）"))
+}
+
+/// 排队期间换了打印头宽度不同的设备时生成的失败。
+///
+/// 不重新渲染就继续打印会按错误宽度出纸，所以宁可作废这一份任务。
+fn head_dots_changed(rendered: u16, connected: u16) -> JobFailure {
+    JobFailure::new(
+        FailureStage::Print,
+        FailureReason::Internal,
+        format!(
+            "打印头点数在排队期间发生变化（渲染时 {rendered}，打印时 {connected}），请重新提交"
+        ),
+    )
 }
 
 /// 把打印错误翻译成对外的失败描述，以及当时读到的设备状态。
@@ -442,6 +524,7 @@ fn job_label(id: JobId) -> Uuid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     fn stalled(cause: FrontendError, outcome: StallOutcome) -> anyhow::Error {
         anyhow::Error::new(FrontendError::Stalled {
@@ -522,5 +605,35 @@ mod tests {
         let failure = not_ready_failure(true, Duration::from_secs(600));
         assert_eq!(failure.stage, FailureStage::WaitForPrinter);
         assert_eq!(failure.reason, FailureReason::DeviceNotReady);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_device_clears_the_profile() {
+        let cli = crate::Cli::try_parse_from(["dzserver", "/tmp", "127.0.0.1:0"]).unwrap();
+        let tm = TaskManager::new();
+        let (_job_tx, job_rx) = mpsc::channel(1);
+        let (profile_tx, profile_rx) = watch::channel(None);
+        let mut worker =
+            PrinterWorker::new(tm.clone(), cli.print, JobStore::new(), job_rx, profile_tx);
+        worker
+            .profile_tx
+            .send(Some(PrinterProfile { head_dots: 576 }))
+            .unwrap();
+
+        // 断开后 profile 必须回到 None：下次连上的可能是别的打印机。
+        // 打印 worker 会在空闲时主动重连并重新发布，不能靠等 job 触发。
+        worker.drop_device().await;
+
+        assert_eq!(*profile_rx.borrow(), None);
+        tm.close();
+    }
+
+    #[test]
+    fn a_changed_head_size_is_a_failure_with_both_sizes() {
+        let failure = head_dots_changed(576, 384);
+        assert_eq!(failure.stage, FailureStage::Print);
+        assert_eq!(failure.reason, FailureReason::Internal);
+        assert!(failure.message.contains("576"));
+        assert!(failure.message.contains("384"));
     }
 }

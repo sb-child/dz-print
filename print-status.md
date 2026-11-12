@@ -134,5 +134,6 @@ DP27P 回一条 `0x70` 大约要 100ms，所以短于一两个采样周期的错
   30 秒、55 次 `0x70` 全部没有回包；断开 1~2 秒再重连，第一次查询就能读到
   `CoverOpened`。所以「重新 open」本身不够，固件需要一段没有主机在跟它说话
   的时间。它也不等价于在旧 handle 上调用 `libusb_reset_device()`；
-- `dzserver` 失败后走 `drop_device()` + 下一次任务重连，重连本身也是重新
-  open；`wait_ready` 有 `print_done_timeout` 上限，不会无限堵住队列。
+- `dzserver` 失败后走 `drop_device()`，打印 worker 在没有任务时也会主动重连，
+  不等下一个 job；重连本身也是重新 open。`wait_ready` 有 `print_done_timeout`
+  上限，不会无限堵住队列。

@@ -39,7 +39,10 @@ gRPC 入口 → 入口队列（--queue-capacity）
 - 渲染、tar 解包、Typst 包下载都在 blocking task 里，不占 tokio worker；
 - 打印是串行的：同一时刻只有一个 job 占着打印锁；
 - 渲染 worker 需要打印头点数才能排版，所以打印 worker 会先连一次设备、发布
-  `PrinterProfile`，连不上就一直重试，任务留在入口队列里；
+  `PrinterProfile`，连不上就一直重试，任务留在入口队列里；设备断开时 profile
+  会清空，打印 worker 在没有 job 时也会主动重连并重新发布，避免渲染 worker
+  等 profile、打印 worker 等渲染结果互相卡死；排队期间如果换了一台打印头宽度
+  不同的打印机，已经渲染好的任务会因为宽度不一致而失败，需要重新提交；
 - Typst 文档里的 `<print-settings>` 逐页生效，打印 worker 只在这一页的
   gap / darkness / speed 真的变化时才重发设置。
 
