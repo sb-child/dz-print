@@ -1,6 +1,6 @@
 [package]
 name = "dz-print"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Third-party USB/Bluetooth Driver for Detonger(detonger.com) Printing Machines"
 authors = ["sbchild <sbchild0@gmail.com> <zinu5k7d1k2uzsxa@proton.me>"]
@@ -34,7 +34,7 @@ tracing-subscriber = { version = "0.3.23", features = [
 typst-render = { version = "0.15.1", optional = true }
 # spin = { version = "0.12.3", optional = true }
 tempfile = { version = "3.27.0", optional = true }
-ureq = { version = "3.5.1", optional = true }
+ureq = { version = "3.5.2", optional = true }
 tar = { version = "0.4.46", optional = true }
 flate2 = { version = "1.1.11", optional = true }
 deku = "0.20.3"
@@ -47,7 +47,7 @@ crossfire = { version = "3.1.22", features = ["tokio"] }
 mytm = { git = "https://github.com/sb-child/mytm", rev = "fd1b520d30f40c17905e375c8d1f1e17d02eb7c8" }
 futures-util = "0.3.34"
 tonic = { version = "0.14.9", optional = true }
-prost = { version = "0.14.5", optional = true }
+prost = { version = "0.14.6", optional = true }
 tokio-stream = { version = "0.1.19", features = ["net"], optional = true }
 tonic-prost = { version = "0.14.9", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }

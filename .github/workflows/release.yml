@@ -1,0 +1,91 @@
+name: Release
+
+# 只由 tag 触发；tag 必须和 Cargo.toml 的版本一致。
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    # 用较老的 Ubuntu 构建，产物要求的 glibc 更低，兼容更多发行版。
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-x86_64
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            protobuf-compiler \
+            libdbus-1-dev \
+            libudev-dev
+
+      - name: Verify tag matches Cargo version
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "dz-print") | .version')"
+          if [[ "v${version}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version v${version}" >&2
+            exit 1
+          fi
+
+      - name: Test
+        run: cargo test --locked --all-targets
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked \
+            --bin dzserver \
+            --bin dzprint_image \
+            --bin dzprint_typst
+
+      - name: Package
+        run: |
+          set -euo pipefail
+
+          name="dz-print-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/${name}"
+
+          install -m 0755 \
+            target/release/dzserver \
+            target/release/dzprint_image \
+            target/release/dzprint_typst \
+            "dist/${name}/"
+
+          install -m 0644 LICENSE "dist/${name}/"
+          install -D -m 0644 proto/dzsrv.proto "dist/${name}/proto/dzsrv.proto"
+
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

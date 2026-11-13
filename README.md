@@ -108,3 +108,25 @@ cargo run --bin probe_end_page -- --mode late-skip
   只开 `bin-image` 时不会编译 Typst 那一套依赖。
 - 测试：`cargo test --all-targets`，`cargo clippy --all-targets`，`cargo fmt -- --check`
 - 所有 bin 的日志走 `RUST_LOG`（`EnvFilter`，默认 `info`），排障时用 `RUST_LOG=debug`
+
+## 发版
+
+发版由 `.github/workflows/release.yml` 完成，只在推送 `v*` tag 时触发。
+
+1. 改 `Cargo.toml` 的 `version`，例如 `0.2.0`。
+2. 跑 `cargo test --all-targets`；Cargo 会同时同步 `Cargo.lock` 里的本地包版本。
+3. 提交 `Cargo.toml` 和 `Cargo.lock`。
+4. 打 tag 并推送：
+
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+workflow 会先校验 tag 与 `Cargo.toml` 的版本一致，然后在 Ubuntu 22.04 上跑测试、
+构建 Linux x86_64 的 `dzserver`、`dzprint_image`、`dzprint_typst`，把
+`proto/dzsrv.proto` 和 `LICENSE` 一起打进压缩包，同时上传 `.sha256`，最后创建
+release 并自动生成 release notes。
+
+发布包不包含 `dzcli`、`test_usb`、`probe_end_page`；这三个仍然只能从源码构建。
+tag 与版本不一致时 workflow 会直接失败，不会发版。
