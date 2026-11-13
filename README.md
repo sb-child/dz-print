@@ -115,13 +115,16 @@ cargo run --bin probe_end_page -- --mode late-skip
 
 1. 改 `Cargo.toml` 的 `version`，例如 `0.2.0`。
 2. 跑 `cargo test --all-targets`；Cargo 会同时同步 `Cargo.lock` 里的本地包版本。
-3. 提交 `Cargo.toml` 和 `Cargo.lock`。
-4. 打 tag 并推送：
+3. 提交 `Cargo.toml` 和 `Cargo.lock`，先推送 `master`。
+4. 确认仓库的 Actions 页面已经出现 `Release` workflow 后，再打 tag 并推送：
 
    ```bash
    git tag v0.2.0
    git push origin v0.2.0
    ```
+
+不要把分支和 tag 放在同一次推送里：tag 推送时如果默认分支上还没有这个
+workflow，GitHub 不会为这个 tag 启动它。
 
 workflow 会先校验 tag 与 `Cargo.toml` 的版本一致，然后在 Ubuntu 22.04 上跑测试、
 构建 Linux x86_64 的 `dzserver`、`dzprint_image`、`dzprint_typst`，把
