@@ -729,9 +729,9 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
 name = "crossfire"
-version = "3.1.22"
+version = "3.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "342783f90d75bfc49d9c7cff550d0a25d3b1b346b5964f3f22672d195cbb6b1f"
+checksum = "316fdb8da1b8695bbd309533b6e02ed9b690093030d0a2ff8925779408bf605d"
 dependencies = [
  "crossfire-utils",
  "futures-core",
